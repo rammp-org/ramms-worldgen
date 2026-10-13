@@ -408,6 +408,27 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 			const FVector SlabCentre = Sd.Start + Sd.Dir * (L0 + L * 0.5) + Sd.Inward * (SW * 0.5) + FVector(0, 0, -10.0);
 			RammsPCG::WriteCube(Primitives, SlabCentre, FVector(L, SW, 20.0), Sd.Yaw, MatWalk, NextSeed());
 		}
+		// Parked cars at the curb (in the road, outside the curb line), clear of crossings and ramps.
+		if (S->ParkingDensity > 0.0 && RW >= 550.0 && Sd.Length > 1500.0)
+		{
+			FRammsPaletteMesh CarMesh;
+			if (Palette && Palette->PickMesh(RammsPaletteSlots::Car, Rng, CarMesh))
+			{
+				const double CarL = FMath::Max(CarMesh.Footprint.X, 380.0), CarW = FMath::Max(CarMesh.Footprint.Y, 160.0);
+				for (double a = CW + 260.0 + CarL * 0.5; a < Sd.Length - CW - 260.0 - CarL * 0.5; a += CarL + RammsPCG::RandRange(Rng, 120.0, 320.0))
+				{
+					if (Rng.FRand() > FMath::Clamp(S->ParkingDensity, 0.0, 1.0)) { continue; }
+					bool bSkip = false;
+					for (const FVector2D& K : Sd.Keepouts) { if (a + CarL * 0.5 > K.X - 60.0 && a - CarL * 0.5 < K.Y + 60.0) { bSkip = true; break; } }
+					if (bSkip) { continue; }
+					FRammsPaletteMesh Pick;
+					if (!Palette->PickMesh(RammsPaletteSlots::Car, Rng, Pick)) { break; }
+					const FVector P = Sd.Start + Sd.Dir * a - Sd.Inward * (FMath::Max(Pick.Footprint.Y, 160.0) * 0.5 + 25.0) + FVector(0, 0, Zr - Z0);
+					const int32 c = RammsPCG::WritePickedMesh(Props, Pick, P, Sd.Yaw + (Rng.FRand() < 0.5 ? 0.0 : 180.0), NextSeed());
+					RammsPCG::WriteManifest(Props, c, FName(TEXT("Vehicle")), FName(TEXT("Parked")), true, ERammsComplianceIssue::None, 0.0, 0.0);
+				}
+			}
+		}
 		// Curbs along the curb line, skipping ramp keepouts.
 		for (double a = CurbStep * 0.5; a < Sd.Length; a += CurbStep)
 		{

@@ -193,14 +193,36 @@ int32 RammsPCG::WritePaletteMesh(FRammsPointWriter& W, const URammsWorldPalette*
 	return WritePickedMesh(W, Picked, Location, YawDeg, Seed);
 }
 
-int32 RammsPCG::WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed)
+int32 RammsPCG::WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed, double ScaleMul)
 {
 	const FRotator Rot = (FRotator(0.0, YawDeg, 0.0).Quaternion() * Picked.RotationOffset.Quaternion()).Rotator();
-	const FVector Loc = Location + FRotator(0.0, YawDeg, 0.0).RotateVector(Picked.LocationOffset);
-	const FVector Half(Picked.Footprint.X * 0.5, Picked.Footprint.Y * 0.5, Picked.Height * 0.5);
-	const int32 i = W.Add(FTransform(Rot, Loc, FVector(Picked.Scale)), FVector(-Half.X, -Half.Y, 0.0), FVector(Half.X, Half.Y, Picked.Height), Seed);
+	const FVector Loc = Location + FRotator(0.0, YawDeg, 0.0).RotateVector(Picked.LocationOffset * ScaleMul);
+	const FVector Half(Picked.Footprint.X * 0.5 * ScaleMul, Picked.Footprint.Y * 0.5 * ScaleMul, Picked.Height * 0.5 * ScaleMul);
+	const int32 i = W.Add(FTransform(Rot, Loc, FVector(Picked.Scale * ScaleMul)), FVector(-Half.X, -Half.Y, 0.0), FVector(Half.X, Half.Y, Picked.Height * ScaleMul), Seed);
 	W.SetPath(i, Mesh, Picked.Mesh.ToSoftObjectPath());
 	return i;
+}
+
+void RammsPCG::WriteFoliage(FRammsPointWriter& Props, FRammsPointWriter& Pieces, const URammsWorldPalette* Palette, FName Slot,
+	const FRandomStream& Rng, const FVector& Location, double YawDeg, int32 Seed, double ProcSizeX, double ProcSizeZ,
+	const FString& MatFoliage, const FString& MatTrunk, FName InManifestKind)
+{
+	FRammsPaletteMesh M;
+	if (Palette && Palette->PickMesh(Slot, Rng, M))
+	{
+		const int32 p = WritePickedMesh(Props, M, Location, YawDeg, Seed, RandRange(Rng, 0.85, 1.15));
+		WriteManifest(Props, p, InManifestKind, Slot, true, ERammsComplianceIssue::None, 0.0, 0.0);
+		return;
+	}
+	FRammsPieceDesc T;
+	T.Kind = (Slot == RammsPaletteSlots::Shrub || Slot == RammsPaletteSlots::Hedge) ? ERammsProcPieceKind::Shrub : ERammsProcPieceKind::Tree;
+	T.SizeX = ProcSizeX;
+	T.SizeZ = ProcSizeZ;
+	T.MaterialPath = MatFoliage; T.MaterialPath2 = MatTrunk;
+	T.ManifestKind = InManifestKind;
+	T.Transform = FTransform(FRotator(0.0, YawDeg, 0.0), Location);
+	T.Seed = Seed;
+	WritePiece(Pieces, T);
 }
 
 void RammsPCG::WriteManifest(FRammsPointWriter& W, int32 Index, FName Kind, FName Subtype, bool bInCompliant, ERammsComplianceIssue Issue, double InMeasure, double InThreshold)

@@ -194,15 +194,8 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 					FRammsPaletteMesh Pit;
 					const int32 p = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::TreePit, Rng, Base, Yaw, NextSeed(), &Pit);
 					if (p >= 0) { RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), FName(TEXT("TreePit")), true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth); }
-					FRammsPieceDesc T;
-					T.Kind = ERammsProcPieceKind::Tree;
-					T.SizeX = RammsPCG::RandRange(Rng, 300.0, 520.0);
-					T.SizeZ = RammsPCG::RandRange(Rng, 550.0, 850.0);
-					T.MaterialPath = MatFoliage; T.MaterialPath2 = MatTrunk;
-					T.ManifestKind = FName(TEXT("Tree"));
-					T.Transform = FTransform(FRotator(0.0, RammsPCG::RandRange(Rng, 0.0, 360.0), 0.0), Base);
-					T.Seed = NextSeed();
-					RammsPCG::WritePiece(Pieces, T);
+					RammsPCG::WriteFoliage(Props, Pieces, Palette, RammsPaletteSlots::Tree, Rng, Base, RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(),
+						RammsPCG::RandRange(Rng, 300.0, 520.0), RammsPCG::RandRange(Rng, 550.0, 850.0), MatFoliage, MatTrunk, FName(TEXT("Tree")));
 				}
 			}
 
@@ -212,11 +205,16 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 			{
 				const double Roll = Rng.FRand();
 				FName Slot = RammsPaletteSlots::Bench;
-				if (Roll < 0.28) { Slot = RammsPaletteSlots::Bench; }
-				else if (Roll < 0.50) { Slot = RammsPaletteSlots::TrashBin; }
-				else if (Roll < 0.70) { Slot = RammsPaletteSlots::StreetLight; }
-				else if (Roll < 0.86) { Slot = RammsPaletteSlots::Bollard; }
-				else if (Roll < 0.95 || Length < 2500.0) { Slot = RammsPaletteSlots::InfoBoard; }
+				const bool bResidential = FZ < 50.0; // no furniture zone: a residential street
+				if (Roll < 0.18) { Slot = RammsPaletteSlots::Bench; }
+				else if (Roll < 0.34) { Slot = RammsPaletteSlots::TrashBin; }
+				else if (Roll < 0.50) { Slot = RammsPaletteSlots::StreetLight; }
+				else if (Roll < 0.58) { Slot = RammsPaletteSlots::Hydrant; }
+				else if (Roll < 0.66) { Slot = bResidential ? RammsPaletteSlots::Mailbox : RammsPaletteSlots::ParkingMeter; }
+				else if (Roll < 0.73) { Slot = bResidential ? RammsPaletteSlots::UtilityPole : RammsPaletteSlots::NewspaperBox; }
+				else if (Roll < 0.80) { Slot = RammsPaletteSlots::StreetSign; }
+				else if (Roll < 0.88) { Slot = RammsPaletteSlots::Bollard; }
+				else if (Roll < 0.95 || Length < 2500.0) { Slot = bResidential ? RammsPaletteSlots::Flowerbed : RammsPaletteSlots::InfoBoard; }
 				else { Slot = RammsPaletteSlots::BusStop; }
 
 				FRammsPaletteMesh M;
@@ -254,11 +252,15 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				FName Type, Slot, Fallback;
 				double fx = 60.0, fy = 60.0, fz = 90.0; // fallback piece size
 				ERammsProcPieceKind FallbackKind = ERammsProcPieceKind::Planter;
-				if (Roll < 0.25)      { Type = FName(TEXT("AFrame"));   Slot = RammsPaletteSlots::HazardAFrame;   Fallback = RammsPaletteSlots::InfoBoard; fx = 60; fy = 70; fz = 100; }
-				else if (Roll < 0.45) { Type = FName(TEXT("Scooter"));  Slot = RammsPaletteSlots::HazardScooter;  fx = 120; fy = 45; fz = 35; }
-				else if (Roll < 0.60) { Type = FName(TEXT("BinOut"));   Slot = RammsPaletteSlots::HazardBinOut;   Fallback = RammsPaletteSlots::TrashBin; fx = 60; fy = 60; fz = 100; }
-				else if (Roll < 0.75) { Type = FName(TEXT("Cafe"));     Slot = RammsPaletteSlots::HazardCafe;     Fallback = RammsPaletteSlots::FurnitureTable; fx = 80; fy = 80; fz = 75; }
-				else if (Roll < 0.85) { Type = FName(TEXT("Barrier"));  Slot = RammsPaletteSlots::HazardBarrier;  Fallback = RammsPaletteSlots::Railing; fx = 200; fy = 40; fz = 100; }
+				if (Roll < 0.18)      { Type = FName(TEXT("AFrame"));   Slot = RammsPaletteSlots::HazardAFrame;   Fallback = RammsPaletteSlots::InfoBoard; fx = 60; fy = 70; fz = 100; }
+				else if (Roll < 0.32) { Type = FName(TEXT("Scooter"));  Slot = RammsPaletteSlots::HazardScooter;  fx = 120; fy = 45; fz = 35; }
+				else if (Roll < 0.40) { Type = FName(TEXT("Bike"));     Slot = RammsPaletteSlots::HazardBike;     Fallback = RammsPaletteSlots::HazardScooter; fx = 180; fy = 60; fz = 100; }
+				else if (Roll < 0.52) { Type = FName(TEXT("BinOut"));   Slot = RammsPaletteSlots::HazardBinOut;   Fallback = RammsPaletteSlots::TrashBin; fx = 60; fy = 60; fz = 100; }
+				else if (Roll < 0.64) { Type = FName(TEXT("Cafe"));     Slot = RammsPaletteSlots::HazardCafe;     Fallback = RammsPaletteSlots::FurnitureTable; fx = 80; fy = 80; fz = 75; }
+				else if (Roll < 0.74) { Type = FName(TEXT("Barrier"));  Slot = RammsPaletteSlots::HazardBarrier;  Fallback = RammsPaletteSlots::Railing; fx = 200; fy = 40; fz = 100; }
+				else if (Roll < 0.82) { Type = FName(TEXT("Cone"));     Slot = RammsPaletteSlots::HazardCone;     Fallback = RammsPaletteSlots::Bollard; fx = 40; fy = 40; fz = 75; }
+				else if (Roll < 0.88) { Type = FName(TEXT("Box"));      Slot = RammsPaletteSlots::HazardBox;      Fallback = RammsPaletteSlots::HazardBinOut; fx = 50; fy = 40; fz = 40; }
+				else if (Roll < 0.92) { Type = FName(TEXT("Dumpster")); Slot = RammsPaletteSlots::HazardDumpster; Fallback = RammsPaletteSlots::HazardBinOut; fx = 180; fy = 90; fz = 140; }
 				else                  { Type = FName(TEXT("Upheaval")); Slot = RammsPaletteSlots::HazardUpheaval; FallbackKind = ERammsProcPieceKind::Slab; fx = 120; fy = 120; fz = 3; }
 
 				const bool bIntrude = Rng.FRand() < Intrude;
@@ -310,7 +312,8 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 						// Two chairs flanking the table, same compliance.
 						for (int32 c = -1; c <= 1; c += 2)
 						{
-							const int32 q = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::FurnitureChair, Rng, ToWorld(A + fx * 0.5 + c * (fx * 0.5 + 35.0), y0 + fy * 0.5, 0.0), Yaw + (c > 0 ? 180.0 : 0.0), NextSeed());
+							int32 q = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::HazardCafeChair, Rng, ToWorld(A + fx * 0.5 + c * (fx * 0.5 + 35.0), y0 + fy * 0.5, 0.0), Yaw + (c > 0 ? 180.0 : 0.0), NextSeed());
+							if (q < 0) { q = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::FurnitureChair, Rng, ToWorld(A + fx * 0.5 + c * (fx * 0.5 + 35.0), y0 + fy * 0.5, 0.0), Yaw + (c > 0 ? 180.0 : 0.0), NextSeed()); }
 							if (q >= 0) { RammsPCG::WriteManifest(Props, q, FName(TEXT("Hazard")), Type, bOk, Issue, Clear, S->MinClearWidth); Occ.Take(A - 60.0, A + fx + 60.0); }
 						}
 					}
@@ -446,16 +449,12 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				bool bOnPath = false;
 				for (const FBox2D& B : PathBoxes) { if (B.IsInside(P)) { bOnPath = true; break; } }
 				if (bOnPath) { continue; }
-				FRammsPieceDesc T;
 				const bool bShrub = (t % 2) == 1;
-				T.Kind = bShrub ? ERammsProcPieceKind::Shrub : ERammsProcPieceKind::Tree;
-				T.SizeX = bShrub ? RammsPCG::RandRange(Rng, 60.0, 140.0) : RammsPCG::RandRange(Rng, 350.0, 700.0);
-				T.SizeZ = bShrub ? RammsPCG::RandRange(Rng, 50.0, 110.0) : RammsPCG::RandRange(Rng, 600.0, 1100.0);
-				T.MaterialPath = MatFoliage; T.MaterialPath2 = MatTrunk;
-				T.ManifestKind = bShrub ? FName(TEXT("Shrub")) : FName(TEXT("Tree"));
-				T.Transform = FTransform(FRotator(0.0, RammsPCG::RandRange(Rng, 0.0, 360.0), 0.0), FVector(P.X, P.Y, Z0));
-				T.Seed = NextSeed();
-				RammsPCG::WritePiece(Pieces, T);
+				RammsPCG::WriteFoliage(Props, Pieces, Palette, bShrub ? RammsPaletteSlots::Shrub : (Rng.FRand() < 0.3 ? RammsPaletteSlots::TreeSmall : RammsPaletteSlots::Tree), Rng,
+					FVector(P.X, P.Y, Z0), RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(),
+					bShrub ? RammsPCG::RandRange(Rng, 60.0, 140.0) : RammsPCG::RandRange(Rng, 350.0, 700.0),
+					bShrub ? RammsPCG::RandRange(Rng, 50.0, 110.0) : RammsPCG::RandRange(Rng, 600.0, 1100.0),
+					MatFoliage, MatTrunk, bShrub ? FName(TEXT("Shrub")) : FName(TEXT("Tree")));
 			}
 		}
 	}

@@ -250,6 +250,8 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	// --- suburban / park ---------------------------------------------------------
 	/** Fraction of blocks converted to park (no lots; paths, lawn, trees). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Suburban", meta = (ClampMin = 0, ClampMax = 1)) double ParkFraction = 0.0;
+	/** Share of curb-side parking spots that hold a parked car. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (ClampMin = 0, ClampMax = 1)) double ParkingDensity = 0.0;
 	/** Probability that a built block's ground is lawn (yards) rather than paving. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Suburban", meta = (ClampMin = 0, ClampMax = 1)) double LawnLots = 0.0;
 	/** Probability that a lot with open ground gets a yard tree. */

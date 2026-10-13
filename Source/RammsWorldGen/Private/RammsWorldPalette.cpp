@@ -77,6 +77,56 @@ void URammsWorldPalette::SetMaterial(FName Slot, TSoftObjectPtr<UMaterialInterfa
 	Slots.FindOrAdd(Slot).Material = Material;
 }
 
+void URammsWorldPalette::AddMaterial(FName Slot, TSoftObjectPtr<UMaterialInterface> Material)
+{
+	if (!Material.IsNull())
+	{
+		Slots.FindOrAdd(Slot).Materials.Add(Material);
+	}
+}
+
+const TArray<FRammsPaletteMesh>* URammsWorldPalette::GetMeshes(FName Slot) const
+{
+	const FRammsPaletteSlot* S = Slots.Find(Slot);
+	return (S && S->Meshes.Num() > 0) ? &S->Meshes : nullptr;
+}
+
+FString URammsWorldPalette::PickMaterialPath(FName Slot, const FRandomStream& Rng) const
+{
+	const FRammsPaletteSlot* S = Slots.Find(Slot);
+	if (!S)
+	{
+		return FString();
+	}
+	if (S->Materials.Num() > 0)
+	{
+		const int32 i = FMath::Clamp(static_cast<int32>(Rng.FRand() * S->Materials.Num()), 0, S->Materials.Num() - 1);
+		return S->Materials[i].ToSoftObjectPath().ToString();
+	}
+	return S->Material.IsNull() ? FString() : S->Material.ToSoftObjectPath().ToString();
+}
+
+TArray<FString> URammsWorldPalette::FacadeStyles() const
+{
+	TArray<FString> Styles;
+	const FString Suffix = FString(TEXT(".")) + RammsPaletteSlots::FacadePartGF.ToString();
+	for (const TPair<FName, FRammsPaletteSlot>& Pair : Slots)
+	{
+		const FString Key = Pair.Key.ToString();
+		if (Key.StartsWith(RammsPaletteSlots::FacadePrefix) && Key.EndsWith(Suffix) && Pair.Value.Meshes.Num() > 0)
+		{
+			Styles.Add(Key.Mid(RammsPaletteSlots::FacadePrefix.Len(), Key.Len() - RammsPaletteSlots::FacadePrefix.Len() - Suffix.Len()));
+		}
+	}
+	Styles.Sort();
+	return Styles;
+}
+
+FName URammsWorldPalette::FacadeSlot(const FString& Style, FName Part)
+{
+	return FName(*(RammsPaletteSlots::FacadePrefix + Style + TEXT(".") + Part.ToString()));
+}
+
 void URammsWorldPalette::SetActorClass(FName Slot, TSoftClassPtr<AActor> ActorClass)
 {
 	Slots.FindOrAdd(Slot).ActorClass = ActorClass;

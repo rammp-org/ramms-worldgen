@@ -44,7 +44,7 @@ protected:
 /**
  * Massing per lot: a shell with windows, and an entrance that is level,
  * stepped, stepped with a ramp, or deliberately inaccessible.
- * Pins: In = Lots; Primitives, Pieces, Features.
+ * Pins: In = Lots; Primitives, Pieces, Props, Modules (facade kit meshes with per-slot materials), Features.
  */
 UCLASS(BlueprintType, ClassGroup = (Procedural))
 class RAMMSWORLDGEN_API UPCGRammsBuildingMassingSettings : public URammsPCGSettingsBase
@@ -61,6 +61,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double WindowSpacing = 300.0;
 	/** Probability that a lot with open ground beside or behind the building gets a yard tree; 0 for dense downtown lots. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double YardTreeChance = 0.0;
+	/** Dress non-house buildings with the palette's modular facade kits (Facade.<style>.* slots) instead of the cube shell dressing. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) bool bFacadeModules = true;
+	/** Comma-separated facade styles to draw from (palette styles not listed are ignored); empty = every style the palette has. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) FString FacadeStyles = TEXT("dt01,dt02,dt03");
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double DoorClearWidth = 81.3;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double DoorThresholdMax = 1.27;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double VerticalChangeMax = 0.64;

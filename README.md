@@ -271,7 +271,7 @@ runs it at 0.2, the office at 0.1.
 | Group | Parameters |
 |---|---|
 | Site | `SiteSizeX/Y`, `NonCompliance`, `Palette` |
-| Streets | `BlockSizeMin/Max`, `RoadWidth`, `SidewalkWidth`, `FurnitureZoneWidth`, `CurbHeight`, `StreetJitter`, `StreetDropout`, `MidblockCrossingChance`, `CrosswalkWidth`, `ParkFraction` |
+| Streets | `BlockSizeMin/Max`, `RoadWidth`, `SidewalkWidth`, `FurnitureZoneWidth`, `CurbHeight`, `StreetJitter`, `StreetDropout`, `MidblockCrossingChance`, `CrosswalkWidth`, `ParkFraction`, `ParkingDensity` |
 | Buildings | `LotWidthMin/Max`, `SetbackMin/Max`, `FloorsMin/Max`, `FloorHeight`, `LotCoverage`, `EntranceStepChance`, `EntranceRampChance`, `WindowSpacing` |
 | Hazards | `PropDensity`, `HazardDensity` (per 100 m), `TreeSpacing`, `HazardIntrusionChance` |
 | Accessibility | `MinClearWidth`, `PreferredClearWidth`, `RampMaxSlope`, `MaxCrossSlope`, `CurbRampFlareSlope`, `DoorClearWidth`, `DoorThresholdMax`, `VerticalChangeMax`, `LandingSize`, `DetectableWarningDepth` |
@@ -285,7 +285,23 @@ runs it at 0.2, the office at 0.1.
   heights are read from mesh bounds and used for clearances; `LocationOffset`
   puts the mesh's lowest point on the ground. A pack with trees or doors goes
   in the `Tree` / `Shrub` / `DoorActor` slots; the procedural stand-ins stop
-  being used as soon as a slot is filled.
+  being used as soon as a slot is filled. Furniture and street props are
+  normalised to real-world heights per slot (`SLOT_HEIGHTS`); whole houses go
+  in the `House` slot and replace the shell on set-back low-rise lots.
+- **Facade kits**: `Facade.<style>.GF` / `GFDoor` / `GFCorner` / `Win` /
+  `WinTop` / `WinCorner` mesh slots plus the generic `Facade.Top`,
+  `Facade.TallTop` (+ `Corner`) and `Facade.WinCorner`, filled by
+  `palettes.build_facade_slots` from the AmericanCityPacks module names. Each
+  entry records its material slot categories (`MaterialSlots`); the
+  `Facade.Mat.<Category>` slots hold the material sets (`Bricks`, `Windows`,
+  `Frame`, `Concrete`, `Ornament`, `Shop`, `Metal`, `Roof`...) that Building
+  Massing picks from once per building and writes as `Material0..7`
+  attributes for the module spawner. Modules have their pivot at the start of
+  the run, the facade plane on local Y=0 with the exterior toward +Y, and the
+  L1 corner pieces turn the next face toward local −Y. Node settings
+  `bFacadeModules` (default on) and `FacadeStyles` (`dt01,dt02,dt03`) choose
+  the kits; a lot narrower than 5 m, or a style that cannot tile it, falls
+  back to the cube dressing.
 - **New preset**: add an entry to `presets.PRESETS` (or duplicate an asset),
   point it at a graph.
 - **New parameter**: `FRammsWorldGenParams` member + same-named
@@ -339,9 +355,13 @@ chair, cart or plant is deliberately pulled into an aisle.
 - Trees and shrubs are procedural (a tapered trunk, stub branches and a
   canopy of overlapping spheres in solid foliage / bark materials made by the
   palette builder); a `Tree` / `Shrub` palette slot swaps in real meshes.
-  Buildings get storefronts, floor trim, cornices, parapets, rooftop units
-  (`RoofUnit` slot) and framed windows; set-back one/two-storey buildings get
-  a gable roof piece. Roads carry a dashed centre line, edge lines and stop
+  Buildings get the palette's modular facade kits (ground floor with a door
+  module, window floors, cornice, corner pieces, one material pick per
+  category per building) or, without a kit, storefronts, floor trim,
+  cornices, parapets and framed windows; rooftop units come from the
+  `RoofUnit` slot; set-back one/two-storey buildings get a house mesh from
+  the `House` slot or a gable roof piece. Street parking (`ParkingDensity`)
+  puts cars along the curbs. Roads carry a dashed centre line, edge lines and stop
   lines in solid marking materials.
 - Generated geometry is Unreal collision. The Chaos backend drives on it
   directly; the MuJoCo / Newton backends only know what URLab has imported, so

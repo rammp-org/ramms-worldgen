@@ -49,6 +49,161 @@ namespace
 		}
 		FVector Size(int32 i) const { return Max(i) - Min(i); }
 	};
+
+	// --- facade module kits ------------------------------------------------------------------
+	// Module meshes have their pivot at the start of the run (local x = 0..L), the facade plane on
+	// local y = 0 with the exterior toward +y, and the base on z = 0. Corner pieces (L1) cover the
+	// last 100 cm of a face and the first 100 cm of the next one, which turns toward local -y.
+	constexpr double CornerLen = 100.0;
+
+	struct FFacadeKit
+	{
+		FString Style, UpperStyle;
+		const TArray<FRammsPaletteMesh>* GF = nullptr;
+		const TArray<FRammsPaletteMesh>* GFDoor = nullptr;
+		const TArray<FRammsPaletteMesh>* GFCorner = nullptr;
+		const TArray<FRammsPaletteMesh>* Win = nullptr;
+		const TArray<FRammsPaletteMesh>* WinTop = nullptr;
+		const TArray<FRammsPaletteMesh>* WinCorner = nullptr;
+		const TArray<FRammsPaletteMesh>* Top = nullptr;
+		const TArray<FRammsPaletteMesh>* TopCorner = nullptr;
+		double GFHeight = 0.0, WinHeight = 300.0, TopHeight = 50.0;
+	};
+
+	TArray<double> ModuleLengths(const TArray<FRammsPaletteMesh>* Meshes)
+	{
+		TArray<double> Lens;
+		if (Meshes)
+		{
+			for (const FRammsPaletteMesh& M : *Meshes)
+			{
+				const double L = FMath::RoundToDouble(M.Footprint.X / 100.0) * 100.0;
+				if (L >= 100.0 && !Lens.Contains(L)) { Lens.Add(L); }
+			}
+		}
+		Lens.Sort();
+		return Lens;
+	}
+
+	bool PickModule(const TArray<FRammsPaletteMesh>* Meshes, double L, const FRandomStream& Rng, FRammsPaletteMesh& Out)
+	{
+		if (!Meshes) { return false; }
+		TArray<const FRammsPaletteMesh*> C;
+		for (const FRammsPaletteMesh& M : *Meshes)
+		{
+			if (FMath::Abs(M.Footprint.X - L) < 6.0 && !M.Mesh.IsNull()) { C.Add(&M); }
+		}
+		if (C.Num() == 0) { return false; }
+		Out = *C[FMath::Clamp(static_cast<int32>(Rng.FRand() * C.Num()), 0, C.Num() - 1)];
+		return true;
+	}
+
+	// Split Fill (a multiple of 100) into module lengths; false when the kit cannot tile it.
+	bool TileRun(double Fill, const TArray<double>& Lens, const FRandomStream& Rng, TArray<double>& Out)
+	{
+		Out.Reset();
+		if (Lens.Num() == 0) { return false; }
+		const double MinLen = Lens[0];
+		double Rem = Fill;
+		int32 Guard = 0;
+		while (Rem > 1.0 && ++Guard < 200)
+		{
+			TArray<double> C;
+			for (double L : Lens)
+			{
+				const double R = Rem - L;
+				if (R > -1.0 && (FMath::Abs(R) < 1.0 || R >= MinLen - 1.0)) { C.Add(L); }
+			}
+			if (C.Num() == 0) { return false; }
+			const double L = C[FMath::Clamp(static_cast<int32>(Rng.FRand() * C.Num()), 0, C.Num() - 1)];
+			Out.Add(L);
+			Rem -= L;
+		}
+		return Rem <= 1.0;
+	}
+
+	double MeshesHeight(const TArray<FRammsPaletteMesh>* Meshes, double Default)
+	{
+		if (!Meshes || Meshes->Num() == 0) { return Default; }
+		return FMath::RoundToDouble((*Meshes)[0].Height / 50.0) * 50.0;
+	}
+
+	bool BuildKit(const URammsWorldPalette* Palette, const FString& StyleList, const FRandomStream& Rng, FFacadeKit& Kit)
+	{
+		if (!Palette) { return false; }
+		TArray<FString> Allowed;
+		StyleList.ParseIntoArray(Allowed, TEXT(","), true);
+		for (FString& A : Allowed) { A.TrimStartAndEndInline(); }
+		TArray<FString> Styles;
+		for (const FString& St : Palette->FacadeStyles())
+		{
+			if (Allowed.Num() == 0 || Allowed.Contains(St))
+			{
+				// A usable style tiles any 100-multiple >= 300 on the ground floor and the upper floors.
+				const TArray<double> GfL = ModuleLengths(Palette->GetMeshes(URammsWorldPalette::FacadeSlot(St, RammsPaletteSlots::FacadePartGF)));
+				const TArray<double> WinL = ModuleLengths(Palette->GetMeshes(URammsWorldPalette::FacadeSlot(St, RammsPaletteSlots::FacadePartWin)));
+				if (GfL.Num() >= 2 && WinL.Num() >= 2 && Palette->GetMeshes(URammsWorldPalette::FacadeSlot(St, RammsPaletteSlots::FacadePartGFCorner)))
+				{
+					Styles.Add(St);
+				}
+			}
+		}
+		if (Styles.Num() == 0) { return false; }
+		Kit.Style = Styles[FMath::Clamp(static_cast<int32>(Rng.FRand() * Styles.Num()), 0, Styles.Num() - 1)];
+		Kit.UpperStyle = (Rng.FRand() < 0.65) ? Kit.Style : Styles[FMath::Clamp(static_cast<int32>(Rng.FRand() * Styles.Num()), 0, Styles.Num() - 1)];
+		Kit.GF = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGF));
+		Kit.GFDoor = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGFDoor));
+		Kit.GFCorner = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGFCorner));
+		Kit.Win = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.UpperStyle, RammsPaletteSlots::FacadePartWin));
+		Kit.WinTop = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.UpperStyle, RammsPaletteSlots::FacadePartWinTop));
+		Kit.WinCorner = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.UpperStyle, RammsPaletteSlots::FacadePartWinCorner));
+		if (!Kit.WinCorner) { Kit.WinCorner = Palette->GetMeshes(RammsPaletteSlots::FacadeWinCornerGeneric); }
+		const bool bTall = Rng.FRand() < 0.5;
+		Kit.Top = Palette->GetMeshes(bTall ? RammsPaletteSlots::FacadeTallTop : RammsPaletteSlots::FacadeTop);
+		Kit.TopCorner = Palette->GetMeshes(bTall ? RammsPaletteSlots::FacadeTallTopCorner : RammsPaletteSlots::FacadeTopCorner);
+		if (!Kit.Top) { Kit.Top = Palette->GetMeshes(RammsPaletteSlots::FacadeTop); Kit.TopCorner = Palette->GetMeshes(RammsPaletteSlots::FacadeTopCorner); }
+		Kit.GFHeight = MeshesHeight(Kit.GF, 900.0);
+		Kit.WinHeight = MeshesHeight(Kit.Win, 300.0);
+		Kit.TopHeight = Kit.Top ? MeshesHeight(Kit.Top, 50.0) : 0.0;
+		return Kit.GF && Kit.GFCorner && Kit.Win;
+	}
+
+	// One material pick per category for a whole building, from the palette's Facade.Mat.* sets.
+	TMap<FName, FString> PickFacadeMaterials(const URammsWorldPalette* Palette, const FRandomStream& Rng)
+	{
+		TMap<FName, FString> Mats;
+		for (const TPair<FName, FRammsPaletteSlot>& Pair : Palette->Slots)
+		{
+			const FString Key = Pair.Key.ToString();
+			if (Key.StartsWith(RammsPaletteSlots::FacadeMatPrefix))
+			{
+				const FString Path = Palette->PickMaterialPath(Pair.Key, Rng);
+				if (!Path.IsEmpty()) { Mats.Add(FName(*Key.Mid(RammsPaletteSlots::FacadeMatPrefix.Len())), Path); }
+			}
+		}
+		// The ground floor's brick is usually the same as upstairs, sometimes a second kind.
+		const FString* Bricks = Mats.Find(FName(TEXT("Bricks")));
+		if (Bricks)
+		{
+			Mats.Add(FName(TEXT("Bricks2")), Rng.FRand() < 0.7 ? *Bricks : Palette->PickMaterialPath(FName(*(RammsPaletteSlots::FacadeMatPrefix + TEXT("Bricks"))), Rng));
+			Mats.Add(FName(TEXT("Default")), *Bricks);
+		}
+		return Mats;
+	}
+
+	int32 WriteModule(FRammsPointWriter& W, const FRammsPaletteMesh& M, const FTransform& Xf, const TMap<FName, FString>& Mats, int32 Seed)
+	{
+		const int32 i = W.Add(Xf, FVector(0.0, -M.Footprint.Y, 0.0), FVector(M.Footprint.X, M.Footprint.Y, M.Height), Seed);
+		W.SetPath(i, RammsPCG::Mesh, M.Mesh.ToSoftObjectPath());
+		const FString* Fallback = Mats.Find(FName(TEXT("Default")));
+		for (int32 s = 0; s < RammsPCG::NumModuleMaterials; ++s)
+		{
+			const FString* Path = M.MaterialSlots.IsValidIndex(s) ? Mats.Find(M.MaterialSlots[s]) : nullptr;
+			if (!Path) { Path = Fallback; }
+			W.SetPath(i, RammsPCG::ModuleMaterial(s), Path ? FSoftObjectPath(*Path) : FSoftObjectPath());
+		}
+		return i;
+	}
 }
 
 // --- Subdivide Lots ----------------------------------------------------------------
@@ -150,6 +305,7 @@ TArray<FPCGPinProperties> UPCGRammsBuildingMassingSettings::OutputPinProperties(
 	Pins.Emplace(RammsPCG::PinPrimitives, EPCGDataType::Point);
 	Pins.Emplace(RammsPCG::PinPieces, EPCGDataType::Point);
 	Pins.Emplace(RammsPCG::PinProps, EPCGDataType::Point);
+	Pins.Emplace(RammsPCG::PinModules, EPCGDataType::Point);
 	Pins.Emplace(RammsPCG::PinFeatures, EPCGDataType::Point);
 	return Pins;
 }
@@ -175,7 +331,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 	const FString MatRoof = RammsPCG::Mat(Palette, RammsPaletteSlots::MatRoof);
 	const FString MatStorefront = RammsPCG::Mat(Palette, RammsPaletteSlots::MatStorefront);
 
-	FRammsPointWriter Primitives, Pieces, Props, Features;
+	FRammsPointWriter Primitives, Pieces, Props, Modules, Features;
 	int32 Counter = 0;
 	auto NextSeed = [&]() { return RammsPCG::SubSeed(Seed, 2000 + (++Counter)); };
 
@@ -194,76 +350,42 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			const double Yaw = Xf.Rotator().Yaw;
 			auto ToWorld = [&](double lx, double ly, double lz) { return Xf.TransformPosition(FVector(lx, ly, lz - Z0)); };
 
-			const double BW = FMath::Clamp(Width * FMath::Clamp(S->LotCoverage, 0.2, 1.0), 300.0, Width);
+			double BW = FMath::Clamp(Width * FMath::Clamp(S->LotCoverage, 0.2, 1.0), 300.0, Width);
 			const double FrontX = Depth * 0.5 - Setback;
 			// Buildings sit at the front of the lot and are never much deeper than they are wide, so the
 			// windowed facade is the long face on the street; the back of a deep lot stays open.
-			const double BackX = FMath::Max(-Depth * 0.5 + Depth * 0.08, FrontX - FMath::Max(BW * 1.3, 600.0));
-			const double BD = FMath::Max(FrontX - BackX, 300.0);
+			double BackX = FMath::Max(-Depth * 0.5 + Depth * 0.08, FrontX - FMath::Max(BW * 1.3, 600.0));
+			double BD = FMath::Max(FrontX - BackX, 300.0);
 			const int32 Floors = FMath::Max(1, Rng.RandRange(FMath::Min(S->FloorsMin, S->FloorsMax), FMath::Max(S->FloorsMin, S->FloorsMax)));
-			const double H = Floors * FMath::Max(S->FloorHeight, 250.0);
+			const double FH = FMath::Max(S->FloorHeight, 250.0);
+			double H = Floors * FH;
 
 			// Shell, roof and the dressing that keeps it from reading as a box: a storefront band on the
 			// ground floor of taller buildings, a trim band at every floor line, a cornice and a parapet.
-			const double FH = FMath::Max(S->FloorHeight, 250.0);
-			const FVector ShellCentre = ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H * 0.5);
-			RammsPCG::WriteCube(Primitives, ShellCentre, FVector(BD, BW, H), Yaw, Rng.FRand() < 0.5 ? MatFacade : MatFacadeAlt, NextSeed());
 			const bool bHouse = S->FloorsMax <= 2 && Setback > 100.0; // set-back low-rise = a house: pitched roof, no parapet
-			if (bHouse)
+			// A whole house mesh from the palette when one fits the lot: it replaces the shell, roof,
+			// windows and dressing; the entrance pieces (steps, ramp, door record) stay ours.
+			FRammsPaletteMesh HouseMesh;
+			bool bHouseMesh = false;
+			if (bHouse && Palette)
 			{
-				FRammsPieceDesc Rf;
-				Rf.Kind = ERammsProcPieceKind::Roof;
-				const bool bRidgeAlongWidth = BW >= BD;
-				Rf.SizeX = (bRidgeAlongWidth ? BD : BW) + 50.0;   // span across the ridge, with eaves
-				Rf.SizeY = (bRidgeAlongWidth ? BW : BD) + 30.0;   // ridge length
-				Rf.SizeZ = Rf.SizeX * RammsPCG::RandRange(Rng, 0.22, 0.32);
-				Rf.MaterialPath = MatRoof; Rf.MaterialPath2 = MatTrim;
-				Rf.Transform = FTransform(FRotator(0.0, Yaw + (bRidgeAlongWidth ? 0.0 : 90.0), 0.0), ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H));
-				Rf.Seed = NextSeed();
-				RammsPCG::WritePiece(Pieces, Rf);
-			}
-			else
-			{
-				RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H + 2.0), FVector(BD - 6.0, BW - 6.0, 4.0), Yaw, MatRoof, NextSeed());
-			}
-			const bool bStorefront = Floors >= 3 && Setback < 150.0 && Rng.FRand() < 0.6;
-			const bool bTrim = !bHouse && Rng.FRand() < 0.75;
-			if (bTrim)
-			{
-				for (int32 Floor = 1; Floor < Floors; ++Floor)
+				for (int32 Try = 0; Try < 4 && !bHouseMesh; ++Try)
 				{
-					RammsPCG::WriteCube(Primitives, ToWorld(FrontX + 4.0, 0.0, Z0 + Floor * FH), FVector(8.0, BW + 8.0, 10.0), Yaw, MatTrim, NextSeed());
+					FRammsPaletteMesh Hm;
+					if (!Palette->PickMesh(RammsPaletteSlots::House, Rng, Hm)) { break; }
+					if (Hm.Footprint.Y <= Width - 150.0 && Hm.Footprint.X <= Depth * 0.7) { HouseMesh = Hm; bHouseMesh = true; }
 				}
-				// Cornice.
-				RammsPCG::WriteCube(Primitives, ToWorld(FrontX + 10.0, 0.0, Z0 + H - 12.0), FVector(20.0, BW + 20.0, 24.0), Yaw, MatTrim, NextSeed());
 			}
-			if (!bHouse && Floors >= 2 && Rng.FRand() < 0.7)
+			if (bHouseMesh)
 			{
-				// Parapet around the roof edge.
-				const double PT = 20.0, PH = RammsPCG::RandRange(Rng, 50.0, 90.0);
-				const FString MatP = bTrim ? MatTrim : MatConcrete;
-				RammsPCG::WriteCube(Primitives, ToWorld(FrontX - PT * 0.5, 0.0, Z0 + H + PH * 0.5), FVector(PT, BW, PH), Yaw, MatP, NextSeed());
-				RammsPCG::WriteCube(Primitives, ToWorld(BackX + PT * 0.5, 0.0, Z0 + H + PH * 0.5), FVector(PT, BW, PH), Yaw, MatP, NextSeed());
-				RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, BW * 0.5 - PT * 0.5, Z0 + H + PH * 0.5), FVector(BD, PT, PH), Yaw, MatP, NextSeed());
-				RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, -BW * 0.5 + PT * 0.5, Z0 + H + PH * 0.5), FVector(BD, PT, PH), Yaw, MatP, NextSeed());
-			}
-			// Rooftop units on anything with a flat roof worth the name.
-			if (!bHouse && BD > 500.0 && BW > 500.0)
-			{
-				const int32 NumUnits = Rng.RandRange(Floors >= 3 ? 1 : 0, FMath::Min(3, static_cast<int32>(BD * BW / 1.2e6)));
-				for (int32 u = 0; u < NumUnits; ++u)
-				{
-					const FVector P = ToWorld(RammsPCG::RandRange(Rng, BackX + 150.0, FrontX - 150.0), RammsPCG::RandRange(Rng, -BW * 0.5 + 150.0, BW * 0.5 - 150.0), Z0 + H + 4.0);
-					const int32 q = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::RoofUnit, Rng, P, Yaw + Rng.RandRange(0, 3) * 90.0, NextSeed());
-					if (q < 0)
-					{
-						RammsPCG::WriteCube(Primitives, P + FVector(0, 0, 60.0), FVector(RammsPCG::RandRange(Rng, 120.0, 220.0), RammsPCG::RandRange(Rng, 100.0, 180.0), 120.0), Yaw, MatMetal, NextSeed());
-					}
-				}
+				// Front of the house on the setback line, facing the street (+X of the lot frame).
+				const double HD = HouseMesh.Footprint.X, HW = HouseMesh.Footprint.Y;
+				const int32 h = RammsPCG::WritePickedMesh(Props, HouseMesh, ToWorld(FrontX - HD * 0.5, 0.0, Z0), Yaw, NextSeed());
+				RammsPCG::WriteManifest(Props, h, FName(TEXT("Building")), FName(TEXT("House")), true, ERammsComplianceIssue::None, HW, 0.0);
 			}
 
-			// Entrance.
-			const double EntranceY = RammsPCG::RandRange(Rng, -BW * 0.5 + 200.0, BW * 0.5 - 200.0);
+			// Entrance: decided before the facade so a raised ground floor can sit on its stoop.
+			double EntranceY = RammsPCG::RandRange(Rng, -BW * 0.5 + 200.0, BW * 0.5 - 200.0);
 			double DoorW = S->DoorClearWidth + 10.0;
 			bool bDoorNarrow = false;
 			if (Rng.FRand() < S->NonCompliance * 0.5)
@@ -289,7 +411,182 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				Threshold = RammsPCG::RandRange(Rng, 2.0, 5.0);
 			}
 
-			// Door leaf flat on the facade; its frame runs along the facade (lot Y).
+			// Modular facade from the palette's kit: ground floor with a door module, window floors, a
+			// cornice, corner pieces, and one material pick per category for the whole building. The plan
+			// snaps to the kit's 100 cm grid; the cube shell stays inside as the building's body.
+			bool bModules = false, bDoorModule = false;
+			FFacadeKit Kit;
+			if (S->bFacadeModules && !bHouse && !bHouseMesh && Palette && BuildKit(Palette, S->FacadeStyles, Rng, Kit))
+			{
+				const double BWm = FMath::FloorToDouble(BW / 100.0) * 100.0;
+				const double BDm = FMath::FloorToDouble(BD / 100.0) * 100.0;
+				struct FFace { FVector2D Start, Dir, Normal; double Len, LocalYaw; TArray<double> Gf, Win, Top; int32 DoorIdx = -1; };
+				TArray<FFace> Faces;
+				const TArray<double> GfL = ModuleLengths(Kit.GF), WinL = ModuleLengths(Kit.Win), DoorL = ModuleLengths(Kit.GFDoor), TopL = ModuleLengths(Kit.Top);
+				bool bOk = BWm >= 500.0 && BDm >= 500.0;
+				if (bOk)
+				{
+					const double Bx = FrontX - BDm;
+					Faces.Add(FFace{ FVector2D(FrontX,  BWm * 0.5), FVector2D(0.0, -1.0), FVector2D(1.0, 0.0), BWm, -90.0 });
+					Faces.Add(FFace{ FVector2D(FrontX, -BWm * 0.5), FVector2D(-1.0, 0.0), FVector2D(0.0, -1.0), BDm, 180.0 });
+					Faces.Add(FFace{ FVector2D(Bx, -BWm * 0.5), FVector2D(0.0, 1.0), FVector2D(-1.0, 0.0), BWm, 90.0 });
+					Faces.Add(FFace{ FVector2D(Bx,  BWm * 0.5), FVector2D(1.0, 0.0), FVector2D(0.0, 1.0), BDm, 0.0 });
+					for (int32 f = 0; f < Faces.Num() && bOk; ++f)
+					{
+						FFace& Fc = Faces[f];
+						const double Fill = Fc.Len - 2.0 * CornerLen;
+						for (int32 Try = 0; Try < 8; ++Try)
+						{
+							bOk = TileRun(Fill, GfL, Rng, Fc.Gf);
+							if (!bOk || f != 0) { break; }
+							TArray<int32> Cands;
+							for (int32 g = 0; g < Fc.Gf.Num(); ++g) { if (DoorL.Contains(Fc.Gf[g])) { Cands.Add(g); } }
+							if (Cands.Num() > 0) { Fc.DoorIdx = Cands[Rng.RandRange(0, Cands.Num() - 1)]; break; }
+						}
+						bOk = bOk && TileRun(Fill, WinL, Rng, Fc.Win);
+						if (bOk && Kit.Top && !TileRun(Fill, TopL, Rng, Fc.Top)) { Fc.Top.Reset(); }
+					}
+				}
+				if (bOk)
+				{
+					bModules = true;
+					BW = BWm; BD = BDm; BackX = FrontX - BD;
+					const double Rise = EntranceRise;
+					const double Zb = Z0 + Rise;
+					H = Rise + Kit.GFHeight + (Floors - 1) * Kit.WinHeight + Kit.TopHeight;
+					const TMap<FName, FString> Mats = PickFacadeMaterials(Palette, Rng);
+					auto PickAny = [&](const TArray<FRammsPaletteMesh>* Meshes, FRammsPaletteMesh& Out) -> bool
+					{
+						if (!Meshes || Meshes->Num() == 0) { return false; }
+						Out = (*Meshes)[Rng.RandRange(0, Meshes->Num() - 1)];
+						return !Out.Mesh.IsNull();
+					};
+					for (const FFace& Fc : Faces)
+					{
+						auto Place = [&](double Along, double Z)
+						{
+							const FVector2D P = Fc.Start + Fc.Dir * Along;
+							return FTransform(FRotator(0.0, Yaw + Fc.LocalYaw, 0.0), ToWorld(P.X, P.Y, Z));
+						};
+						FRammsPaletteMesh M;
+						// Ground floor.
+						double a = CornerLen;
+						for (int32 g = 0; g < Fc.Gf.Num(); ++g)
+						{
+							const bool bDoor = (g == Fc.DoorIdx) && PickModule(Kit.GFDoor, Fc.Gf[g], Rng, M);
+							if (bDoor)
+							{
+								bDoorModule = true;
+								EntranceY = (Fc.Start + Fc.Dir * (a + Fc.Gf[g] * 0.5)).Y;
+							}
+							if (bDoor || PickModule(Kit.GF, Fc.Gf[g], Rng, M)) { WriteModule(Modules, M, Place(a, Zb), Mats, NextSeed()); }
+							a += Fc.Gf[g];
+						}
+						if (PickAny(Kit.GFCorner, M)) { WriteModule(Modules, M, Place(Fc.Len - CornerLen, Zb), Mats, NextSeed()); }
+						// Window floors; the last one takes the kit's decorated top-floor variant when it has one.
+						for (int32 Floor = 1; Floor < Floors; ++Floor)
+						{
+							const double Zf = Zb + Kit.GFHeight + (Floor - 1) * Kit.WinHeight;
+							const bool bLast = Floor == Floors - 1;
+							a = CornerLen;
+							for (double L : Fc.Win)
+							{
+								if ((bLast && PickModule(Kit.WinTop, L, Rng, M)) || PickModule(Kit.Win, L, Rng, M)) { WriteModule(Modules, M, Place(a, Zf), Mats, NextSeed()); }
+								a += L;
+							}
+							if (PickAny(Kit.WinCorner, M)) { WriteModule(Modules, M, Place(Fc.Len - CornerLen, Zf), Mats, NextSeed()); }
+						}
+						// Cornice / parapet.
+						if (Fc.Top.Num() > 0)
+						{
+							const double Zt = Zb + Kit.GFHeight + (Floors - 1) * Kit.WinHeight;
+							a = CornerLen;
+							for (double L : Fc.Top)
+							{
+								if (PickModule(Kit.Top, L, Rng, M)) { WriteModule(Modules, M, Place(a, Zt), Mats, NextSeed()); }
+								a += L;
+							}
+							if (PickAny(Kit.TopCorner, M)) { WriteModule(Modules, M, Place(Fc.Len - CornerLen, Zt), Mats, NextSeed()); }
+						}
+					}
+					// Stoop: a raised ground floor stands on a concrete plinth under the whole facade.
+					if (Rise > 0.0)
+					{
+						RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + Rise * 0.5), FVector(BD + 70.0, BW + 70.0, Rise), Yaw, MatConcrete, NextSeed());
+					}
+				}
+			}
+
+			const FVector ShellCentre = ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H * 0.5);
+			if (!bHouseMesh)
+			{
+				const double Inset = bModules ? 60.0 : 0.0;
+				RammsPCG::WriteCube(Primitives, ShellCentre, FVector(BD - Inset, BW - Inset, H), Yaw, Rng.FRand() < 0.5 ? MatFacade : MatFacadeAlt, NextSeed());
+			}
+			if (bHouse && !bHouseMesh)
+			{
+				FRammsPieceDesc Rf;
+				Rf.Kind = ERammsProcPieceKind::Roof;
+				const bool bRidgeAlongWidth = BW >= BD;
+				Rf.SizeX = (bRidgeAlongWidth ? BD : BW) + 50.0;   // span across the ridge, with eaves
+				Rf.SizeY = (bRidgeAlongWidth ? BW : BD) + 30.0;   // ridge length
+				Rf.SizeZ = Rf.SizeX * RammsPCG::RandRange(Rng, 0.22, 0.32);
+				Rf.MaterialPath = MatRoof; Rf.MaterialPath2 = MatTrim;
+				Rf.Transform = FTransform(FRotator(0.0, Yaw + (bRidgeAlongWidth ? 0.0 : 90.0), 0.0), ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H));
+				Rf.Seed = NextSeed();
+				RammsPCG::WritePiece(Pieces, Rf);
+			}
+			else if (!bHouseMesh)
+			{
+				RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H + 2.0), FVector(BD - 6.0, BW - 6.0, 4.0), Yaw, MatRoof, NextSeed());
+			}
+			const bool bStorefront = !bModules && Floors >= 3 && Setback < 150.0 && Rng.FRand() < 0.6;
+			const bool bTrim = !bHouse && !bModules && Rng.FRand() < 0.75;
+			if (bTrim)
+			{
+				for (int32 Floor = 1; Floor < Floors; ++Floor)
+				{
+					RammsPCG::WriteCube(Primitives, ToWorld(FrontX + 4.0, 0.0, Z0 + Floor * FH), FVector(8.0, BW + 8.0, 10.0), Yaw, MatTrim, NextSeed());
+				}
+				// Cornice.
+				RammsPCG::WriteCube(Primitives, ToWorld(FrontX + 10.0, 0.0, Z0 + H - 12.0), FVector(20.0, BW + 20.0, 24.0), Yaw, MatTrim, NextSeed());
+			}
+			if (!bHouse && !bModules && Floors >= 2 && Rng.FRand() < 0.7)
+			{
+				// Parapet around the roof edge.
+				const double PT = 20.0, PH = RammsPCG::RandRange(Rng, 50.0, 90.0);
+				const FString MatP = bTrim ? MatTrim : MatConcrete;
+				RammsPCG::WriteCube(Primitives, ToWorld(FrontX - PT * 0.5, 0.0, Z0 + H + PH * 0.5), FVector(PT, BW, PH), Yaw, MatP, NextSeed());
+				RammsPCG::WriteCube(Primitives, ToWorld(BackX + PT * 0.5, 0.0, Z0 + H + PH * 0.5), FVector(PT, BW, PH), Yaw, MatP, NextSeed());
+				RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, BW * 0.5 - PT * 0.5, Z0 + H + PH * 0.5), FVector(BD, PT, PH), Yaw, MatP, NextSeed());
+				RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, -BW * 0.5 + PT * 0.5, Z0 + H + PH * 0.5), FVector(BD, PT, PH), Yaw, MatP, NextSeed());
+			}
+			// Rooftop units on anything with a flat roof worth the name.
+			if (!bHouse && BD > 500.0 && BW > 500.0)
+			{
+				const int32 NumUnits = Rng.RandRange(Floors >= 3 ? 1 : 0, FMath::Min(3, static_cast<int32>(BD * BW / 1.2e6)));
+				for (int32 u = 0; u < NumUnits; ++u)
+				{
+					const FVector P = ToWorld(RammsPCG::RandRange(Rng, BackX + 150.0, FrontX - 150.0), RammsPCG::RandRange(Rng, -BW * 0.5 + 150.0, BW * 0.5 - 150.0), Z0 + H + 4.0);
+					const int32 q = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::RoofUnit, Rng, P, Yaw + Rng.RandRange(0, 3) * 90.0, NextSeed());
+					if (q < 0)
+					{
+						RammsPCG::WriteCube(Primitives, P + FVector(0, 0, 60.0), FVector(RammsPCG::RandRange(Rng, 120.0, 220.0), RammsPCG::RandRange(Rng, 100.0, 180.0), 120.0), Yaw, MatMetal, NextSeed());
+					}
+				}
+			}
+
+			// Door leaf flat on the facade; its frame runs along the facade (lot Y). A facade kit's door
+			// module brings its own leaf, so then only the record is written.
+			if (bDoorModule)
+			{
+				const int32 d = Features.AddBox(ToWorld(FrontX, EntranceY, Z0 + EntranceRise + 105.0), Yaw, FVector(20.0, DoorW, 210.0), NextSeed());
+				if (bDoorNarrow) { RammsPCG::WriteManifest(Features, d, FName(TEXT("Door")), FName(TEXT("Narrow")), false, ERammsComplianceIssue::DoorTooNarrow, DoorW, S->DoorClearWidth); }
+				else if (Threshold > S->DoorThresholdMax) { RammsPCG::WriteManifest(Features, d, FName(TEXT("Door")), FName(TEXT("RaisedThreshold")), false, ERammsComplianceIssue::ThresholdTooHigh, Threshold, S->DoorThresholdMax); }
+				else { RammsPCG::WriteManifest(Features, d, FName(TEXT("Door")), FName(TEXT("Standard")), true, ERammsComplianceIssue::None, DoorW, S->DoorClearWidth); }
+				Features.SetInt(d, RammsPCG::LotId, LotId);
+			}
+			else
 			{
 				FRammsPieceDesc D;
 				D.Kind = ERammsProcPieceKind::Door;
@@ -382,28 +679,28 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				}
 				if (bPlaced)
 				{
-					FRammsPieceDesc T;
-					T.Kind = ERammsProcPieceKind::Tree;
-					T.SizeX = RammsPCG::RandRange(Rng, 350.0, 650.0);
-					T.SizeZ = RammsPCG::RandRange(Rng, 550.0, 950.0);
-					T.MaterialPath = RammsPCG::Mat(Palette, RammsPaletteSlots::MatFoliage);
-					T.MaterialPath2 = RammsPCG::Mat(Palette, RammsPaletteSlots::MatTrunk);
-					T.ManifestKind = FName(TEXT("Tree"));
-					T.Transform = FTransform(FRotator(0.0, RammsPCG::RandRange(Rng, 0.0, 360.0), 0.0), ToWorld(tx, ty, Z0));
-					T.Seed = NextSeed();
-					RammsPCG::WritePiece(Pieces, T);
+					RammsPCG::WriteFoliage(Props, Pieces, Palette, Rng.FRand() < 0.5 ? RammsPaletteSlots::TreeSmall : RammsPaletteSlots::Tree, Rng,
+						ToWorld(tx, ty, Z0), RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(), RammsPCG::RandRange(Rng, 350.0, 650.0), RammsPCG::RandRange(Rng, 550.0, 950.0),
+						RammsPCG::Mat(Palette, RammsPaletteSlots::MatFoliage), RammsPCG::Mat(Palette, RammsPaletteSlots::MatTrunk), FName(TEXT("Tree")));
+					// A shrub or two by the house.
+					if (Rng.FRand() < 0.7)
+					{
+						RammsPCG::WriteFoliage(Props, Pieces, Palette, RammsPaletteSlots::Shrub, Rng,
+							ToWorld(FrontX + 90.0, RammsPCG::RandRange(Rng, -BW * 0.45, BW * 0.45), Z0), RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(), 80.0, 70.0,
+							RammsPCG::Mat(Palette, RammsPaletteSlots::MatFoliage), RammsPCG::Mat(Palette, RammsPaletteSlots::MatTrunk), FName(TEXT("Shrub")));
+					}
 				}
 			}
 
 			// Entrance canopy and a dark door surround.
-			RammsPCG::WriteCube(Primitives, ToWorld(FrontX + 2.0, EntranceY, Z0 + EntranceRise + 110.0), FVector(4.0, DoorW + 30.0, 225.0), Yaw, MatStorefront, NextSeed());
-			if (Rng.FRand() < 0.5)
+			if (!bHouseMesh && !bModules) { RammsPCG::WriteCube(Primitives, ToWorld(FrontX + 2.0, EntranceY, Z0 + EntranceRise + 110.0), FVector(4.0, DoorW + 30.0, 225.0), Yaw, MatStorefront, NextSeed()); }
+			if (!bHouseMesh && !bModules && Rng.FRand() < 0.5)
 			{
 				RammsPCG::WriteCube(Primitives, ToWorld(FrontX + 45.0, EntranceY, Z0 + EntranceRise + 235.0), FVector(90.0, DoorW + 90.0, 8.0), Yaw, MatStorefront, NextSeed());
 			}
 
 			// Ground floor storefront: glass between dark pilasters, a fascia above, no windows on that floor.
-			if (bStorefront)
+			if (bStorefront && !bHouseMesh)
 			{
 				const double Sill = 35.0, Top = FH - 45.0;
 				const double PilW = 20.0;
@@ -427,7 +724,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			}
 
 			// Windows on the front facade: glass in a dark frame with a sill.
-			if (S->WindowSpacing > 50.0)
+			if (S->WindowSpacing > 50.0 && !bHouseMesh && !bModules)
 			{
 				const double WinW = FMath::Clamp(S->WindowSpacing * 0.45, 70.0, 140.0), WinH = FMath::Clamp(FH * 0.45, 100.0, 170.0);
 				for (int32 Floor = bStorefront ? 1 : 0; Floor < Floors; ++Floor)
@@ -447,6 +744,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 	Primitives.Emit(Context, RammsPCG::PinPrimitives, { TEXT("Building") });
 	Pieces.Emit(Context, RammsPCG::PinPieces, { TEXT("Building") });
 	Props.Emit(Context, RammsPCG::PinProps, { TEXT("Building") });
+	Modules.Emit(Context, RammsPCG::PinModules, { TEXT("Building") });
 	Features.Emit(Context, RammsPCG::PinFeatures);
 	return true;
 }

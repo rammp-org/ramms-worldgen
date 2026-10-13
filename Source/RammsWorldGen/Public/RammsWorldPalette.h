@@ -39,6 +39,11 @@ struct RAMMSWORLDGEN_API FRammsPaletteMesh
 	/** Uniform scale applied on top of any per-point scale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette", meta = (ClampMin = 0.01))
 	float Scale = 1.0f;
+
+	/** Facade modules: the material category ("Bricks", "Windows", "Frame"...) of each of the mesh's
+	 *  material slots, in slot order, so a node can override every slot from the building's material picks. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TArray<FName> MaterialSlots;
 };
 
 /** A semantic slot: what the generator asks for ("Bench", "Mat.Sidewalk",
@@ -54,6 +59,10 @@ struct RAMMSWORLDGEN_API FRammsPaletteSlot
 	/** For Mat.* slots, and as a material override for procedural pieces. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	TSoftObjectPtr<UMaterialInterface> Material;
+
+	/** A set to pick from (Facade.Mat.* category slots): one is chosen per building, so every module agrees. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TArray<TSoftObjectPtr<UMaterialInterface>> Materials;
 
 	/** For slots answered by an actor class rather than a mesh (doors, buttons). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
@@ -109,6 +118,38 @@ namespace RammsPaletteSlots
 	inline const FName HazardUpheaval(TEXT("Hazard.Upheaval"));
 	inline const FName HazardCafe(TEXT("Hazard.Cafe"));
 	inline const FName HazardBinOut(TEXT("Hazard.BinOut"));
+	inline const FName HazardCone(TEXT("Hazard.Cone"));
+	inline const FName HazardCafeChair(TEXT("Hazard.CafeChair"));
+	inline const FName HazardBike(TEXT("Hazard.Bike"));
+	inline const FName HazardDumpster(TEXT("Hazard.Dumpster"));
+	inline const FName HazardBox(TEXT("Hazard.Box"));
+	// more street furniture and dressing
+	inline const FName Hydrant(TEXT("Hydrant"));
+	inline const FName ParkingMeter(TEXT("ParkingMeter"));
+	inline const FName NewspaperBox(TEXT("NewspaperBox"));
+	inline const FName Mailbox(TEXT("Mailbox"));
+	inline const FName StreetSign(TEXT("StreetSign"));
+	inline const FName UtilityPole(TEXT("UtilityPole"));
+	inline const FName Car(TEXT("Car"));
+	inline const FName Flowerbed(TEXT("Flowerbed"));
+	inline const FName Fence(TEXT("Fence"));
+	inline const FName TreeSmall(TEXT("TreeSmall"));
+	inline const FName Hedge(TEXT("Hedge"));
+	inline const FName House(TEXT("House"));
+	// facade module kits: "Facade.<style>.<Part>" mesh slots (parts below) and "Facade.Mat.<Category>" material sets
+	inline const FString FacadePrefix(TEXT("Facade."));
+	inline const FString FacadeMatPrefix(TEXT("Facade.Mat."));
+	inline const FName FacadePartGF(TEXT("GF"));
+	inline const FName FacadePartGFDoor(TEXT("GFDoor"));
+	inline const FName FacadePartGFCorner(TEXT("GFCorner"));
+	inline const FName FacadePartWin(TEXT("Win"));
+	inline const FName FacadePartWinTop(TEXT("WinTop"));
+	inline const FName FacadePartWinCorner(TEXT("WinCorner"));
+	inline const FName FacadeTop(TEXT("Facade.Top"));
+	inline const FName FacadeTopCorner(TEXT("Facade.TopCorner"));
+	inline const FName FacadeTallTop(TEXT("Facade.TallTop"));
+	inline const FName FacadeTallTopCorner(TEXT("Facade.TallTopCorner"));
+	inline const FName FacadeWinCornerGeneric(TEXT("Facade.WinCorner"));
 	// indoor
 	inline const FName FurnitureTable(TEXT("Furniture.Table"));
 	inline const FName FurnitureChair(TEXT("Furniture.Chair"));
@@ -129,6 +170,16 @@ namespace RammsPaletteSlots
 	inline const FName FurnitureBathtub(TEXT("Furniture.Bathtub"));
 	inline const FName FurniturePicture(TEXT("Furniture.Picture"));
 	inline const FName FurnitureClutter(TEXT("Furniture.Clutter"));
+	inline const FName FurnitureBookshelf(TEXT("Furniture.Bookshelf"));
+	inline const FName FurnitureFireplace(TEXT("Furniture.Fireplace"));
+	inline const FName FurnitureFloorLamp(TEXT("Furniture.FloorLamp"));
+	inline const FName FurnitureAppliance(TEXT("Furniture.Appliance"));
+	inline const FName FurnitureKitchenLow(TEXT("Furniture.KitchenLow"));
+	inline const FName FurnitureKitchenSink(TEXT("Furniture.KitchenSink"));
+	inline const FName FurnitureKitchenStove(TEXT("Furniture.KitchenStove"));
+	inline const FName FurnitureKitchenDishwasher(TEXT("Furniture.KitchenDishwasher"));
+	inline const FName FurnitureKitchenUpper(TEXT("Furniture.KitchenUpper"));
+	inline const FName FurnitureKitchenTall(TEXT("Furniture.KitchenTall"));
 	// building dressing
 	inline const FName RoofUnit(TEXT("RoofUnit"));
 	inline const FName MatMarking(TEXT("Mat.Marking"));
@@ -166,6 +217,19 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
 	FString MaterialPath(FName Slot) const;
 
+	/** Every mesh of a slot (null when the slot is missing). */
+	const TArray<FRammsPaletteMesh>* GetMeshes(FName Slot) const;
+
+	/** Random pick from the slot's material set (falls back to its single Material); empty when there is none. */
+	FString PickMaterialPath(FName Slot, const FRandomStream& Rng) const;
+
+	/** Styles that have a "Facade.<style>.GF" slot, e.g. {"dt01","dt02"}. */
+	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
+	TArray<FString> FacadeStyles() const;
+
+	/** Slot name of a facade part: "Facade.<style>.<Part>". */
+	static FName FacadeSlot(const FString& Style, FName Part);
+
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
 	FString ActorClassPath(FName Slot) const;
 
@@ -178,6 +242,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	void SetMaterial(FName Slot, TSoftObjectPtr<UMaterialInterface> Material);
+
+	/** Append to the slot's material set. */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
+	void AddMaterial(FName Slot, TSoftObjectPtr<UMaterialInterface> Material);
 
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	void SetActorClass(FName Slot, TSoftClassPtr<AActor> ActorClass);

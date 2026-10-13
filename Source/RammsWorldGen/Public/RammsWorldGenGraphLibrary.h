@@ -28,6 +28,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen|Graph")
 	static void ConfigureMeshSpawner(UPCGStaticMeshSpawnerSettings* Settings, bool bMaterialFromAttribute);
 
+	/** Static Mesh Spawner for facade modules: mesh from "Mesh", every material slot from "Material0".."Material7". */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen|Graph")
+	static void ConfigureModuleSpawner(UPCGStaticMeshSpawnerSettings* Settings);
+
 	/** The ARammsProcPiece properties the piece spawner maps (the source of truth for RammsPCG::WritePiece). */
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen|Graph")
 	static TArray<FName> PiecePropertyNames();

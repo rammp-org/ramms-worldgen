@@ -645,6 +645,12 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 					}
 				}
 				if (AreaM2 > 16.0 && Rng.FRand() < 0.6 && TryWall(RammsPaletteSlots::FurnitureCupboard, -1, false, 8.0, B)) { Emit(B); }
+				// A fireplace or a bookshelf on one of the remaining walls.
+				{
+					FItem Fp;
+					if (Rng.FRand() < 0.5 ? TryWall(RammsPaletteSlots::FurnitureFireplace, -1, false, 10.0, Fp) : TryWall(RammsPaletteSlots::FurnitureBookshelf, -1, false, 8.0, Fp)) { Emit(Fp); }
+				}
+				if (Rng.FRand() < 0.5) { FItem Fl; if (TryWall(RammsPaletteSlots::FurnitureFloorLamp, -1, false, 6.0, Fl)) { Emit(Fl); } }
 				Corner(RammsPaletteSlots::FurniturePlant);
 				Picture();
 			}
@@ -709,12 +715,55 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				}
 				if (R.Kind == FName(TEXT("Kitchen")))
 				{
-					// A counter: cupboards side by side along one wall.
+					// A counter run along one wall: low cabinets with a sink and a stove in the row, upper
+					// cabinets above them, and a fridge at the end. Falls back to cupboards when the
+					// palette has no kitchen pieces.
 					double Lo, Hi; WallRange(LongWall, Lo, Hi);
-					const int32 N = FMath::Clamp(static_cast<int32>((Hi - Lo) / 110.0), 1, 4);
-					for (int32 i = 0; i < N; ++i)
+					FRammsPaletteMesh Probe;
+					if (Palette && Palette->PickMesh(RammsPaletteSlots::FurnitureKitchenLow, Rng, Probe))
 					{
-						FItem Cu; if (TryWall(RammsPaletteSlots::FurnitureCupboard, LongWall, false, 2.0, Cu, Lo + (Hi - Lo) * (i + 0.5) / N)) { Emit(Cu); }
+						double Along = Lo + 4.0;
+						int32 Placed_ = 0;
+						bool bSink = false, bStove = false;
+						while (Along < Hi - 60.0 && Placed_ < 8)
+						{
+							FName Slot = RammsPaletteSlots::FurnitureKitchenLow;
+							if (!bSink && Placed_ == 1) { Slot = RammsPaletteSlots::FurnitureKitchenSink; }
+							else if (!bStove && Placed_ == 3) { Slot = RammsPaletteSlots::FurnitureKitchenStove; }
+							else if (Placed_ == 5 && Rng.FRand() < 0.5) { Slot = RammsPaletteSlots::FurnitureKitchenDishwasher; }
+							FRammsPaletteMesh M; if (!Pick(Slot, M)) { Slot = RammsPaletteSlots::FurnitureKitchenLow; if (!Pick(Slot, M)) { break; } }
+							double fx, fy; Dims(M, fx, fy);
+							if (Along + fy > Hi - 2.0) { break; }
+							FItem Cu;
+							if (!TryAt(Slot, M, WallPos(LongWall, Along + fy * 0.5, fx), WallYaw(LongWall), 1.0, Cu)) { Along += fy; continue; }
+							Emit(Cu);
+							if (Slot == RammsPaletteSlots::FurnitureKitchenSink) { bSink = true; }
+							if (Slot == RammsPaletteSlots::FurnitureKitchenStove) { bStove = true; }
+							// Upper cabinet above, same width class.
+							FRammsPaletteMesh Up;
+							if (Pick(RammsPaletteSlots::FurnitureKitchenUpper, Up))
+							{
+								double ux, uy; Dims(Up, ux, uy);
+								if (uy <= fy + 5.0)
+								{
+									FItem U; U.Slot = RammsPaletteSlots::FurnitureKitchenUpper; U.M = Up; U.P = WallPos(LongWall, Along + fy * 0.5, ux); U.Yaw = WallYaw(LongWall);
+									U.Box = BoxFor(U.P, U.Yaw, ux, uy); U.Z = Z0 + 145.0;
+									Emit(U, FName(TEXT("Decor")));
+								}
+							}
+							Along += fy;
+							++Placed_;
+						}
+						// Fridge / tall cabinet at the end of the run.
+						FItem Tall; if (TryWall(RammsPaletteSlots::FurnitureKitchenTall, LongWall, false, 2.0, Tall, Along + 40.0)) { Emit(Tall); }
+					}
+					else
+					{
+						const int32 N = FMath::Clamp(static_cast<int32>((Hi - Lo) / 110.0), 1, 4);
+						for (int32 i = 0; i < N; ++i)
+						{
+							FItem Cu; if (TryWall(RammsPaletteSlots::FurnitureCupboard, LongWall, false, 2.0, Cu, Lo + (Hi - Lo) * (i + 0.5) / N)) { Emit(Cu); }
+						}
 					}
 				}
 				else if (TryWall(RammsPaletteSlots::FurnitureCupboard, -1, false, 8.0, B)) { Emit(B); }

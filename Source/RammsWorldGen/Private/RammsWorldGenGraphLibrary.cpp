@@ -38,6 +38,27 @@ void URammsWorldGenGraphLibrary::ConfigurePieceSpawner(UPCGSpawnActorSettings* S
 	Settings->MarkPackageDirty();
 }
 
+void URammsWorldGenGraphLibrary::ConfigureModuleSpawner(UPCGStaticMeshSpawnerSettings* Settings)
+{
+	if (!Settings)
+	{
+		return;
+	}
+	Settings->Modify();
+	Settings->SetMeshSelectorType(UPCGMeshSelectorByAttribute::StaticClass());
+	if (UPCGMeshSelectorByAttribute* Sel = Cast<UPCGMeshSelectorByAttribute>(Settings->MeshSelectorParameters))
+	{
+		Sel->AttributeName = RammsPCG::Mesh;
+		Sel->bUseAttributeMaterialOverrides = true;
+		Sel->MaterialOverrideAttributes.Reset();
+		for (int32 i = 0; i < RammsPCG::NumModuleMaterials; ++i)
+		{
+			Sel->MaterialOverrideAttributes.Add(RammsPCG::ModuleMaterial(i));
+		}
+	}
+	Settings->MarkPackageDirty();
+}
+
 void URammsWorldGenGraphLibrary::ConfigureMeshSpawner(UPCGStaticMeshSpawnerSettings* Settings, bool bMaterialFromAttribute)
 {
 	if (!Settings)

@@ -29,6 +29,9 @@ namespace RammsPCG
 	// spawner inputs
 	inline const FName Mesh(TEXT("Mesh"));
 	inline const FName Material(TEXT("Material"));
+	/** Facade modules override every material slot: attributes Material0..Material{N-1}, index = slot. */
+	constexpr int32 NumModuleMaterials = 8;
+	inline FName ModuleMaterial(int32 Slot) { return FName(*FString::Printf(TEXT("Material%d"), Slot)); }
 	// ARammsProcPiece properties
 	inline const FName KindId(TEXT("KindId"));
 	inline const FName SizeX(TEXT("SizeX"));
@@ -77,6 +80,7 @@ namespace RammsPCG
 	inline const FName PinPrimitives(TEXT("Primitives"));
 	inline const FName PinProps(TEXT("Props"));
 	inline const FName PinPieces(TEXT("Pieces"));
+	inline const FName PinModules(TEXT("Modules"));
 	inline const FName PinRoads(TEXT("Roads"));
 	inline const FName PinSidewalks(TEXT("Sidewalks"));
 	inline const FName PinBlocks(TEXT("Blocks"));
@@ -176,8 +180,16 @@ namespace RammsPCG
 
 	/** Append a palette mesh instance standing on Location (base at Z). Returns -1 when the slot is empty. */
 	RAMMSWORLDGEN_API int32 WritePaletteMesh(FRammsPointWriter& W, const URammsWorldPalette* Palette, FName Slot, const FRandomStream& Rng, const FVector& Location, double YawDeg, int32 Seed, FRammsPaletteMesh* OutPicked = nullptr);
-	/** Write an already-chosen palette mesh (so a node can measure the mesh it will actually spawn). */
-	RAMMSWORLDGEN_API int32 WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed);
+	/** Write an already-chosen palette mesh (so a node can measure the mesh it will actually spawn). ScaleMul varies the instance. */
+	RAMMSWORLDGEN_API int32 WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed, double ScaleMul = 1.0);
+
+	/**
+	 * A tree or shrub: the palette's mesh for Slot when it has one (with a little random size
+	 * variation), else a procedural piece of the given size. Either way a manifest feature of ManifestKind.
+	 */
+	RAMMSWORLDGEN_API void WriteFoliage(FRammsPointWriter& Props, FRammsPointWriter& Pieces, const URammsWorldPalette* Palette, FName Slot,
+		const FRandomStream& Rng, const FVector& Location, double YawDeg, int32 Seed, double ProcSizeX, double ProcSizeZ,
+		const FString& MatFoliage, const FString& MatTrunk, FName InManifestKind);
 
 	/** Manifest attributes on an already-added point (mesh features). */
 	RAMMSWORLDGEN_API void WriteManifest(FRammsPointWriter& W, int32 Index, FName Kind, FName Subtype, bool bCompliant, ERammsComplianceIssue Issue, double Measure, double Threshold);

@@ -27,8 +27,9 @@ def build_streets_graph(path=STREETS):
 
         prims = g.mesh_spawner("Spawn Primitives (cube + material)", material_attribute=True, col=5, row=0)
         props = g.mesh_spawner("Spawn Props (palette meshes)", material_attribute=False, col=5, row=1)
-        pieces = g.piece_spawner("Spawn Procedural Pieces", col=5, row=2)
-        manifest = g.node(unreal.PCGRammsManifestSettings, title="Manifest", col=5, row=3)
+        modules = g.module_spawner("Spawn Facade Modules (per-slot materials)", col=5, row=2)
+        pieces = g.piece_spawner("Spawn Procedural Pieces", col=5, row=3)
+        manifest = g.node(unreal.PCGRammsManifestSettings, title="Manifest", col=5, row=4)
 
         g.edges([
             (g.input, "In", street, "In"),
@@ -51,6 +52,8 @@ def build_streets_graph(path=STREETS):
             (massing, "Props", props, "In"),
             (hazards, "Props", props, "In"),
             (park, "Props", props, "In"),
+            # facade kit modules
+            (massing, "Modules", modules, "In"),
             # procedural pieces
             (street, "Pieces", pieces, "In"),
             (massing, "Pieces", pieces, "In"),

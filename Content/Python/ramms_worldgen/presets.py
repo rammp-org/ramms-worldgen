@@ -19,7 +19,8 @@ PRESETS = {
              StreetJitter=0.2, StreetDropout=0.1, MidblockCrossingChance=0.3, CrosswalkWidth=300.0,
              LotWidthMin=1200.0, LotWidthMax=2400.0, SetbackMin=0.0, SetbackMax=0.0, FloorsMin=3, FloorsMax=9,
              FloorHeight=380.0, LotCoverage=0.95, EntranceStepChance=0.35, EntranceRampChance=0.6, WindowSpacing=300.0,
-             PropDensity=7.0, HazardDensity=4.0, TreeSpacing=900.0, HazardIntrusionChance=0.5, ParkFraction=0.08),
+             PropDensity=7.0, HazardDensity=4.0, TreeSpacing=900.0, HazardIntrusionChance=0.5, ParkFraction=0.08,
+             ParkingDensity=0.6),
     ),
     "PRE_Suburban": (
         unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,
@@ -31,7 +32,7 @@ PRESETS = {
              LotWidthMin=1800.0, LotWidthMax=3000.0, SetbackMin=400.0, SetbackMax=900.0, FloorsMin=1, FloorsMax=2,
              FloorHeight=320.0, LotCoverage=0.6, EntranceStepChance=0.7, EntranceRampChance=0.3, WindowSpacing=250.0,
              PropDensity=1.5, HazardDensity=1.5, TreeSpacing=0.0, HazardIntrusionChance=0.6,
-             ParkFraction=0.3, LawnLots=1.0, YardTreeChance=0.85, DrivewayChance=0.8, FoliageDensity=0.8,
+             ParkFraction=0.3, LawnLots=1.0, YardTreeChance=0.85, DrivewayChance=0.8, FoliageDensity=0.8, ParkingDensity=0.35,
              PathWidth=180.0),
     ),
     "PRE_Park": (
@@ -41,7 +42,7 @@ PRESETS = {
         dict(SiteSizeX=12000.0, SiteSizeY=12000.0, NonCompliance=0.15,
              BlockSizeMin=10000.0, BlockSizeMax=10500.0, RoadWidth=700.0, SidewalkWidth=240.0, FurnitureZoneWidth=80.0,
              StreetJitter=0.0, StreetDropout=0.0, MidblockCrossingChance=0.5, PropDensity=4.0, HazardDensity=1.0,
-             TreeSpacing=1200.0, ParkFraction=1.0, FoliageDensity=1.0, PathWidth=200.0),
+             TreeSpacing=1200.0, ParkFraction=1.0, FoliageDensity=1.0, PathWidth=200.0, ParkingDensity=0.3),
     ),
     "PRE_Indoor_Home": (
         unreal.RammsSceneKind.INDOOR, INDOOR_GRAPH,

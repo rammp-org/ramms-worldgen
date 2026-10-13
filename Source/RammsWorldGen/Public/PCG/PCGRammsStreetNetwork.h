@@ -42,6 +42,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (PCG_Overridable)) double ParkFraction = 0.0;
 	/** Probability that the ground of a built block is lawn (yards) rather than paving. 1 for residential streets. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (PCG_Overridable)) double LawnLots = 0.0;
+	/** Share of curb-side parking spots that hold a car (0 = none). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (PCG_Overridable)) double ParkingDensity = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double CurbRampFlareSlope = 0.1;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double DetectableWarningDepth = 61.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double VerticalChangeMax = 0.64;

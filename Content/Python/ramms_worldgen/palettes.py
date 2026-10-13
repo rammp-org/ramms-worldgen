@@ -14,46 +14,101 @@ from . import _helpers as H
 DEFAULT_PALETTE = H.PALETTES + "/PAL_Default"
 ENGINE_MAT = "/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"
 
-# slot -> list of static mesh asset names (any that exist are used, weight 1)
+# slot -> list of static mesh asset names (any that exist are used, weight 1). Names come from the
+# packs the project carries (MoStreetProps, Megascans, FreeFurniturePack, RestaurantScene,
+# AmericanCityPacks, TownShops, CityBeachStrip, SuburbNeighborhoodHousePack); a missing pack just
+# leaves fewer variants in a slot.
 MESH_SLOTS = {
     "Curb": ["semf4_LOD0_TIER2_000", "semf4_LOD0_TIER2_001", "sepxW_LOD0_TIER2_000", "sepxW_LOD0_TIER2_001"],
     "SidewalkCorner": ["uiksdjydw_tier_2"],
-    "Bench": ["SM_Bench01", "SM_Bench02", "SM_Bench03"],
-    "Bollard": ["SM_Bollard01B", "SM_Bollard01P"],
-    "BusStop": ["SM_BusStop01", "SM_BusStop02"],
-    "StreetLight": ["SM_StreetLight01", "SM_StreetLight02", "SM_StreetLight03"],
+    "Bench": ["SM_Bench01", "SM_Bench02", "SM_Bench03", "SM_bench_outdoor_01_rm"],
+    "Bollard": ["SM_Bollard01B", "SM_Bollard01P", "SM_electric_bollard_metal"],
+    "BusStop": ["SM_BusStop01", "SM_BusStop02", "SM_BusStation"],
+    "StreetLight": ["SM_LampPost", "SM_Lamp_Street_High", "SM_StreetLight01", "SM_StreetLight02", "SM_light_pole_baytrail_01"],
     "Railing": ["SM_StreetRailing01", "SM_StreetRailing02"],
-    "TrashBin": ["SM_Trashbin01", "SM_Trashbin01B", "SM_Trashbin01M", "SM_Trashbin02"],
+    "TrashBin": ["SM_streetBin", "SM_TrashCanClosed", "SM_Bin_01", "SM_Trashbin02", "SM_Trashbin01B", "SM_Trash_Container", "SM_garbage_bin_concrete_RM_01"],
     "InfoBoard": ["SM_InfoTable01", "SM_InfoTable02", "SM_InfoTable03"],
+    "Hydrant": ["SM_hydrant", "SM_Fire_Hydrant"],
+    "ParkingMeter": ["SM_ParkingMeter"],
+    "NewspaperBox": ["SM_NewspaperBox"],
+    "Mailbox": ["SM_Mailbox", "SM_Mailbox_01"],
+    "StreetSign": ["SM_Sign_StopSign", "SM_Sign_NoParking01", "SM_Sign_SpeedLimit25", "SM_Sign_OneWay01", "SM_Sign_Residential", "SM_Stop_Sign", "SM_Street_Sign"],
+    "UtilityPole": ["SM_PowerPole_Solo", "SM_UtilityPole"],
+    "Car": ["SM_Car"],
+    "Flowerbed": ["SM_Flowerbed_Round", "SM_WoodPlanter01", "SM_WoodPlanter03", "SM_Pot04", "SM_Pot05"],
+    "Fence": ["SM_Fence_Frontyard_Tile_Left_2x", "SM_Fence_Frontyard_Tile_Right_2x"],
     "Stairs": ["stairs_street"],
-    "RoofUnit": ["SM_AC_Box", "SM_AC_Exaust"],
+    "RoofUnit": ["SM_AC_Box", "SM_AC_Exaust", "SM_ac_01", "SM_ac_02"],
+    # foliage
+    "Tree": ["SM_Tree1", "SM_Tree2", "SM_Tree3", "SM_BeechTree02", "SM_BeechTree03"],
+    "TreeSmall": ["SM_MyrtleTree01", "SM_MyrtleTree02", "SM_PrivetTree01"],
+    "Shrub": ["SM_Shrub01", "SM_Shrub01_b", "SM_Plant_Bush_A", "SM_Plant_Bush_B", "SM_Plant_Treebush", "SM_Hedge_Sphere", "SM_Plant_FlowersRedBush", "SM_Plant_FlowersWhiteBush"],
+    "Hedge": ["SM_Hedge02_4m_Half", "SM_Plant_HedgeBush"],
+    # buildings
+    "House": ["SM_Background_House_A", "SM_Background_House_B"],
     # hazards: things that end up in the access route
     "Hazard.Upheaval": ["adoquines_levantados_alcorque"],
-    "Hazard.BinOut": ["SM_Trashbin01", "SM_Trashbin02"],
-    "Hazard.Barrier": ["SM_StreetRailing01"],
+    "Hazard.BinOut": ["SM_TrashCan_WithTrash_01", "SM_TrashCan_WithTrash_02", "SM_BinOpenedWithTrash", "SM_Trashbag", "SM_Trashbin01"],
+    "Hazard.Barrier": ["SM_metallicBarrier", "SM_Roadblock_Wood_Roadblock_Woo", "SM_Roadblock_Concrete", "SM_StreetRailing01", "SM_barricade_metal_rm_01", "SM_construction_fence_orange_rm_01"],
+    "Hazard.Cone": ["SM_RoadConstruction_cone_01", "SM_RoadConstruction_cone_02", "SM_RoadConstruction_cone_03"],
     "Hazard.AFrame": ["SM_InfoTable01", "SM_InfoTable02"],
-    "Hazard.Cafe": ["viejdi1_tier_2", "SM_Table"],
+    "Hazard.Cafe": ["SM_RestaurantTable", "SM_OutsideTable", "SM_GardenTable", "viejdi1_tier_2", "SM_Table"],
+    "Hazard.CafeChair": ["SM_OutsideChair", "SM_GardenChair", "SM_PlasticChair", "SM_Chair"],
+    "Hazard.Scooter": ["SM_Scooter"],
+    "Hazard.Bike": ["SM_Bike"],
+    "Hazard.Dumpster": ["SM_Dumpster", "SM_dumpster"],
+    "Hazard.Box": ["SM_Cardboard_Closed_2", "SM_Cardboard_Closed_3", "SM_CardboardBox_01", "SM_CardboardBoxOpened_02"],
     # indoor
-    "Furniture.Table": ["SM_Table", "SM_Classic_Round_Table", "SM_Modern_Table"],
-    "Furniture.Chair": ["SM_Chair", "SM_Classic_chair", "SM_Modern_Chair_1", "SM_Elegant_chair", "SM_Old_Chair"],
-    "Furniture.Sofa": ["SM_Classic_Leather_Sofa", "SM_Classic_Leather_sofa_2", "SM_Modern_Sofa_1", "SM_Modern_Sofa_2"],
-    "Furniture.Armchair": ["SM_Classic_Leather_Armchair", "SM_Modern_Armchair"],
-    "Furniture.CoffeeTable": ["SM_Coffee_Table"],
-    "Furniture.Bed": ["SM_Modern_Bed_1", "SM_Modern_Bed_2", "SM_Bed_Drawer", "SM_Military_Bed"],
-    "Furniture.BedTable": ["SM_Bed_Table"],
-    "Furniture.Cupboard": ["SM_Classic_Cupboard", "SM_Modern_Cupboard", "SM_Commode", "SM_Classic_Commode"],
-    "Furniture.TVStand": ["SM_Commode", "SM_Classic_Commode", "SM_Classic_Commode_2"],
-    "Furniture.TV": ["SM_TV"],
-    "Furniture.Desk": ["SM_Old_Table", "SM_Classic_table", "SM_Modern_Table"],
-    "Furniture.OfficeChair": ["SM_Modern_Office_chair"],
+    "Furniture.Table": ["SM_Kitchen_table_large", "SM_Kitchen_table_rectangle", "SM_Kitchen_table_small", "SM_Table_dining", "SM_KitchenTable_01a", "SM_Table", "SM_Classic_Round_Table", "SM_Modern_Table"],
+    "Furniture.Chair": ["SM_Kitchen_chair_fabric", "SM_Kitchen_chair_wooden", "SM_Chair_dining", "SM_KitchenChair_01a", "SM_Chair", "SM_Classic_chair", "SM_Modern_Chair_1", "SM_Old_Chair"],
+    "Furniture.Sofa": ["SM_Couch_3seat", "SM_Couch_2seat", "SM_Couch", "SM_Sofa_01a", "SM_Sofa_02a", "SM_Classic_Leather_Sofa", "SM_Classic_Leather_sofa_2", "SM_Modern_Sofa_2"],
+    "Furniture.Armchair": ["SM_Couch_1seat", "SM_Chair_arm", "SM_LoungeChair_01a", "SM_Chair_leather", "SM_Classic_Leather_Armchair", "SM_Modern_Armchair"],
+    "Furniture.CoffeeTable": ["SM_Coffee_Table", "SM_Sidetable_small", "SM_Sidetable_C", "SM_CoffeeTable_01a"],
+    "Furniture.Bed": ["SM_Bed_queen", "SM_Bed_small", "SM_Bed_king", "SM_Bed_single_person", "SM_Modern_Bed_1", "SM_Modern_Bed_2"],
+    "Furniture.BedTable": ["SM_Sidetable_small", "SM_Nightstand_A", "SM_Nightstand_B", "SM_Bed_Table"],
+    "Furniture.Cupboard": ["SM_Classic_Cupboard", "SM_Modern_Cupboard", "SM_Dresser_C", "SM_Dresser_large_A", "SM_Shelf_standing_A", "SM_Commode", "SM_Classic_Commode", "SM_Garage_shelf"],
+    "Furniture.Bookshelf": ["SM_Book_set_bookshelf_A", "SM_Book_set_bookshelf_B", "SM_Bookshelf", "SM_BookShelf_01a"],
+    "Furniture.Fireplace": ["SM_Fireplace_Single"],
+    "Furniture.TVStand": ["SM_Sidetable_dark_large", "SM_Tv_stand", "SM_Commode", "SM_Classic_Commode_2"],
+    "Furniture.TV": ["SM_TV_standing", "SM_TV", "SM_TVFlat_01a"],
+    "Furniture.Desk": ["SM_Desk_office", "SM_Workdesk", "SM_Old_Table", "SM_Classic_table", "SM_Modern_Table"],
+    "Furniture.OfficeChair": ["SM_Modern_Office_chair", "SM_Chair_office", "SM_OfficeChair_01a", "SM_OfficeChair02a"],
     "Furniture.Booth": ["SM_Booth"],
-    "Furniture.Plant": ["SM_PlantPot"],
-    "Furniture.Lamp": ["SM_Table_Lamp", "SM_Bed_Lamp_1", "SM_Bed_Lamp_2", "SM_Bed_lamp_3"],
+    "Furniture.Plant": ["SM_Plant_interior_yucca", "SM_Plant_interior_aglaonema", "SM_Plant_A", "SM_Plant_01a", "SM_PlantPot"],
+    "Furniture.Lamp": ["SM_Lamp_table_A", "SM_Lamp_table_B", "SM_TableLamp_01a", "SM_Table_Lamp", "SM_Bed_lamp_3"],
+    "Furniture.FloorLamp": ["SM_Lamp_standing"],
     "Furniture.Toilet": ["SM_Toilet"],
-    "Furniture.Bathtub": ["SM_Bathtub"],
-    "Furniture.Picture": ["SM_Picture", "SM_Classic_Picture"],
-    "Furniture.Clutter": ["SM_UtilityCart", "SM_PlantPot", "SM_Old_Chair"],
+    "Furniture.Bathtub": ["SM_To_bathtub", "SM_Bathtub"],
+    "Furniture.Appliance": ["SM_Washingmachine", "SM_Refrigerator_04a", "SM_Fridge_01a"],
+    "Furniture.KitchenLow": ["SM_Kitcabinet_low_1x_A", "SM_Kitcabinet_low_1x_B", "SM_Kitcabinet_low_1halfx_A"],
+    "Furniture.KitchenSink": ["SM_Kitcabinet_low_1halfx_sink"],
+    "Furniture.KitchenStove": ["SM_Kitcabinet_low_1x_stove"],
+    "Furniture.KitchenDishwasher": ["SM_Kitcabinet_low_1x_dishwasher", "SM_Dishwasher_01a"],
+    "Furniture.KitchenUpper": ["SM_Kitcabinet_upper_1x_A", "SM_Kitcabinet_upper_1x_B"],
+    "Furniture.KitchenTall": ["SM_Kitcabinet_full_fridge", "SM_Kitcabinet_full_cabinet", "SM_Fridge_01a", "SM_Refrigerator_04a", "SM_Refridgerator_05a"],
+    "Furniture.Picture": ["SM_Painting_A", "SM_Painting_B", "SM_Painting_C", "SM_Painting_E", "SM_Painting_F", "SM_Painting_large_A", "SM_Painting_wide_A", "SM_Mirror", "SM_Picture", "SM_Classic_Picture"],
+    "Furniture.Clutter": ["SM_UtilityCart", "SM_Garage_plastic_box", "SM_Cardboard_Closed_3", "SM_To_laundrybasket", "SM_Old_Chair", "SM_WaterCooler_01b", "SM_Printer_02a", "SM_ShippingBoxes_01b", "SM_FilingCabinet01a", "SM_Laundrybasket"],
 }
+
+# Real-world heights (cm) a slot's meshes are normalised to when a pack models them at another
+# scale (the FreeFurniturePack seating is ~15% large; a couple of chairs are armchair-sized).
+# A mesh within 12% of the expected height is left alone; otherwise it is scaled uniformly.
+SLOT_HEIGHTS = {
+    "Furniture.Sofa": 86, "Furniture.Armchair": 90, "Furniture.Chair": 92, "Furniture.OfficeChair": 100,
+    "Furniture.Table": 75, "Furniture.Desk": 75, "Furniture.CoffeeTable": 45, "Furniture.BedTable": 55,
+    "Furniture.Bed": 95, "Furniture.Cupboard": 190, "Furniture.Bookshelf": 190, "Furniture.TVStand": 60,
+    "Furniture.TV": 70, "Furniture.Toilet": 76, "Furniture.Bathtub": 60, "Furniture.Plant": 120,
+    "Furniture.Lamp": 50, "Furniture.FloorLamp": 150, "Furniture.Booth": 110, "Furniture.Fireplace": 240,
+    "Furniture.Appliance": 88, "Furniture.KitchenLow": 92, "Furniture.KitchenSink": 92, "Furniture.KitchenStove": 92,
+    "Furniture.KitchenDishwasher": 92, "Furniture.KitchenUpper": 95, "Furniture.KitchenTall": 200,
+    "Bench": 85, "TrashBin": 100, "Hydrant": 80, "ParkingMeter": 140, "NewspaperBox": 120, "Mailbox": 120,
+    "Hazard.BinOut": 100, "Hazard.Cafe": 75, "Hazard.CafeChair": 90, "Hazard.Scooter": 115, "Hazard.Bike": 105,
+    "Hazard.Cone": 75, "Hazard.Dumpster": 150, "Car": 150,
+}
+# Slots whose meshes keep their native size whatever the height (poles, trees, buildings, hedges).
+NO_NORMALISE = {"Tree", "TreeSmall", "Shrub", "Hedge", "House", "StreetLight", "UtilityPole", "StreetSign", "BusStop",
+                "Stairs", "Curb", "SidewalkCorner", "Railing", "Hazard.Upheaval", "Hazard.Barrier", "RoofUnit",
+                "Flowerbed", "Fence", "Furniture.Picture", "Furniture.Clutter", "Hazard.Box", "Hazard.AFrame", "InfoBoard", "Bollard"}
 
 # Meshes whose "front" the facing heuristic cannot tell (symmetric tops): yaw that turns the front to +X.
 MESH_FACING = {
@@ -106,6 +161,117 @@ MATERIAL_SLOTS = {
 ACTOR_SLOTS = {
     "DoorActor": "/Game/ada_door/BP_Moving_Door.BP_Moving_Door_C",
 }
+
+# --- facade module kits (AmericanCityPacks) ------------------------------------------------
+# Module meshes are found by name pattern: SM_<style>_GroundFloor_L<n>T<t>[_door|_noDoor]_piece,
+# SM_<style>_windows[Top]_L<n>T<t>_piece, SM_<style>_corner_L1T<t>_piece, SM_01_top_L<n> ... Each
+# becomes an entry of "Facade.<style>.<Part>" with its material slot categories recorded, so the
+# massing node can tile a facade and override every slot from one set of picks per building.
+import re as _re
+
+FACADE_PATTERNS = [
+    # (part, regex with a 'style' group; corners are only the L1 pieces)
+    ("GFDoor", _re.compile(r"^SM_(?P<style>[a-z]+\d+)_[Gg]roundFloor_L\d+T\d+_door_piece$")),
+    ("GF", _re.compile(r"^SM_(?P<style>[a-z]+\d+)_[Gg]roundFloor_L\d+T\d+(_noDoor)?_piece$")),
+    ("GFCorner", _re.compile(r"^SM_(?P<style>[a-z]+\d+)_GroundFloorCorner_L1T\d+_piece$")),
+    ("WinTop", _re.compile(r"^SM_(?P<style>[a-z]+\d+)_windowsTop_L\d+T\d+_piece$")),
+    ("Win", _re.compile(r"^SM_(?P<style>[a-z]+\d+)_windows_L\d+T\d+_piece$")),
+    ("WinCorner", _re.compile(r"^SM_(?P<style>[a-z]+\d+)_corner_L1T\d+_piece$")),
+]
+FACADE_GENERIC = {
+    "Facade.WinCorner": _re.compile(r"^SM_01_corner_L1T\d+_piece$"),
+    "Facade.Top": _re.compile(r"^SM_01_top_L\d$"),
+    "Facade.TopCorner": _re.compile(r"^SM_01_top_corner_L1$"),
+    "Facade.TallTop": _re.compile(r"^SM_01_TallTop_L\d$"),
+    "Facade.TallTopCorner": _re.compile(r"^SM_01_TallTop_Corner_L1$"),
+}
+# mesh material slot name (lower-cased) -> category; a slot not listed falls back to the bricks.
+FACADE_SLOT_CATEGORIES = {
+    "facade": "Bricks", "facade2": "Bricks", "facade3": "Bricks2",
+    "glass": "Windows", "glassnocurtains": "WindowsNoCurtain",
+    "shopglass": "Shop", "glassfake": "Shop",
+    "window": "Frame", "windows": "Frame", "black": "Frame", "framewindow": "Frame",
+    "concrete": "Concrete", "ornaments": "Ornament", "border": "Border",
+    "metal": "Metal", "metallic": "Metal", "metallic2": "Metal", "roof": "Roof", "door": "Door",
+}
+# category -> (asset folder, name filter) for the material sets
+FACADE_MATERIAL_SETS = {
+    "Bricks": ("/Game/AmericanCityPacks/Materials/Bricks", _re.compile(r"^MI_(bricks|BrownBricks)")),
+    "Windows": ("/Game/AmericanCityPacks/Materials/Windows", _re.compile(r"^MI_(3?windows|Ind)[^E]*$")),
+    "WindowsNoCurtain": ("/Game/AmericanCityPacks/Materials/Windows/NoCurtains", _re.compile(r"^MI_.*NoCurtain(?!Emissive)")),
+    "Shop": ("/Game/AmericanCityPacks/Materials/Windows/Shops", _re.compile(r"^MI_ShopWindows")),
+    "Frame": ("/Game/AmericanCityPacks/Materials/Simple", _re.compile(r"^MI_simple_")),
+    "Concrete": ("/Game/AmericanCityPacks/Materials/Concrete", _re.compile(r"^MI_concrete_")),
+    "Ornament": ("/Game/AmericanCityPacks/Materials/Ornaments", _re.compile(r"^MI_ornament_")),
+    "Border": ("/Game/AmericanCityPacks/Materials/Ornaments", _re.compile(r"^MI_Ornaments_border_")),
+    "Metal": ("/Game/AmericanCityPacks/Materials/Metal", _re.compile(r"^MI_metal_")),
+    "Roof": ("/Game/AmericanCityPacks/Materials/Roof", _re.compile(r"^MI_roof_")),
+    "Door": ("/Game/AmericanCityPacks/Materials/Props", _re.compile(r"^MI_Door")),
+}
+
+
+def _module_entry(mesh):
+    """Palette entry for a facade module: native pivot (start of run, base on the ground), no facing fix."""
+    bounds = mesh.get_bounds()
+    ext = bounds.box_extent
+    e = unreal.RammsPaletteMesh()
+    e.set_editor_property("mesh", mesh)
+    e.set_editor_property("weight", 1.0)
+    e.set_editor_property("scale", 1.0)
+    e.set_editor_property("footprint", unreal.Vector2D(max(ext.x * 2.0, 1.0), max(ext.y * 2.0, 1.0)))
+    e.set_editor_property("height", max(ext.z * 2.0, 1.0))
+    e.set_editor_property("rotation_offset", unreal.Rotator(roll=0.0, pitch=0.0, yaw=0.0))
+    e.set_editor_property("location_offset", unreal.Vector(0.0, 0.0, 0.0))
+    cats = []
+    for sm in mesh.get_editor_property("static_materials"):
+        cats.append(FACADE_SLOT_CATEGORIES.get(str(sm.material_slot_name).lower(), "Default"))
+    e.set_editor_property("material_slots", cats)
+    return e
+
+
+def build_facade_slots(pal, report):
+    """Fill Facade.* slots from whatever facade kits the registry holds."""
+    reg = unreal.AssetRegistryHelpers.get_asset_registry()
+    counts = {}
+    for ad in reg.get_assets_by_path("/Game/AmericanCityPacks/Geometry", recursive=True):
+        if str(ad.asset_class_path.asset_name) != "StaticMesh":
+            continue
+        name = str(ad.asset_name)
+        if name.endswith("_INT"):
+            continue
+        slot = None
+        for part, rx in FACADE_PATTERNS:
+            m = rx.match(name)
+            if m:
+                slot = "Facade.%s.%s" % (m.group("style"), part)
+                break
+        if slot is None:
+            for generic, rx in FACADE_GENERIC.items():
+                if rx.match(name):
+                    slot = generic
+                    break
+        if slot is None:
+            continue
+        mesh = ad.get_asset()
+        if mesh is None:
+            continue
+        pal.add_mesh(slot, _module_entry(mesh))
+        counts[slot] = counts.get(slot, 0) + 1
+    for cat, (folder, rx) in FACADE_MATERIAL_SETS.items():
+        n = 0
+        for ad in reg.get_assets_by_path(folder, recursive=True):
+            if str(ad.asset_class_path.asset_name) not in ("MaterialInstanceConstant", "Material"):
+                continue
+            if not rx.match(str(ad.asset_name)):
+                continue
+            mat = ad.get_asset()
+            if mat is None:
+                continue
+            pal.add_material("Facade.Mat." + cat, mat)
+            n += 1
+        counts["Facade.Mat." + cat] = n
+    report["facade"] = counts
+    return counts
 
 
 def _registry_index():
@@ -170,7 +336,7 @@ def _facing_yaw(mesh, bounds):
     return -math.degrees(math.atan2(front[1], front[0]))
 
 
-def _mesh_entry(mesh):
+def _mesh_entry(mesh, slot=""):
     import math
     bounds = mesh.get_bounds()
     ext = bounds.box_extent
@@ -179,6 +345,15 @@ def _mesh_entry(mesh):
     e = unreal.RammsPaletteMesh()
     e.set_editor_property("mesh", mesh)
     e.set_editor_property("weight", 1.0)
+    scale = 1.0
+    expected = SLOT_HEIGHTS.get(slot)
+    if expected and slot not in NO_NORMALISE and ext.z > 1.0:
+        ratio = expected / (ext.z * 2.0)
+        if abs(ratio - 1.0) > 0.12:
+            scale = max(0.5, min(1.6, ratio))
+    e.set_editor_property("scale", scale)
+    ext = unreal.Vector(ext.x * scale, ext.y * scale, ext.z * scale)
+    origin = unreal.Vector(origin.x * scale, origin.y * scale, origin.z * scale)
     # Footprint and pivot offset are stored in the facing frame (front = +X), so a node can treat every
     # mesh as "depth fx along its front, width fy across" and set the yaw it wants.
     swap = abs(abs(yaw) % 180.0 - 90.0) < 1.0
@@ -238,7 +413,7 @@ def build_default_palette(path=DEFAULT_PALETTE):
                 mesh = ad.get_asset()
                 if mesh is None:
                     continue
-                pal.add_mesh(slot, _mesh_entry(mesh))
+                pal.add_mesh(slot, _mesh_entry(mesh, slot))
                 found.append(mesh.get_path_name())
                 break
         report["meshes"][slot] = found
@@ -262,6 +437,8 @@ def build_default_palette(path=DEFAULT_PALETTE):
             report["missing"].append(slot)
         pal.set_material(slot, chosen)
         report["materials"][slot] = chosen.get_path_name()
+
+    build_facade_slots(pal, report)
 
     for slot, cls_path in ACTOR_SLOTS.items():
         cls = unreal.load_class(None, cls_path)
