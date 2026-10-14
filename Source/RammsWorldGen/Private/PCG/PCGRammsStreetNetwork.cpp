@@ -473,8 +473,18 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 		BlocksOut.SetBool(b, RammsPCG::IsPark, B.bPark);
 		BlocksOut.Set(b, RammsPCG::Width, LotSize.X);
 		BlocksOut.Set(b, RammsPCG::Depth, LotSize.Y);
-		// Ground inside the block: lawn for parks, concrete for built blocks (buildings sit on it).
-		RammsPCG::WriteCube(Primitives, LotCentre + FVector(0, 0, -10.0), FVector(LotSize.X, LotSize.Y, 20.0), 0.0, B.bLawn ? MatLawn : MatConcrete, NextSeed());
+		// Ground inside the block: lawn for parks and yards, concrete for built blocks (buildings sit on
+		// it). A slab piece rather than a scaled cube so the material tiles at a sensible size.
+		{
+			FRammsPieceDesc G;
+			G.Kind = ERammsProcPieceKind::Slab;
+			G.SizeX = LotSize.X; G.SizeY = LotSize.Y; G.SizeZ = 20.0;
+			G.UVScale = B.bLawn ? 350.0 : 250.0;
+			G.MaterialPath = B.bLawn ? MatLawn : MatConcrete;
+			G.Transform = FTransform(FRotator::ZeroRotator, FVector(lx0, LotCentre.Y, Z0)); // slab top sits at its pivot
+			G.Seed = NextSeed();
+			RammsPCG::WritePiece(Pieces, G);
+		}
 	}
 
 	Primitives.Emit(Context, RammsPCG::PinPrimitives, { TEXT("Street") });

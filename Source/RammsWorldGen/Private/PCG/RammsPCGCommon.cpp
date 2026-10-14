@@ -159,6 +159,7 @@ int32 RammsPCG::WritePiece(FRammsPointWriter& W, const FRammsPieceDesc& P)
 	W.Set(i, OpeningHeight, P.OpeningHeight);
 	W.Set(i, LandingSize, P.LandingSize);
 	W.Set(i, WarningDepth, P.WarningDepth);
+	W.Set(i, UVScale, P.UVScale);
 	W.Set(i, MaterialPath, P.MaterialPath);
 	W.Set(i, MaterialPath2, P.MaterialPath2);
 	W.Set(i, ManifestKind, P.ManifestKind);
@@ -201,6 +202,27 @@ int32 RammsPCG::WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& P
 	const int32 i = W.Add(FTransform(Rot, Loc, FVector(Picked.Scale * ScaleMul)), FVector(-Half.X, -Half.Y, 0.0), FVector(Half.X, Half.Y, Picked.Height * ScaleMul), Seed);
 	W.SetPath(i, Mesh, Picked.Mesh.ToSoftObjectPath());
 	return i;
+}
+
+int32 RammsPCG::WriteComposite(FRammsPointWriter& Modules, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed)
+{
+	const FRotator Rot = (FRotator(0.0, YawDeg, 0.0).Quaternion() * Picked.RotationOffset.Quaternion()).Rotator();
+	const FVector Loc = Location + FRotator(0.0, YawDeg, 0.0).RotateVector(Picked.LocationOffset);
+	const FTransform Pivot(Rot, Loc, FVector(Picked.Scale));
+	int32 n = 0;
+	for (const FRammsPalettePart& Part : Picked.Parts)
+	{
+		if (Part.Mesh.IsNull()) { continue; }
+		const FTransform Xf = Part.RelativeTransform * Pivot;
+		const int32 i = Modules.Add(Xf, FVector(-50.0), FVector(50.0), SubSeed(Seed, n));
+		Modules.SetPath(i, Mesh, Part.Mesh.ToSoftObjectPath());
+		for (int32 s = 0; s < NumModuleMaterials; ++s)
+		{
+			Modules.SetPath(i, ModuleMaterial(s), Part.Materials.IsValidIndex(s) ? Part.Materials[s].ToSoftObjectPath() : FSoftObjectPath());
+		}
+		++n;
+	}
+	return n;
 }
 
 void RammsPCG::WriteFoliage(FRammsPointWriter& Props, FRammsPointWriter& Pieces, const URammsWorldPalette* Palette, FName Slot,

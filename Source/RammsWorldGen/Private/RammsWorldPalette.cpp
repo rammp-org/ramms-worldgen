@@ -22,7 +22,7 @@ bool URammsWorldPalette::PickMesh(FName Slot, const FRandomStream& Rng, FRammsPa
 	if (Total <= 0.f)
 	{
 		OutMesh = S->Meshes[0];
-		return !OutMesh.Mesh.IsNull();
+		return !OutMesh.Mesh.IsNull() || OutMesh.IsComposite();
 	}
 	float Pick = Rng.FRand() * Total;
 	for (const FRammsPaletteMesh& M : S->Meshes)
@@ -31,11 +31,11 @@ bool URammsWorldPalette::PickMesh(FName Slot, const FRandomStream& Rng, FRammsPa
 		if (Pick <= 0.f)
 		{
 			OutMesh = M;
-			return !OutMesh.Mesh.IsNull();
+			return !OutMesh.Mesh.IsNull() || OutMesh.IsComposite();
 		}
 	}
 	OutMesh = S->Meshes.Last();
-	return !OutMesh.Mesh.IsNull();
+	return !OutMesh.Mesh.IsNull() || OutMesh.IsComposite();
 }
 
 FString URammsWorldPalette::MaterialPath(FName Slot) const

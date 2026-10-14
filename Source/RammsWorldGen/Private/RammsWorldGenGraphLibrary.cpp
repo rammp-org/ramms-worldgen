@@ -13,7 +13,7 @@ TArray<FName> URammsWorldGenGraphLibrary::PiecePropertyNames()
 {
 	using namespace RammsPCG;
 	return { KindId, SizeX, SizeY, SizeZ, Rise, Slope, FlareSlope, StepCount, OpeningWidth, OpeningOffset, OpeningHeight,
-		LandingSize, WarningDepth, MaterialPath, MaterialPath2, ManifestKind, ManifestSubtype, bCompliant, IssueId, Measure, Threshold };
+		LandingSize, WarningDepth, UVScale, MaterialPath, MaterialPath2, ManifestKind, ManifestSubtype, bCompliant, IssueId, Measure, Threshold };
 }
 
 void URammsWorldGenGraphLibrary::ConfigurePieceSpawner(UPCGSpawnActorSettings* Settings)

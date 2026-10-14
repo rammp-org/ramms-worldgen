@@ -253,6 +253,7 @@ Kinds and the issues they can carry:
 | `Door`, `Threshold` | Standard, Narrow, RaisedThreshold, High/Low | DoorTooNarrow, ThresholdTooHigh |
 | `Ramp`, `Step` | Standard, TooSteep / WithRamp, NoRamp | SlopeTooSteep, StepAtEntrance |
 | `Hazard` | AFrame, Scooter, BinOut, Cafe, Barrier, Upheaval, or a furniture slot indoors | ClearWidthBelowMinimum, VerticalChangeTooHigh, ObstacleInRoute |
+| `Building` / `House` | house footprint | — |
 | `Prop`, `Furniture`, `Decor`, `Tree`, `Shrub` | palette slot | ClearWidthBelowMinimum when a prop spills out of the furniture zone |
 | `Surface` | Cobbled | SurfaceUneven |
 | `Room` | Living, Bedroom, Office, Meeting, Kitchen, Dining, Bathroom, Corridor | — |
@@ -288,6 +289,13 @@ runs it at 0.2, the office at 0.1.
   being used as soon as a slot is filled. Furniture and street props are
   normalised to real-world heights per slot (`SLOT_HEIGHTS`); whole houses go
   in the `House` slot and replace the shell on set-back low-rise lots.
+- **Composite entries**: a palette mesh entry with `Parts` (mesh + relative
+  transform + materials) instead of a `Mesh`. `palettes.COMPOSITE_SLOTS`
+  captures blueprint houses (Residential Houses - Modular Pack, ~300 child
+  actors each) by spawning them once at build time, measuring the union
+  bounds and facing them by their porch / front door parts; the massing node
+  spawns the parts as instanced modules (`WriteComposite`), so a street of
+  them costs nothing.
 - **Facade kits**: `Facade.<style>.GF` / `GFDoor` / `GFCorner` / `Win` /
   `WinTop` / `WinCorner` mesh slots plus the generic `Facade.Top`,
   `Facade.TallTop` (+ `Corner`) and `Facade.WinCorner`, filled by

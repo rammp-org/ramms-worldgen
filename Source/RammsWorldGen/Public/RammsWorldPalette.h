@@ -8,6 +8,24 @@
 class UStaticMesh;
 class UMaterialInterface;
 
+/** One piece of a composite palette entry (a whole house assembled from a pack's modular
+ *  meshes, captured from its blueprint at palette-build time). Relative to the entry's pivot. */
+USTRUCT(BlueprintType)
+struct RAMMSWORLDGEN_API FRammsPalettePart
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TSoftObjectPtr<UStaticMesh> Mesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	FTransform RelativeTransform;
+
+	/** Per-slot materials as the source blueprint had them (empty = the mesh's own). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TArray<TSoftObjectPtr<UMaterialInterface>> Materials;
+};
+
 /** One mesh a palette slot can pick. Footprint and Height are read off the
  *  mesh bounds when the palette is built so placement can keep clearances
  *  without loading the mesh at generation time. */
@@ -44,6 +62,12 @@ struct RAMMSWORLDGEN_API FRammsPaletteMesh
 	 *  material slots, in slot order, so a node can override every slot from the building's material picks. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	TArray<FName> MaterialSlots;
+
+	/** Composite entries (Mesh unset): every part is spawned with the entry's placement applied. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TArray<FRammsPalettePart> Parts;
+
+	bool IsComposite() const { return Parts.Num() > 0; }
 };
 
 /** A semantic slot: what the generator asks for ("Bench", "Mat.Sidewalk",
@@ -180,6 +204,9 @@ namespace RammsPaletteSlots
 	inline const FName FurnitureKitchenDishwasher(TEXT("Furniture.KitchenDishwasher"));
 	inline const FName FurnitureKitchenUpper(TEXT("Furniture.KitchenUpper"));
 	inline const FName FurnitureKitchenTall(TEXT("Furniture.KitchenTall"));
+	inline const FName FurnitureOfficeStorage(TEXT("Furniture.OfficeStorage"));
+	inline const FName FurnitureOfficeProp(TEXT("Furniture.OfficeProp"));
+	inline const FName FurnitureWhiteboard(TEXT("Furniture.Whiteboard"));
 	// building dressing
 	inline const FName RoofUnit(TEXT("RoofUnit"));
 	inline const FName MatMarking(TEXT("Mat.Marking"));

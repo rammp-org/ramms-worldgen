@@ -181,11 +181,11 @@ namespace
 				if (!Path.IsEmpty()) { Mats.Add(FName(*Key.Mid(RammsPaletteSlots::FacadeMatPrefix.Len())), Path); }
 			}
 		}
-		// The ground floor's brick is usually the same as upstairs, sometimes a second kind.
+		// The ground floor's big panels take their own brick set when the palette has one.
 		const FString* Bricks = Mats.Find(FName(TEXT("Bricks")));
 		if (Bricks)
 		{
-			Mats.Add(FName(TEXT("Bricks2")), Rng.FRand() < 0.7 ? *Bricks : Palette->PickMaterialPath(FName(*(RammsPaletteSlots::FacadeMatPrefix + TEXT("Bricks"))), Rng));
+			if (!Mats.Contains(FName(TEXT("Bricks2")))) { Mats.Add(FName(TEXT("Bricks2")), *Bricks); }
 			Mats.Add(FName(TEXT("Default")), *Bricks);
 		}
 		return Mats;
@@ -378,10 +378,21 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			}
 			if (bHouseMesh)
 			{
-				// Front of the house on the setback line, facing the street (+X of the lot frame).
+				// Front of the house on the setback line, facing the street (+X of the lot frame). A composite
+				// entry (a pack's house blueprint captured part by part) goes out as instanced modules.
 				const double HD = HouseMesh.Footprint.X, HW = HouseMesh.Footprint.Y;
-				const int32 h = RammsPCG::WritePickedMesh(Props, HouseMesh, ToWorld(FrontX - HD * 0.5, 0.0, Z0), Yaw, NextSeed());
-				RammsPCG::WriteManifest(Props, h, FName(TEXT("Building")), FName(TEXT("House")), true, ERammsComplianceIssue::None, HW, 0.0);
+				const FVector HouseLoc = ToWorld(FrontX - HD * 0.5, 0.0, Z0);
+				if (HouseMesh.IsComposite())
+				{
+					RammsPCG::WriteComposite(Modules, HouseMesh, HouseLoc, Yaw, NextSeed());
+				}
+				else
+				{
+					RammsPCG::WritePickedMesh(Props, HouseMesh, HouseLoc, Yaw, NextSeed());
+				}
+				const int32 h = Features.AddBox(HouseLoc + FVector(0.0, 0.0, HouseMesh.Height * 0.5), Yaw, FVector(HD, HW, HouseMesh.Height), NextSeed());
+				RammsPCG::WriteManifest(Features, h, FName(TEXT("Building")), FName(TEXT("House")), true, ERammsComplianceIssue::None, HW, 0.0);
+				Features.SetInt(h, RammsPCG::LotId, LotId);
 			}
 
 			// Entrance: decided before the facade so a raised ground floor can sit on its stoop.
@@ -415,6 +426,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			// cornice, corner pieces, and one material pick per category for the whole building. The plan
 			// snaps to the kit's 100 cm grid; the cube shell stays inside as the building's body.
 			bool bModules = false, bDoorModule = false;
+			FString RoofMat;
 			FFacadeKit Kit;
 			if (S->bFacadeModules && !bHouse && !bHouseMesh && Palette && BuildKit(Palette, S->FacadeStyles, Rng, Kit))
 			{
@@ -455,6 +467,8 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					const double Zb = Z0 + Rise;
 					H = Rise + Kit.GFHeight + (Floors - 1) * Kit.WinHeight + Kit.TopHeight;
 					const TMap<FName, FString> Mats = PickFacadeMaterials(Palette, Rng);
+					// Flat roofs read as a dark membrane: the asphalt surface tiles better than the kit's roof set.
+					RoofMat = RammsPCG::Mat(Palette, RammsPaletteSlots::MatAsphalt);
 					auto PickAny = [&](const TArray<FRammsPaletteMesh>* Meshes, FRammsPaletteMesh& Out) -> bool
 					{
 						if (!Meshes || Meshes->Num() == 0) { return false; }
@@ -535,6 +549,18 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				Rf.Transform = FTransform(FRotator(0.0, Yaw + (bRidgeAlongWidth ? 0.0 : 90.0), 0.0), ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H));
 				Rf.Seed = NextSeed();
 				RammsPCG::WritePiece(Pieces, Rf);
+			}
+			else if (!bHouseMesh && bModules && !RoofMat.IsEmpty())
+			{
+				// A tiled roof membrane (a slab piece so the material tiles at a sensible size).
+				FRammsPieceDesc Rs;
+				Rs.Kind = ERammsProcPieceKind::Slab;
+				Rs.SizeX = BD - 6.0; Rs.SizeY = BW - 6.0; Rs.SizeZ = 4.0;
+				Rs.UVScale = 400.0;
+				Rs.MaterialPath = RoofMat;
+				Rs.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(BackX + 3.0, 0.0, Z0 + H + 4.0)); // slab top at its pivot
+				Rs.Seed = NextSeed();
+				RammsPCG::WritePiece(Pieces, Rs);
 			}
 			else if (!bHouseMesh)
 			{

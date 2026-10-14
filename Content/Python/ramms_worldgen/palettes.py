@@ -34,7 +34,7 @@ MESH_SLOTS = {
     "Mailbox": ["SM_Mailbox", "SM_Mailbox_01"],
     "StreetSign": ["SM_Sign_StopSign", "SM_Sign_NoParking01", "SM_Sign_SpeedLimit25", "SM_Sign_OneWay01", "SM_Sign_Residential", "SM_Stop_Sign", "SM_Street_Sign"],
     "UtilityPole": ["SM_PowerPole_Solo", "SM_UtilityPole"],
-    "Car": ["SM_Car"],
+    "Car": ["SM_Car", "SM_veh07_car_sedan_parked", "SM_veh_03_car_parked", "SM_veh_05_car_suv_parked", "SM_veh_04_truck_parked"],
     "Flowerbed": ["SM_Flowerbed_Round", "SM_WoodPlanter01", "SM_WoodPlanter03", "SM_Pot04", "SM_Pot05"],
     "Fence": ["SM_Fence_Frontyard_Tile_Left_2x", "SM_Fence_Frontyard_Tile_Right_2x"],
     "Stairs": ["stairs_street"],
@@ -86,6 +86,9 @@ MESH_SLOTS = {
     "Furniture.KitchenDishwasher": ["SM_Kitcabinet_low_1x_dishwasher", "SM_Dishwasher_01a"],
     "Furniture.KitchenUpper": ["SM_Kitcabinet_upper_1x_A", "SM_Kitcabinet_upper_1x_B"],
     "Furniture.KitchenTall": ["SM_Kitcabinet_full_fridge", "SM_Kitcabinet_full_cabinet", "SM_Fridge_01a", "SM_Refrigerator_04a", "SM_Refridgerator_05a"],
+    "Furniture.OfficeStorage": ["SM_FilingCabinet01a", "SM_FilingCabinet01b", "SM_FilingCabinet01e", "SM_MetalShelf_100a", "SM_Shelf_standing_A", "SM_BookShelf_01a"],
+    "Furniture.OfficeProp": ["SM_Printer_02a", "SM_WaterCooler_01b", "SM_VendingMachine_01a", "SM_StepLadder_01a", "SM_PaperBoxes_01a"],
+    "Furniture.Whiteboard": ["SM_WhiteBoard_01a", "SM_NoticeBoard_01a", "SM_NoticeBoard_01e"],
     "Furniture.Picture": ["SM_Painting_A", "SM_Painting_B", "SM_Painting_C", "SM_Painting_E", "SM_Painting_F", "SM_Painting_large_A", "SM_Painting_wide_A", "SM_Mirror", "SM_Picture", "SM_Classic_Picture"],
     "Furniture.Clutter": ["SM_UtilityCart", "SM_Garage_plastic_box", "SM_Cardboard_Closed_3", "SM_To_laundrybasket", "SM_Old_Chair", "SM_WaterCooler_01b", "SM_Printer_02a", "SM_ShippingBoxes_01b", "SM_FilingCabinet01a", "SM_Laundrybasket"],
 }
@@ -106,9 +109,9 @@ SLOT_HEIGHTS = {
     "Hazard.Cone": 75, "Hazard.Dumpster": 150, "Car": 150,
 }
 # Slots whose meshes keep their native size whatever the height (poles, trees, buildings, hedges).
-NO_NORMALISE = {"Tree", "TreeSmall", "Shrub", "Hedge", "House", "StreetLight", "UtilityPole", "StreetSign", "BusStop",
+NO_NORMALISE = {"Tree", "TreeSmall", "Shrub", "Hedge", "House", "Car", "StreetLight", "UtilityPole", "StreetSign", "BusStop",
                 "Stairs", "Curb", "SidewalkCorner", "Railing", "Hazard.Upheaval", "Hazard.Barrier", "RoofUnit",
-                "Flowerbed", "Fence", "Furniture.Picture", "Furniture.Clutter", "Hazard.Box", "Hazard.AFrame", "InfoBoard", "Bollard"}
+                "Flowerbed", "Fence", "Furniture.Picture", "Furniture.Clutter", "Furniture.OfficeProp", "Furniture.Whiteboard", "Furniture.OfficeStorage", "Hazard.Box", "Hazard.AFrame", "InfoBoard", "Bollard"}
 
 # Meshes whose "front" the facing heuristic cannot tell (symmetric tops): yaw that turns the front to +X.
 MESH_FACING = {
@@ -141,8 +144,8 @@ MATERIAL_SLOTS = {
     "Mat.Marking": ["M_RammsMarkingWhite"],
     "Mat.MarkingYellow": ["M_RammsMarkingYellow"],
     "Mat.Warning": ["M_RammsWarning"],
-    "Mat.Grass": ["MI_pjwey0", "MI_tkynejer"],
-    "Mat.Lawn": ["MI_tkynejer", "MI_pjwey0"],
+    "Mat.Grass": ["MI_SFPark_grass_01_RM", "MI_GrassPatchy", "MI_pjwey0", "MI_tkynejer"],
+    "Mat.Lawn": ["MI_SFPark_grass_01_RM", "MI_GrassPatchy", "MI_tkynejer", "MI_pjwey0"],
     "Mat.Path": ["MI_vmcxajwfw", "MI_ugkjbgplw"],
     "Mat.Foliage": ["M_RammsFoliage"],
     "Mat.Trunk": ["M_RammsTrunk"],
@@ -161,6 +164,14 @@ MATERIAL_SLOTS = {
 ACTOR_SLOTS = {
     "DoorActor": "/Game/ada_door/BP_Moving_Door.BP_Moving_Door_C",
 }
+
+# slot -> blueprint classes whose child-actor static meshes are captured as one composite entry
+# (Residential Houses - Modular Pack assembles each house from ~300 child actors; spawned as ISM
+# instances they cost nothing). The front is taken from the porch / front door parts.
+COMPOSITE_SLOTS = {
+    "House": ["/Game/ResidentialHouses/Blueprints/Houses/NoInteriors/House%02d.House%02d_C" % (n, n) for n in range(1, 13)],
+}
+COMPOSITE_FRONT_HINTS = ("Porch", "FrontDoor", "Front_Door", "SM_Door", "Steps")
 
 # --- facade module kits (AmericanCityPacks) ------------------------------------------------
 # Module meshes are found by name pattern: SM_<style>_GroundFloor_L<n>T<t>[_door|_noDoor]_piece,
@@ -196,16 +207,22 @@ FACADE_SLOT_CATEGORIES = {
 }
 # category -> (asset folder, name filter) for the material sets
 FACADE_MATERIAL_SETS = {
-    "Bricks": ("/Game/AmericanCityPacks/Materials/Bricks", _re.compile(r"^MI_(bricks|BrownBricks)")),
-    "Windows": ("/Game/AmericanCityPacks/Materials/Windows", _re.compile(r"^MI_(3?windows|Ind)[^E]*$")),
-    "WindowsNoCurtain": ("/Game/AmericanCityPacks/Materials/Windows/NoCurtains", _re.compile(r"^MI_.*NoCurtain(?!Emissive)")),
-    "Shop": ("/Game/AmericanCityPacks/Materials/Windows/Shops", _re.compile(r"^MI_ShopWindows")),
+    "Bricks": ("/Game/AmericanCityPacks/Materials/Bricks", _re.compile(r"^MI_(bricks_|BrownBricks)")),
+    # ground-floor panels (slot facade3): the regular bricks read at the right size; the pack's own
+    # "F" bricks come out as 4x-size blocks on these UVs
+    "Bricks2": ("/Game/AmericanCityPacks/Materials/Bricks", _re.compile(r"^MI_(bricks_|BrownBricks)")),
+    # mostly bare glass; the curtained variants light up white in full sun
+    "Windows": ("/Game/AmericanCityPacks/Materials/Windows", _re.compile(r"^MI_(3?windows_\d+|3?windows_NoCurtain_\d+|SbWindows_NoCurtain_\d+)$")),
+    "WindowsNoCurtain": ("/Game/AmericanCityPacks/Materials/Windows/NoCurtains", _re.compile(r"^MI_(3?windows|SbWindows)_NoCurtain_\d+$")),
+    # the pack's fake-interior shop glass renders as an opaque brick box here (no reflection capture, no VT):
+    # plain glass over the dark shell reads as a shop front instead
+    "Shop": ("/Game/AmericanCityPacks/Materials", _re.compile(r"^MI_Glass_0\d$")),
     "Frame": ("/Game/AmericanCityPacks/Materials/Simple", _re.compile(r"^MI_simple_")),
     "Concrete": ("/Game/AmericanCityPacks/Materials/Concrete", _re.compile(r"^MI_concrete_")),
     "Ornament": ("/Game/AmericanCityPacks/Materials/Ornaments", _re.compile(r"^MI_ornament_")),
     "Border": ("/Game/AmericanCityPacks/Materials/Ornaments", _re.compile(r"^MI_Ornaments_border_")),
     "Metal": ("/Game/AmericanCityPacks/Materials/Metal", _re.compile(r"^MI_metal_")),
-    "Roof": ("/Game/AmericanCityPacks/Materials/Roof", _re.compile(r"^MI_roof_")),
+    "Roof": ("/Game/AmericanCityPacks/Materials/Roof", _re.compile(r"^MI_RoofPlaster_")),
     "Door": ("/Game/AmericanCityPacks/Materials/Props", _re.compile(r"^MI_Door")),
 }
 
@@ -303,7 +320,10 @@ def _vertex_positions(mesh):
         return None
 
 
-def _facing_yaw(mesh, bounds):
+LONG_AXIS_SLOTS = {"Car"}
+
+
+def _facing_yaw(mesh, bounds, slot=""):
     """
     Yaw (degrees) that turns the mesh's front to +X. Seating, beds and toilets carry their mass high
     at the back (backrest, headboard, cistern), so the front is opposite the side where the upper
@@ -312,6 +332,9 @@ def _facing_yaw(mesh, bounds):
     name = mesh.get_name()
     if name in MESH_FACING:
         return MESH_FACING[name]
+    if slot in LONG_AXIS_SLOTS:
+        # vehicles: the long axis is the driving axis; which end is the nose does not matter for parking
+        return 90.0 if bounds.box_extent.y > bounds.box_extent.x else 0.0
     verts = _vertex_positions(mesh)
     if not verts or len(verts) < 12:
         return 0.0
@@ -341,7 +364,7 @@ def _mesh_entry(mesh, slot=""):
     bounds = mesh.get_bounds()
     ext = bounds.box_extent
     origin = bounds.origin
-    yaw = _facing_yaw(mesh, bounds)
+    yaw = _facing_yaw(mesh, bounds, slot)
     e = unreal.RammsPaletteMesh()
     e.set_editor_property("mesh", mesh)
     e.set_editor_property("weight", 1.0)
@@ -367,6 +390,90 @@ def _mesh_entry(mesh, slot=""):
     oy = origin.x * math.sin(r) + origin.y * math.cos(r)
     base_z = origin.z - ext.z
     e.set_editor_property("location_offset", unreal.Vector(-ox, -oy, -base_z))
+    return e
+
+
+def _composite_entry(cls_path, slot=""):
+    """Spawn the blueprint once, capture every child static mesh as a part, measure and face it."""
+    import math
+    cls = unreal.load_class(None, cls_path)
+    if cls is None:
+        return None
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    base = unreal.Vector(0.0, 0.0, 50000.0)
+    actor = eas.spawn_actor_from_class(cls, base)
+    if actor is None:
+        return None
+    parts = []
+    lo = [1e9, 1e9, 1e9]
+    hi = [-1e9, -1e9, -1e9]
+    front = [0.0, 0.0, 0]
+    try:
+        owners = []
+        for c in actor.get_components_by_class(unreal.ChildActorComponent):
+            child = c.get_editor_property("child_actor")
+            if child is not None:
+                owners.append(child)
+        owners.append(actor)
+        # Stray parts far from the house (a road piece, a backdrop) would inflate the footprint: keep
+        # the cluster around the median part position.
+        measured = []
+        for owner in owners:
+            smcs = [c for c in owner.get_components_by_class(unreal.StaticMeshComponent) if c.get_editor_property("static_mesh") is not None]
+            if not smcs:
+                continue
+            bo, be = owner.get_actor_bounds(False, False)
+            if be.x < 1.0 and be.y < 1.0:
+                continue
+            measured.append((owner, smcs, bo, be))
+        xs = sorted(m[2].x for m in measured); ys = sorted(m[2].y for m in measured)
+        mx, my = (xs[len(xs) // 2], ys[len(ys) // 2]) if xs else (base.x, base.y)
+        for owner, smcs, bo, be in measured:
+            if abs(bo.x - mx) > 2500.0 or abs(bo.y - my) > 2500.0:
+                continue
+            lo = [min(lo[0], bo.x - be.x - base.x), min(lo[1], bo.y - be.y - base.y), min(lo[2], bo.z - be.z - base.z)]
+            hi = [max(hi[0], bo.x + be.x - base.x), max(hi[1], bo.y + be.y - base.y), max(hi[2], bo.z + be.z - base.z)]
+            for smc in smcs:
+                mesh = smc.get_editor_property("static_mesh")
+                loc = smc.get_world_location()
+                rel = unreal.Transform(unreal.Vector(loc.x - base.x, loc.y - base.y, loc.z - base.z), smc.get_world_rotation(), smc.get_world_scale())
+                part = unreal.RammsPalettePart()
+                part.set_editor_property("mesh", mesh)
+                part.set_editor_property("relative_transform", rel)
+                mats = [smc.get_material(i) for i in range(smc.get_num_materials())]
+                part.set_editor_property("materials", mats if mats and all(m is not None for m in mats) else [])
+                parts.append(part)
+                if any(h.lower() in mesh.get_name().lower() for h in COMPOSITE_FRONT_HINTS):
+                    front[0] += bo.x - base.x; front[1] += bo.y - base.y; front[2] += 1
+    finally:
+        eas.destroy_actor(actor)
+    if not parts or lo[0] > hi[0]:
+        H.warn("composite %s: no parts" % cls_path)
+        return None
+    cx, cy = (lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5
+    ex, ey, ez = (hi[0] - lo[0]) * 0.5, (hi[1] - lo[1]) * 0.5, (hi[2] - lo[2]) * 0.5
+    yaw = 0.0
+    if front[2] > 0:
+        fx, fy = front[0] / front[2] - cx, front[1] / front[2] - cy
+        # snap to the nearest axis: the front faces the side the porch sits on
+        if abs(fx) / max(ex, 1.0) >= abs(fy) / max(ey, 1.0):
+            yaw = 0.0 if fx > 0 else 180.0
+        else:
+            yaw = -90.0 if fy > 0 else 90.0
+    e = unreal.RammsPaletteMesh()
+    e.set_editor_property("weight", 1.0)
+    e.set_editor_property("scale", 1.0)
+    e.set_editor_property("parts", parts)
+    swap = abs(abs(yaw) % 180.0 - 90.0) < 1.0
+    fx_, fy_ = (ey, ex) if swap else (ex, ey)
+    e.set_editor_property("footprint", unreal.Vector2D(max(fx_ * 2.0, 1.0), max(fy_ * 2.0, 1.0)))
+    e.set_editor_property("height", max(ez * 2.0, 1.0))
+    e.set_editor_property("rotation_offset", unreal.Rotator(roll=0.0, pitch=0.0, yaw=yaw))
+    r = math.radians(yaw)
+    ox = cx * math.cos(r) - cy * math.sin(r)
+    oy = cx * math.sin(r) + cy * math.cos(r)
+    e.set_editor_property("location_offset", unreal.Vector(-ox, -oy, -lo[2]))
+    H.log("composite %s: %d parts, footprint %.0fx%.0f h %.0f yaw %.0f" % (cls_path.rsplit("/", 1)[-1], len(parts), fx_ * 2, fy_ * 2, ez * 2, yaw))
     return e
 
 
@@ -439,6 +546,18 @@ def build_default_palette(path=DEFAULT_PALETTE):
         report["materials"][slot] = chosen.get_path_name()
 
     build_facade_slots(pal, report)
+
+    report["composites"] = {}
+    for slot, cls_paths in COMPOSITE_SLOTS.items():
+        for cls_path in cls_paths:
+            try:
+                e = _composite_entry(cls_path, slot)
+            except Exception as exc:  # noqa: BLE001
+                H.warn("composite %s failed: %s" % (cls_path, exc))
+                e = None
+            if e is not None:
+                pal.add_mesh(slot, e)
+                report["composites"].setdefault(slot, []).append(cls_path)
 
     for slot, cls_path in ACTOR_SLOTS.items():
         cls = unreal.load_class(None, cls_path)

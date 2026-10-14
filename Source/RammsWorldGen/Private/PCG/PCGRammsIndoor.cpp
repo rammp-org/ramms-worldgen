@@ -587,9 +587,9 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				FItem It; if (TryAt(Slot, M, Corners[(Start + k) % 4], Rng.RandRange(0, 3) * 90.0, 4.0, It)) { Emit(It); return; }
 			}
 		};
-		auto Picture = [&]()
+		auto WallItem = [&](FName Slot, double CentreZ)
 		{
-			FRammsPaletteMesh M; if (!Pick(RammsPaletteSlots::FurniturePicture, M)) { return; }
+			FRammsPaletteMesh M; if (!Pick(Slot, M)) { return; }
 			double fx, fy; Dims(M, fx, fy);
 			for (int32 Try = 0; Try < 6; ++Try)
 			{
@@ -603,11 +603,12 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				bool bClear = InsideInner(B);
 				for (const FBox2D& K : R.Keepouts) { if (K.Intersect(B)) { bClear = false; } }
 				if (!bClear) { continue; }
-				FItem It; It.Slot = RammsPaletteSlots::FurniturePicture; It.M = M; It.P = P; It.Yaw = Yaw; It.Box = B; It.Z = Z0 + 150.0 - M.Height * 0.5;
+				FItem It; It.Slot = Slot; It.M = M; It.P = P; It.Yaw = Yaw; It.Box = B; It.Z = Z0 + CentreZ - M.Height * 0.5;
 				Emit(It, FName(TEXT("Decor")));
 				return;
 			}
 		};
+		auto Picture = [&]() { WallItem(RammsPaletteSlots::FurniturePicture, 150.0); };
 
 		const double AreaM2 = Sz.X * Sz.Y / 10000.0;
 		const double Density = FMath::Clamp(S->FurnitureDensity, 0.0, 1.0);
@@ -692,9 +693,11 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 					FRammsPaletteMesh Ch; double cx = 0, cy = 0; if (Pick(RammsPaletteSlots::FurnitureOfficeChair, Ch)) { Dims(Ch, cx, cy); }
 					FItem C2; if (TryRel(RammsPaletteSlots::FurnitureOfficeChair, D, Facing(D.Yaw) * (ddx * 0.5 + cx * 0.5 + 12.0), D.Yaw + 180.0, 3.0, C2)) { Emit(C2); }
 				}
-				if (TryWall(RammsPaletteSlots::FurnitureCupboard, (LongWall + 2) % 4, false, 8.0, B)) { Emit(B); }
+				// Storage opposite the desks (filing cabinets, shelving), then a printer / water cooler in a corner.
+				if (TryWall(RammsPaletteSlots::FurnitureOfficeStorage, (LongWall + 2) % 4, false, 8.0, B) || TryWall(RammsPaletteSlots::FurnitureCupboard, (LongWall + 2) % 4, false, 8.0, B)) { Emit(B); }
+				if (AreaM2 > 10.0 && Rng.FRand() < 0.7) { Corner(RammsPaletteSlots::FurnitureOfficeProp); }
 				if (AreaM2 > 12.0 && Rng.FRand() < 0.5) { Corner(RammsPaletteSlots::FurniturePlant); }
-				Picture();
+				if (Rng.FRand() < 0.6) { WallItem(RammsPaletteSlots::FurnitureWhiteboard, 150.0); } else { Picture(); }
 			}
 			else if (R.Kind == FName(TEXT("Dining")) || R.Kind == FName(TEXT("Kitchen")) || R.Kind == FName(TEXT("Meeting")))
 			{

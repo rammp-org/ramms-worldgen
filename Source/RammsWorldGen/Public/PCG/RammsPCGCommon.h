@@ -162,6 +162,7 @@ struct RAMMSWORLDGEN_API FRammsPieceDesc
 	int32 StepCount = 1;
 	double OpeningWidth = 0.0, OpeningOffset = 0.0, OpeningHeight = 210.0;
 	double LandingSize = 152.4, WarningDepth = 0.0;
+	double UVScale = 200.0;
 	FString MaterialPath, MaterialPath2;
 	FName ManifestKind, ManifestSubtype;
 	bool bCompliant = true;
@@ -182,6 +183,10 @@ namespace RammsPCG
 	RAMMSWORLDGEN_API int32 WritePaletteMesh(FRammsPointWriter& W, const URammsWorldPalette* Palette, FName Slot, const FRandomStream& Rng, const FVector& Location, double YawDeg, int32 Seed, FRammsPaletteMesh* OutPicked = nullptr);
 	/** Write an already-chosen palette mesh (so a node can measure the mesh it will actually spawn). ScaleMul varies the instance. */
 	RAMMSWORLDGEN_API int32 WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed, double ScaleMul = 1.0);
+
+	/** A composite palette entry (a house built from parts): one Modules point per part, with the
+	 *  entry's placement applied and the parts' own materials as Material0..7. Returns the part count. */
+	RAMMSWORLDGEN_API int32 WriteComposite(FRammsPointWriter& Modules, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed);
 
 	/**
 	 * A tree or shrub: the palette's mesh for Slot when it has one (with a little random size
