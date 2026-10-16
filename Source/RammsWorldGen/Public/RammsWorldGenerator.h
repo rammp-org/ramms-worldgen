@@ -50,6 +50,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator")
 	bool bRandomizeSeedOnBeginPlay = false;
 
+	/** In a play world (PIE / game): hold the player pawns still while the world is rebuilt (their simulated
+	 *  bodies go kinematic, so they neither fall through the old floor nor get shoved by new geometry), then put
+	 *  them at the new world's suggested start, at rest. Also moves the PlayerStart there. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator|Play")
+	bool bPlacePlayersOnGenerate = true;
+
+	/** Height added to the suggested start for placed pawns (cm). The start is already 8 cm above the route. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator|Play", meta = (EditCondition = "bPlacePlayersOnGenerate"))
+	double PlayerPlacementLift = 2.0;
+
+	/** Seconds after placement before the pawns' physics is switched back on (lets the new collision settle). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator|Play", meta = (EditCondition = "bPlacePlayersOnGenerate"))
+	float PlayerReleaseDelay = 0.2f;
+
 	/** Per-instance tweaks applied on top of the preset's params before generation. Only members you
 	 *  list in OverrideKeys take effect, so a preset update still flows through. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator|Overrides")
@@ -109,6 +123,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "World Generator")
 	TArray<FName> GetParamNames() const;
 
+	/** Put every player pawn at the suggested start now (teleport, velocities zeroed). Play worlds only. */
+	UFUNCTION(BlueprintCallable, Category = "World Generator|Play")
+	void PlacePlayers();
+
 	virtual void BeginPlay() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
@@ -118,5 +136,16 @@ private:
 	void HandleGenerated(UPCGComponent* Component);
 	void BuildManifestFromOutput();
 	void CollectProcPieces();
+	void HoldPlayers();
+	void ReleasePlayers();
 	bool bBoundDelegate = false;
+
+	/** A simulated body of a held pawn and its transform relative to the pawn, for re-placing it. */
+	struct FHeldBody
+	{
+		TWeakObjectPtr<UPrimitiveComponent> Component;
+		FTransform RelativeToActor;
+	};
+	TArray<FHeldBody> HeldBodies;
+	FTimerHandle ReleaseTimer;
 };

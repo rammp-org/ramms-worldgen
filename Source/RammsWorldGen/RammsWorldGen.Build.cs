@@ -12,6 +12,12 @@ public class RammsWorldGen : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// The same preset + seed must build the same world in the editor and in a packaged game. Editor
+		// targets compile with /fp:precise but game targets default to /fp:fast, which reassociates and
+		// contracts floating-point maths differently, so layout decisions on near-ties (a shelf that just
+		// fits, a random yaw a ulp apart) came out differently in a cooked build. Pin precise semantics.
+		FPSemantics = FPSemanticsMode.Precise;
+
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",

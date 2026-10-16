@@ -5,6 +5,9 @@
 #include "RammsWorldGenModule.h"
 #include "PCGPin.h"
 #include "Algo/Reverse.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<int32> CVarRammsIndoorTrace(TEXT("ramms.WorldGen.TraceIndoor"), 0, TEXT("Log every indoor placement attempt (debugging cross-build determinism)."));
 
 #define LOCTEXT_NAMESPACE "RammsPCG"
 
@@ -612,13 +615,13 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 		// chairs around a table, a desk with its chair.
 		const FBox2D Inner(R.Rect.Min + FVector2D(T * 0.5 + 2.0, T * 0.5 + 2.0), R.Rect.Max - FVector2D(T * 0.5 + 2.0, T * 0.5 + 2.0));
 		TArray<FBox2D> Placed;
-		auto InsideInner = [&](const FBox2D& B) { return B.Min.X >= Inner.Min.X && B.Min.Y >= Inner.Min.Y && B.Max.X <= Inner.Max.X && B.Max.Y <= Inner.Max.Y; };
+		auto InsideInner = [&](const FBox2D& B) { return RammsPCG::InsideBox(B, Inner); };
 		auto Fits = [&](const FBox2D& B, double Gap) -> bool
 		{
 			if (!InsideInner(B)) { return false; }
 			const FBox2D G = B.ExpandBy(Gap);
-			for (const FBox2D& P : Placed) { if (P.Intersect(G)) { return false; } }
-			for (const FBox2D& K : R.Keepouts) { if (K.Intersect(B)) { return false; } }
+			for (const FBox2D& P : Placed) { if (RammsPCG::Overlaps(P, G)) { return false; } }
+			for (const FBox2D& K : R.Keepouts) { if (RammsPCG::Overlaps(K, B)) { return false; } }
 			return true;
 		};
 		auto DistPointBox = [](const FVector2D& P, const FBox2D& B) { const FVector2D D(FMath::Max(FMath::Max(B.Min.X - P.X, 0.0), P.X - B.Max.X), FMath::Max(FMath::Max(B.Min.Y - P.Y, 0.0), P.Y - B.Max.Y)); return D.Size(); };
@@ -692,7 +695,12 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 		{
 			double fx, fy; Dims(M, fx, fy);
 			const FBox2D B = BoxFor(P, Yaw, fx, fy);
-			if (!Fits(B, Gap)) { return false; }
+			const bool bFit = Fits(B, Gap);
+			if (CVarRammsIndoorTrace.GetValueOnAnyThread())
+			{
+				UE_LOG(LogRammsWorldGen, Log, TEXT("TRACE room %d %s P=(%.6f,%.6f) yaw=%.6f box=(%.6f,%.6f)-(%.6f,%.6f) fit=%d rng=%d"), R.Id, *Slot.ToString(), P.X, P.Y, Yaw, B.Min.X, B.Min.Y, B.Max.X, B.Max.Y, bFit ? 1 : 0, Rng.GetCurrentSeed());
+			}
+			if (!bFit) { return false; }
 			Out.Slot = Slot; Out.M = M; Out.P = P; Out.Yaw = Yaw; Out.Box = B; Out.Z = Z0;
 			Placed.Add(B);
 			return true;
@@ -805,7 +813,7 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				const FVector2D P = WallPos(Wall, RammsPCG::RandRange(Rng, Lo + Width * 0.5 + 20.0, Hi - Width * 0.5 - 20.0), Depth);
 				const FBox2D B = BoxFor(P, Yaw, fx, fy).ExpandBy(10.0);
 				bool bClear = InsideInner(B);
-				for (const FBox2D& K : R.Keepouts) { if (K.Intersect(B)) { bClear = false; } }
+				for (const FBox2D& K : R.Keepouts) { if (RammsPCG::Overlaps(K, B)) { bClear = false; } }
 				if (!bClear) { continue; }
 				FItem It; It.Slot = Slot; It.M = M; It.P = P; It.Yaw = Yaw; It.Box = B; It.Z = Z0 + CentreZ - M.Height * 0.5;
 				Emit(It, FName(TEXT("Decor")));
@@ -913,7 +921,7 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 					FItem It; It.Slot = Slot; It.M = Mo; It.Yaw = D.Yaw;
 					It.P = D.P + Facing(D.Yaw) * Inset * (ddx * 0.5 - mx * 0.5 - 4.0) + Side(D.Yaw) * RammsPCG::RandRange(Rng, -8.0, 8.0);
 					It.Box = BoxFor(It.P, It.Yaw, mx, my); It.Z = Z0 + D.M.Height + 0.5;
-					if (Taken.bIsValid && Taken.ExpandBy(4.0).Intersect(It.Box)) { return; }
+					if (Taken.bIsValid && RammsPCG::Overlaps(Taken.ExpandBy(4.0), It.Box)) { return; }
 					Taken = Taken.bIsValid ? Taken + It.Box : It.Box;
 					Emit(It, FName(TEXT("Decor")));
 				};
@@ -1373,12 +1381,12 @@ bool FPCGRammsIndoorLayoutElement::ExecuteInternal(FPCGContext* Context) const
 						const FBox2D Box = BoxFor(Cs, Wy, SD, SW);
 						// Leave the stall out where a door swing or approach needs the floor; the next one may still fit.
 						bool bFree = InsideInner(Box);
-						for (const FBox2D& K : R.Keepouts) { if (K.Intersect(Box)) { bFree = false; } }
-						for (const FBox2D& P : Placed) { if (P.Intersect(Box)) { bFree = false; } }
+						for (const FBox2D& K : R.Keepouts) { if (RammsPCG::Overlaps(K, Box)) { bFree = false; } }
+						for (const FBox2D& P : Placed) { if (RammsPCG::Overlaps(P, Box)) { bFree = false; } }
 						// The door leaf stands open in the room, 90 degrees from the front, hinged on the side away from the toilet run.
 						const FVector2D Front = WallPos(Sw, (A0 + A1) * 0.5, 2.0 * SD);
 						const FBox2D LeafBox = BoxFor(Front + SF * (DW * 0.5) + Al * (DW * 0.5), Wy, DW, 6.0);
-						if (bFree) { for (const FBox2D& K : R.Keepouts) { if (K.Intersect(LeafBox)) { bFree = false; } } }
+						if (bFree) { for (const FBox2D& K : R.Keepouts) { if (RammsPCG::Overlaps(K, LeafBox)) { bFree = false; } } }
 						Cur = bFromHi ? A0 : A1;
 						if (!bFree) { continue; }
 						FItem Tl;

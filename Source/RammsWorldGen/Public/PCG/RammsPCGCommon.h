@@ -182,6 +182,23 @@ namespace RammsPCG
 	/** Append a piece point with every ARammsProcPiece property as an attribute. */
 	RAMMSWORLDGEN_API int32 WritePiece(FRammsPointWriter& W, const FRammsPieceDesc& P);
 
+	/** Placement tolerance (cm). Layout loops space items exactly one gap apart, so a strict box test lands on
+	 *  exact ties that rounding can flip between builds (the editor and a packaged game compile the same maths
+	 *  differently); comparing with this slack keeps the same seed producing the same world everywhere. */
+	constexpr double PlaceEps = 0.05;
+
+	/** True when A and B overlap by more than PlaceEps on both axes (touching does not count). */
+	inline bool Overlaps(const FBox2D& A, const FBox2D& B, double Eps = PlaceEps)
+	{
+		return A.Min.X < B.Max.X - Eps && B.Min.X < A.Max.X - Eps && A.Min.Y < B.Max.Y - Eps && B.Min.Y < A.Max.Y - Eps;
+	}
+
+	/** True when B lies inside Outer, allowing PlaceEps of slack. */
+	inline bool InsideBox(const FBox2D& B, const FBox2D& Outer, double Eps = PlaceEps)
+	{
+		return B.Min.X >= Outer.Min.X - Eps && B.Min.Y >= Outer.Min.Y - Eps && B.Max.X <= Outer.Max.X + Eps && B.Max.Y <= Outer.Max.Y + Eps;
+	}
+
 	/** Append a scaled unit cube instance: Centre is the box centre; yaw in degrees. */
 	RAMMSWORLDGEN_API int32 WriteCube(FRammsPointWriter& W, const FVector& Centre, const FVector& Size, double YawDeg, const FString& MaterialPath, int32 Seed);
 

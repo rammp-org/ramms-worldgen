@@ -5,6 +5,10 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "TimerManager.h"
 #include "HAL/FileManager.h"
 #include "JsonObjectConverter.h"
 #include "Misc/FileHelper.h"
@@ -198,6 +202,7 @@ void ARammsWorldGenerator::Regenerate()
 	Manifest.SceneKind = Preset ? Preset->SceneKind : ERammsSceneKind::Downtown;
 
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generating preset=%s seed=%d site=%.0fx%.0f"), *GetName(), *Manifest.Preset.ToString(), Seed, Params.SiteSizeX, Params.SiteSizeY);
+	HoldPlayers();
 	PCGComponent->GenerateLocal(/*bForce=*/true);
 }
 
@@ -220,6 +225,7 @@ void ARammsWorldGenerator::Cleanup()
 		PCGComponent->CleanupLocal(/*bRemoveComponents=*/true);
 	}
 	Manifest = FRammsWorldManifest();
+	ReleasePlayers(); // never leave a pawn frozen if a regeneration is abandoned
 }
 
 bool ARammsWorldGenerator::IsGenerating() const
@@ -233,6 +239,11 @@ void ARammsWorldGenerator::HandleGenerated(UPCGComponent* Component)
 	CollectProcPieces();
 	Manifest.Bounds = SiteBounds ? SiteBounds->Bounds.GetBox() : FBox(ForceInit);
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generated seed=%d features=%d routes=%d issues=%d"), *GetName(), Seed, Manifest.Features.Num(), Manifest.Routes.Num(), Manifest.CountIssues());
+	if (bPlacePlayersOnGenerate && GetWorld() && GetWorld()->IsGameWorld())
+	{
+		PlacePlayerStart();
+		PlacePlayers();
+	}
 	OnWorldGenerated.Broadcast(Manifest);
 }
 
@@ -359,4 +370,136 @@ void ARammsWorldGenerator::PlacePlayerStart()
 	{
 		Existing->SetActorTransform(Start);
 	}
+}
+
+// --- players (play worlds) -------------------------------------------------------------
+//
+// Rebuilding the world under a physics-simulated robot drops it through the old floor and lets the new
+// geometry spawn into it, which tips it over. While a play world regenerates, the player pawns' simulated
+// bodies are made kinematic; when the new world is in, the pawns are teleported to its suggested start and,
+// a moment later, their physics is switched back on at rest. Pawns driven by an external simulator (e.g.
+// MuJoCo) have no Unreal-simulated bodies and are only teleported; that backend has to reset its own state.
+
+namespace
+{
+	bool IsAnySimulating(const UPrimitiveComponent* C)
+	{
+		if (const USkeletalMeshComponent* Sk = Cast<USkeletalMeshComponent>(C))
+		{
+			return Sk->IsAnySimulatingPhysics();
+		}
+		return C && C->IsSimulatingPhysics();
+	}
+
+	template <typename F>
+	void ForEachPlayerPawn(UWorld* World, F&& Fn)
+	{
+		if (!World)
+		{
+			return;
+		}
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (APlayerController* PC = It->Get())
+			{
+				if (APawn* Pawn = PC->GetPawn())
+				{
+					Fn(Pawn);
+				}
+			}
+		}
+	}
+}
+
+void ARammsWorldGenerator::HoldPlayers()
+{
+	UWorld* World = GetWorld();
+	if (!bPlacePlayersOnGenerate || !World || !World->IsGameWorld())
+	{
+		return;
+	}
+	World->GetTimerManager().ClearTimer(ReleaseTimer);
+	ForEachPlayerPawn(World, [this](APawn* Pawn)
+	{
+		TArray<UPrimitiveComponent*> Prims;
+		Pawn->GetComponents(Prims);
+		const FTransform ActorXf = Pawn->GetActorTransform();
+		for (UPrimitiveComponent* C : Prims)
+		{
+			if (!IsAnySimulating(C) || HeldBodies.ContainsByPredicate([C](const FHeldBody& H) { return H.Component.Get() == C; }))
+			{
+				continue;
+			}
+			C->SetAllPhysicsLinearVelocity(FVector::ZeroVector);
+			C->SetAllPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+			HeldBodies.Add({ C, C->GetComponentTransform().GetRelativeTransform(ActorXf) });
+			C->SetSimulatePhysics(false);
+		}
+	});
+	if (HeldBodies.Num() > 0)
+	{
+		UE_LOG(LogRammsWorldGen, Log, TEXT("%s: holding %d simulated player bodies while the world is rebuilt"), *GetName(), HeldBodies.Num());
+	}
+}
+
+void ARammsWorldGenerator::PlacePlayers()
+{
+	UWorld* World = GetWorld();
+	if (!World || !World->IsGameWorld())
+	{
+		return;
+	}
+	FTransform Start = Manifest.SuggestedStart;
+	if (Start.Equals(FTransform::Identity))
+	{
+		Start = FTransform(GetActorLocation() + FVector(0.0, 0.0, 10.0));
+	}
+	const FRotator Yaw(0.0, Start.Rotator().Yaw, 0.0);
+	const FVector Loc = Start.GetLocation() + FVector(0.0, 0.0, PlayerPlacementLift);
+	int32 Placed = 0;
+	ForEachPlayerPawn(World, [&](APawn* Pawn)
+	{
+		Pawn->SetActorLocationAndRotation(Loc, Yaw, false, nullptr, ETeleportType::ResetPhysics);
+		const FTransform ActorXf = Pawn->GetActorTransform();
+		// Bodies that were simulating were detached from the actor; put them back where they belong on it.
+		for (const FHeldBody& H : HeldBodies)
+		{
+			UPrimitiveComponent* C = H.Component.Get();
+			if (C && C->GetOwner() == Pawn && C != Pawn->GetRootComponent())
+			{
+				C->SetWorldTransform(H.RelativeToActor * ActorXf, false, nullptr, ETeleportType::ResetPhysics);
+			}
+		}
+		TArray<UPrimitiveComponent*> Prims;
+		Pawn->GetComponents(Prims);
+		for (UPrimitiveComponent* C : Prims)
+		{
+			C->SetAllPhysicsLinearVelocity(FVector::ZeroVector);
+			C->SetAllPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+		}
+		++Placed;
+	});
+	if (Placed > 0)
+	{
+		UE_LOG(LogRammsWorldGen, Log, TEXT("%s: placed %d player pawn(s) at %s yaw %.0f"), *GetName(), Placed, *Loc.ToString(), Yaw.Yaw);
+	}
+	if (HeldBodies.Num() > 0)
+	{
+		World->GetTimerManager().SetTimer(ReleaseTimer, this, &ARammsWorldGenerator::ReleasePlayers, FMath::Max(PlayerReleaseDelay, 0.01f), false);
+	}
+}
+
+void ARammsWorldGenerator::ReleasePlayers()
+{
+	for (const FHeldBody& H : HeldBodies)
+	{
+		if (UPrimitiveComponent* C = H.Component.Get())
+		{
+			C->SetSimulatePhysics(true);
+			C->SetAllPhysicsLinearVelocity(FVector::ZeroVector);
+			C->SetAllPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+			C->WakeAllRigidBodies();
+		}
+	}
+	HeldBodies.Reset();
 }

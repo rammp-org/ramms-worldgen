@@ -245,10 +245,31 @@ for editor-side tooling and the MCP toolset for assistants.
 
 `ARammsWorldGenerator` is a runtime actor and the nodes are runtime
 elements, so a packaged or `-game` sim can regenerate per episode:
-`RegenerateWithSeed(N)`, wait for `OnWorldGenerated(Manifest)`, teleport the
-pawn to `Manifest.SuggestedStart`. `bGenerateOnBeginPlay` /
-`bRandomizeSeedOnBeginPlay` cover the simple case. Generation is asynchronous
-(PCG schedules it over frames); `IsGenerating()` is the poll.
+`RegenerateWithSeed(N)`, wait for `OnWorldGenerated(Manifest)`.
+`bGenerateOnBeginPlay` / `bRandomizeSeedOnBeginPlay` cover the simple case.
+Generation is asynchronous (PCG schedules it over frames); `IsGenerating()` is
+the poll.
+
+**The robot during a play-time regeneration.** With `bPlacePlayersOnGenerate`
+(on by default), regenerating in PIE or a game holds the player pawns still
+while the world is rebuilt. Their Unreal-simulated bodies (the Mebot's
+vehicle, arm and gripper skeletal meshes) go kinematic, so the robot neither
+falls through the old floor nor gets shoved by geometry spawning into it.
+When the new world is in, the pawns are teleported to
+`Manifest.SuggestedStart` (`+PlayerPlacementLift`), velocities are zeroed, and
+physics is switched back on after `PlayerReleaseDelay`. The PlayerStart moves
+there too. `PlacePlayers()` does the placement on demand. A pawn simulated by
+an external engine (the MuJoCo / URLab backend) has no Unreal-simulated
+bodies: it is teleported, but that backend has to reset its own state.
+
+**Same seed, same world, everywhere.** The module compiles with
+`FPSemantics = Precise`. Unreal compiles editor targets with `/fp:precise` and
+game targets with `/fp:fast`, and the difference flipped layout decisions on
+near-ties, so packaged stores came out different from the editor's. Placement
+tests also compare boxes with a 0.05 cm tolerance (`RammsPCG::Overlaps`,
+`InsideBox`), so pieces spaced exactly one gap apart do not depend on rounding.
+`ramms.WorldGen.TraceIndoor 1` logs every indoor placement attempt, for
+diffing two builds.
 
 The only editor-only parts are the Python builders and the MCP toolset.
 

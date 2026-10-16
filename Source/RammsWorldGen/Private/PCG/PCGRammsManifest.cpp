@@ -74,6 +74,10 @@ bool FPCGRammsManifestElement::ExecuteInternal(FPCGContext* Context) const
 
 	// Routes: a segment point is an origin + yaw with bounds (0..Length, y0..y1); the centreline is at mid-y.
 	double BestScore = -1.0;
+	// Indoor routes arrive as many short segments; if none is long enough for the usual start, use the
+	// middle of the best short one so a play world always has somewhere sensible to put the robot.
+	double BestShortScore = -1.0;
+	FTransform ShortStart = FTransform::Identity;
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinRoutes))
 	{
 		FReader R(Cast<UPCGBasePointData>(Tagged.Data));
@@ -105,12 +109,22 @@ bool FPCGRammsManifestElement::ExecuteInternal(FPCGContext* Context) const
 			M.Routes.Add(Route);
 			// Start on the widest compliant route, a little way in, facing along it.
 			const double Score = (Route.bCompliant ? 1000.0 : 0.0) + Route.MinClearWidth + FMath::Min(Length, 3000.0) * 0.01;
+			if (Score > BestShortScore && Length > 40.0)
+			{
+				BestShortScore = Score;
+				ShortStart = FTransform(Xf.GetRotation(), Xf.TransformPosition(FVector(Length * 0.5, MidY, 8.0)));
+			}
 			if (Score > BestScore && Length > 250.0)
 			{
 				BestScore = Score;
 				M.SuggestedStart = FTransform(Xf.GetRotation(), Xf.TransformPosition(FVector(FMath::Min(150.0, Length * 0.25), MidY, 8.0)));
 			}
 		}
+	}
+
+	if (BestScore < 0.0 && BestShortScore >= 0.0)
+	{
+		M.SuggestedStart = ShortStart;
 	}
 
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinFeatures))
