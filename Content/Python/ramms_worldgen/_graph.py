@@ -1,6 +1,6 @@
 """A tiny builder DSL for PCG graphs, so the graphs are code, not binary.
 
-    with GraphBuilder("/Game/WorldGen/Graphs/PCG_Downtown") as g:
+    with GraphBuilder("/RammsWorldGen/Graphs/PCG_Downtown") as g:
         params = g.node(unreal.PCGGetActorPropertySettings, property_name="Params", ...)
         street = g.node(unreal.PCGRammsStreetNetworkSettings)
         g.edge(g.input, "In", street, "In")

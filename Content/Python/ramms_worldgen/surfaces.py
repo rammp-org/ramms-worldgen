@@ -19,7 +19,7 @@ import unreal
 
 from . import _helpers as H
 
-DIR = "/Game/WorldGen/Materials"
+DIR = "/RammsWorldGen/Materials"
 MEL = unreal.MaterialEditingLibrary
 
 # name -> spec. bc/n/rma: texture paths; layout: how the packed texture holds roughness / AO -

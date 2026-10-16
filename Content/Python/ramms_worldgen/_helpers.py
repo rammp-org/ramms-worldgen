@@ -7,9 +7,11 @@ import unreal
 TAG = "[RammsWorldGen] "
 EAL = unreal.EditorAssetLibrary
 
-# Where the project keeps its generated content. Palettes and presets reference
-# /Game/Fab assets, so they live in the project, not the plugin.
-ROOT = "/Game/WorldGen"
+# The plugin's content (mounted at /RammsWorldGen): graphs, presets, profile, palette and
+# materials, all rebuilt from this package. The palette soft-references the project's Fab
+# meshes and the materials sample pack textures under /Game, so without those packs slots
+# stay empty and materials fall back to default textures. Example levels stay in the project.
+ROOT = "/RammsWorldGen"
 PALETTES = ROOT + "/Palettes"
 PRESETS = ROOT + "/Presets"
 GRAPHS = ROOT + "/Graphs"

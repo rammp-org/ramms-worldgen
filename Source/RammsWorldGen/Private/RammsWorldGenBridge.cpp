@@ -126,7 +126,7 @@ FString URammsWorldGenBridge::ResolvePresetPath(const FString& Preset)
 			return Path;
 		}
 	}
-	return FString::Printf(TEXT("/Game/WorldGen/Presets/%s"), *Preset);
+	return FString::Printf(TEXT("/RammsWorldGen/Presets/%s"), *Preset);
 }
 
 FString URammsWorldGenBridge::ResolveMapPath(const FString& Map)

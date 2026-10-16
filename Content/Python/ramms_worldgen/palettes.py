@@ -193,7 +193,7 @@ SOLID_MATERIALS = {
     "M_RammsTrim": ((0.62, 0.60, 0.56), 0.8, 0.0),
     "M_RammsTrimWhite": ((0.82, 0.81, 0.78), 0.45, 0.0),
 }
-MATERIALS_DIR = "/Game/WorldGen/Materials"
+MATERIALS_DIR = "/RammsWorldGen/Materials"
 
 # slot -> list of material (instance) asset names, first that exists wins
 MATERIAL_SLOTS = {
@@ -807,7 +807,7 @@ def _composite_entry(cls_path, slot=""):
 
 
 def _ensure_solid_material(name, rgb, roughness, metallic):
-    """A one-colour material asset under /Game/WorldGen/Materials, created once."""
+    """A one-colour material asset under /RammsWorldGen/Materials, created once."""
     path = MATERIALS_DIR + "/" + name
     if H.EAL.does_asset_exist(path):
         return H.EAL.load_asset(path)

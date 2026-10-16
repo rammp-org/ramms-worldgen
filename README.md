@@ -14,10 +14,14 @@ the hard one.
 > **Repository layout.** This plugin is developed in
 > [rammp-org/ramms-worldgen](https://github.com/rammp-org/ramms-worldgen) and
 > used by [ramms-sim](https://github.com/rammp-org/ramms-sim) as a submodule at
-> `Plugins/RammsWorldGen`. Paths below like `Scripts/worldgen/`,
-> `doc/world_generation.md`, `/Game/WorldGen/` and `Content/Maps/Gen/` belong to
-> the ramms-sim project: the build / verify scripts, the generated palette,
-> presets, materials and graphs, and the example levels.
+> `Plugins/RammsWorldGen`. The plugin carries its content (`/RammsWorldGen/`:
+> graphs, presets, ADA profile, palette and materials, all rebuilt from
+> `Content/Python/ramms_worldgen`). The palette and materials point at the
+> project's Fab / marketplace packs, which are not part of this repo; without
+> them palette slots stay empty and materials use default textures. Paths
+> below like `Scripts/worldgen/`, `doc/world_generation.md` and
+> `Content/Maps/Gen/` belong to ramms-sim (build / verify scripts and the
+> example levels).
 
 ```
 preset (params + palette + profile + graph)  ──►  ARammsWorldGenerator (seed)
@@ -63,11 +67,11 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 
 | Layer | What | Where |
 |---|---|---|
-| **Data assets** | `URammsWorldPreset` (scene kind, params, palette, profile, graph), `URammsWorldPalette` (semantic slots → Fab meshes / materials / actor classes), `URammsAccessibilityProfile` (ADA thresholds + the ranges used to break them on purpose) | `Source/.../Public/RammsWorld*.h`, instances under `/Game/WorldGen/` |
+| **Data assets** | `URammsWorldPreset` (scene kind, params, palette, profile, graph), `URammsWorldPalette` (semantic slots → Fab meshes / materials / actor classes), `URammsAccessibilityProfile` (ADA thresholds + the ranges used to break them on purpose) | `Source/.../Public/RammsWorld*.h`, instances under `/RammsWorldGen/` |
 | **Generator** | `ARammsWorldGenerator`: owns the `UPCGComponent`, a seed, a preset; flattens preset + profile + per-instance overrides into `FRammsWorldGenParams`; `Regenerate()` / `Randomize()` / `Cleanup()`; builds the manifest after generation; `PlacePlayerStart()`; `ExportManifest()` | `RammsWorldGenerator.h` |
 | **Procedural pieces** | `ARammsProcPiece`: a GeometryScript dynamic mesh whose dimensions decide usability — curb ramps with flares and detectable-warning strips, curbs, steps, ramps with landings and edge protection, walls with door openings, door leaves and thresholds, bollards, planters, low-poly trees and shrubs. Spawned by PCG's Spawn Actor with every property mapped from a same-named point attribute. Complex-as-simple collision. | `RammsProcPiece.h` |
 | **PCG nodes (C++)** | `Ramms: Street Network`, `Subdivide Lots`, `Building Massing`, `Park Layout`, `Hazard Placer`, `Indoor Layout`, `Manifest`. Deterministic by seed. They emit *oriented points with attributes*; stock spawners do the placing. | `Public/PCG/*.h` |
-| **Graphs** | `PCG_Streets` (downtown, suburban, park, main street) and `PCG_Indoor` (home, office, store), both ending in the shared subgraph `PCG_SpawnAndRecord`; **built from code** by `ramms_worldgen.graphs` so they are reviewable and reproducible (see `doc/world_generation.md`, "The PCG graphs"). | `/Game/WorldGen/Graphs/` |
+| **Graphs** | `PCG_Streets` (downtown, suburban, park, main street) and `PCG_Indoor` (home, office, store), both ending in the shared subgraph `PCG_SpawnAndRecord`; **built from code** by `ramms_worldgen.graphs` so they are reviewable and reproducible (see `doc/world_generation.md`, "The PCG graphs"). | `/RammsWorldGen/Graphs/` |
 | **Python** | Graph builder DSL, palette/preset builders, example-level assembly, MCP toolset | `Content/Python/ramms_worldgen/` |
 
 The one wiring rule: each custom node's overridable properties are named
@@ -120,8 +124,8 @@ Live Coding — same rule as the rest of the project.
    ```
    or, in the editor's Python console, `import ramms_worldgen.build_all as b; b.build("all")`,
    or ask the assistant for `worldgen_build_assets`. This writes
-   `/Game/WorldGen/Palettes/PAL_Default`, `/Game/WorldGen/Profiles/PROF_ADA`,
-   `/Game/WorldGen/Presets/PRE_*`, and `/Game/WorldGen/Graphs/PCG_Streets`,
+   `/RammsWorldGen/Palettes/PAL_Default`, `/RammsWorldGen/Profiles/PROF_ADA`,
+   `/RammsWorldGen/Presets/PRE_*`, and `/RammsWorldGen/Graphs/PCG_Streets`,
    `PCG_Indoor` and `PCG_SpawnAndRecord`. The report lists every palette slot it could not fill.
 4. Build the example levels:
    ```
