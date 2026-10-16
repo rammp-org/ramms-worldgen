@@ -10,6 +10,15 @@ the routes are, how wide they really are, and which features break the
 accessibility profile — so an episode knows which curb, door or A-frame is
 the hard one.
 
+
+> **Repository layout.** This plugin is developed in
+> [rammp-org/ramms-worldgen](https://github.com/rammp-org/ramms-worldgen) and
+> used by [ramms-sim](https://github.com/rammp-org/ramms-sim) as a submodule at
+> `Plugins/RammsWorldGen`. Paths below like `Scripts/worldgen/`,
+> `doc/world_generation.md`, `/Game/WorldGen/` and `Content/Maps/Gen/` belong to
+> the ramms-sim project: the build / verify scripts, the generated palette,
+> presets, materials and graphs, and the example levels.
+
 ```
 preset (params + palette + profile + graph)  ──►  ARammsWorldGenerator (seed)
                                                         │  PCG graph

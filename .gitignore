@@ -1,0 +1,6 @@
+Binaries/
+Intermediate/
+DerivedDataCache/
+__pycache__/
+*.pyc
+.DS_Store
