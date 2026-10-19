@@ -184,29 +184,56 @@ void ARammsProcPiece::BuildCurb(UDynamicMesh* M)
 
 void ARammsProcPiece::BuildCurbRamp(UDynamicMesh* M)
 {
-	// Origin at the top of the ramp on the sidewalk, descending toward +X to
-	// the road at z = -Rise. Flares descend sideways from the ramp edges.
+	// Origin at the top of the ramp on the sidewalk, descending toward +X to the road at z = -Rise at
+	// x = Run (the curb line). The ramp is a solid block whose top is the walking surface; it fills a cut
+	// in the sidewalk slab (the street network leaves that cut), so it is the surface, not buried in it.
+	// The flares either side are part of the same cut: at the top (x = 0) they are level with the walk,
+	// and along the curb line they rise from road level at the ramp edge to the full curb height at
+	// their outer edge, where the curb resumes.
 	const double H = FMath::Max(Rise, 1.0);
 	const double RunSlope = FMath::Max(Slope, 0.01);
 	const double Run = H / RunSlope;
 	const double W = FMath::Max(SizeY, 60.0);
-	SlopedSlab(M, 0.0, 0.0, 0.0, Run, W, H, 0);
+	const double Bottom = -H - 2.0; // 2 cm into the road
+
+	// One block per strip, its top vertices then lifted onto the surface height h(x, y).
+	auto Strip = [&](double Y0, double Y1, int32 StepsY, TFunctionRef<double(double X, double Y)> Height)
+	{
+		if (Y1 - Y0 < 1.0) { return; }
+		int32 Start = 0;
+		M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh) { Start = Mesh.MaxVertexID(); });
+		const int32 StepsX = FMath::Clamp(FMath::RoundToInt(Run / 30.0), 2, 16);
+		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(
+			M, Opts(0), FTransform(FVector(Run * 0.5, (Y0 + Y1) * 0.5, Bottom * 0.5)), static_cast<float>(Run), static_cast<float>(Y1 - Y0), static_cast<float>(-Bottom),
+			StepsX, StepsY, 0, EGeometryScriptPrimitiveOriginMode::Center);
+		M->EditMesh([&](UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			for (const int32 Vid : Mesh.VertexIndicesItr())
+			{
+				if (Vid < Start) { continue; }
+				FVector3d P = Mesh.GetVertex(Vid);
+				if (P.Z > Bottom * 0.5)
+				{
+					P.Z = Height(FMath::Clamp(P.X, 0.0, Run), P.Y);
+					Mesh.SetVertex(Vid, P);
+				}
+			}
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown);
+	};
+	Strip(-W * 0.5, W * 0.5, 2, [&](double X, double) { return -H * X / Run; });
 
 	const double FlareRun = H / FMath::Max(FlareSlope, 0.01); // sideways extent of each flare
 	if (FlareRun > 1.0)
 	{
-		// Each flare is a slab sloping down away from the ramp edge (roll) and
-		// also down toward the road (pitch), approximated by a rolled box of the
-		// ramp's run. Its far edge meets the road level.
-		const double RollAngle = FMath::RadiansToDegrees(FMath::Atan2(H, FlareRun));
-		const double Length = FMath::Sqrt(FlareRun * FlareRun + H * H);
-		const double Thickness = H + 2.0;
+		const int32 Steps = FMath::Clamp(FMath::RoundToInt(FlareRun / 30.0), 2, 12);
 		for (int32 Side = -1; Side <= 1; Side += 2)
 		{
-			const FRotator Rot(0.0, 0.0, -Side * RollAngle); // roll away from the ramp
-			const FVector Normal = Rot.RotateVector(FVector::UpVector);
-			const FVector TopCentre(Run * 0.5, Side * (W * 0.5 + FlareRun * 0.5), -H * 0.5);
-			Box(M, TopCentre - Normal * (Thickness * 0.5), FVector(Run, Length, Thickness), Rot, 0);
+			const double Y0 = Side < 0 ? -W * 0.5 - FlareRun : W * 0.5;
+			Strip(Y0, Y0 + FlareRun, Steps, [&](double X, double Y)
+			{
+				const double T = FMath::Clamp((FMath::Abs(Y) - W * 0.5) / FlareRun, 0.0, 1.0); // 0 at the ramp edge, 1 at the outer edge
+				return -H * (X / Run) * (1.0 - T);
+			});
 		}
 	}
 
@@ -219,7 +246,8 @@ void ARammsProcPiece::BuildCurbRamp(UDynamicMesh* M)
 		const FVector Normal = Rot.RotateVector(FVector::UpVector);
 		const double XC = Run - D * 0.5;
 		const FVector Centre(XC, 0.0, -H * (XC / Run));
-		Box(M, Centre + Normal * 0.4, FVector(D, W, 0.8), Rot, 1);
+		// 4 mm proud of the ramp (truncated domes are about 5 mm): a wheelchair rolls over it.
+		Box(M, Centre + Normal * 0.1, FVector(D, W, 0.6), Rot, 1);
 	}
 }
 

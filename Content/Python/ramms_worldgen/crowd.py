@@ -3,11 +3,17 @@
 After generation, the manifest's routes become a ZoneGraph network:
 
 - outdoors, each block's sidewalk sides and each park's paths are straight runs; they are cut where they
-  cross (block corners, the park's cross paths) into a graph, short dangling stubs are dropped, and the
-  corners of neighbouring blocks are joined across the street (pedestrians cross at the corners, where
-  the crosswalks are);
+  cross (block corners, the park's cross paths) into a graph and short dangling stubs are dropped. The
+  street network's crosswalks (manifest features of kind Crosswalk) join the sidewalks across the street:
+  each one is a run from one sidewalk's centre line over its curb ramp, along the zebra, and up the ramp
+  on the far side. (Manifests from before crosswalks were recorded join neighbouring blocks' corners
+  instead.);
 - indoors, every room's door-to-centre routes (already bent around the furniture) join at the shared
   door centres and room centres.
+
+Every run is sampled about every 50 cm onto the ground below it (a line trace), so lanes follow curb
+ramps, the drop to the road and any slope instead of cutting straight through the air between their
+end points.
 
 Nodes where three or more runs meet (and one node per closed loop) become polygon junctions
 (AZoneShape, polygon type, a lane-profile point per connecting run); every run between them becomes a
@@ -126,8 +132,25 @@ class _Graph:
                     changed = True
 
 
-def _outdoor_graph(routes):
-    """Straight runs (sidewalk sides, park paths) cut at every crossing into a graph."""
+def _crosswalk_ends(features):
+    """[(curb end a, curb end b, z)] for every Crosswalk feature: the two ends of its centre line, at the curbs."""
+    out = []
+    for f in features or ():
+        if f.get("kind") != "Crosswalk":
+            continue
+        loc, size = f.get("location", {}), f.get("size", {})
+        yaw = math.radians((f.get("rotation") or {}).get("yaw", 0.0))
+        d = (math.cos(yaw), math.sin(yaw))
+        c = (loc.get("x", 0.0), loc.get("y", 0.0))
+        h = size.get("x", 0.0) * 0.5
+        if h > 10.0:
+            out.append((_sub(c, _mul(d, h)), _add(c, _mul(d, h)), loc.get("z", 0.0)))
+    return out
+
+
+def _outdoor_graph(routes, features=()):
+    """Straight runs (sidewalk sides, park paths) cut at every crossing into a graph, joined across the
+    streets along the crosswalks."""
     segs = []
     for r in routes:
         pts = r.get("points") or []
@@ -137,6 +160,18 @@ def _outdoor_graph(routes):
         if _len(_sub(b, a)) < 50.0:
             continue
         segs.append({"a": a, "b": b, "z": pts[0].get("z", 0.0), "cuts": [0.0, 1.0], "name": r.get("name", "")})
+    # A park's entrance paths stop at the back of the sidewalk, short of its centre line: carry each one on
+    # to the sidewalk run it meets.
+    for ps in segs:
+        if not ps["name"].startswith("Park"):
+            continue
+        for ws in segs:
+            if not ws["name"].startswith("Block"):
+                continue
+            h = _seg_hit(ps["a"], ps["b"], ws["a"], ws["b"], ext=300.0)
+            if h and not 0.0 <= h[0] <= 1.0 and 0.0 <= h[1] <= 1.0:
+                p = _add(ps["a"], _mul(_sub(ps["b"], ps["a"]), h[0]))
+                ps["a" if h[0] < 0.0 else "b"] = p
     # Crossings and T-junctions: sidewalk sides overrun the corners a little, so allow 120 cm of extension.
     for i in range(len(segs)):
         for j in range(i + 1, len(segs)):
@@ -144,6 +179,34 @@ def _outdoor_graph(routes):
             if h:
                 segs[i]["cuts"].append(min(max(h[0], 0.0), 1.0))
                 segs[j]["cuts"].append(min(max(h[1], 0.0), 1.0))
+    # Crosswalks: each curb end meets the sidewalk run parallel to the curb behind it, straight back from
+    # the curb. That point becomes a cut (a node) on the run; the crossing is a run between the two.
+    crossings = []
+    for ea, eb, zr in _crosswalk_ends(features):
+        d = _unit(_sub(eb, ea))
+        ends = []
+        for e, out in ((ea, _mul(d, -1.0)), (eb, d)):
+            best = None
+            for si, s in enumerate(segs):
+                if not s["name"].startswith("Block"):
+                    continue
+                v = _sub(s["b"], s["a"])
+                L = _len(v)
+                if L < 1.0 or abs((v[0] * d[0] + v[1] * d[1]) / L) > 0.1:
+                    continue                         # not parallel to this curb
+                t = ((e[0] - s["a"][0]) * v[0] + (e[1] - s["a"][1]) * v[1]) / (L * L)
+                if not 0.02 < t < 0.98:
+                    continue
+                q = _add(s["a"], _mul(v, t))
+                back = _sub(q, e)
+                dist = back[0] * out[0] + back[1] * out[1]   # how far behind the curb, away from the road
+                if 0.0 < dist < 700.0 and (best is None or dist < best[0]):
+                    best = (dist, si, t, q)
+            ends.append((e, best))
+        if all(b is not None for _e, b in ends):
+            for _e, b in ends:
+                segs[b[1]]["cuts"].append(b[2])
+            crossings.append((ends[0][1][3], ends[0][0], ends[1][0], ends[1][1][3], segs[ends[0][1][1]]["z"], zr))
     g = _Graph(snap=60.0)
     for s in segs:
         cuts = sorted(set(round(c, 5) for c in s["cuts"]))
@@ -153,7 +216,12 @@ def _outdoor_graph(routes):
             if _len(_sub(pts[k + 1], pts[k])) > 40.0:
                 g.add(ids[k], ids[k + 1])
     g.prune_stubs(450.0)
-    # Join each block's corners to the nearest corner of a neighbouring block straight across the street.
+    if crossings:
+        for qa, ca, cb, qb, zs, zr in crossings:
+            # Interior points at both curbs; the lane follows the ground between them (ramp, road).
+            g.add(g.node(qa, zs), g.node(qb, zs), [(ca[0], ca[1], zs), (cb[0], cb[1], zs)])
+        return g
+    # No crosswalks recorded (an older manifest): join each block's corners to the nearest corner of a neighbouring block straight across the street.
     corner_of = {}
     for s in segs:
         if s["name"].startswith("Block"):
@@ -518,9 +586,7 @@ def _profile_ref(kind):
     return ref, width
 
 
-def _ground_z(world, x, y, z):
-    """Walking surface height at (x, y): the first hit going down from just above the route, ignoring
-    anything standing more than 40 cm above it (props, furniture)."""
+def _trace_down(world, x, y, z):
     s = unreal.Vector(x, y, z + 60.0)
     e = unreal.Vector(x, y, z - 120.0)
     hit = unreal.SystemLibrary.line_trace_single(world, s, e, unreal.TraceTypeQuery.TRACE_TYPE_QUERY1, False, [],
@@ -531,7 +597,58 @@ def _ground_z(world, x, y, z):
             loc = next((v for v in t if isinstance(v, unreal.Vector)), None)
             if loc is not None and loc.z <= z + 40.0:
                 return loc.z
-    return z
+    return None
+
+
+def _ground_z(world, x, y, z):
+    """Walking surface height at (x, y): the first hit going down from just above the route, ignoring
+    anything standing more than 40 cm above it (props, furniture). A line exactly on the seam between two
+    abutting slabs can slip between them (a lane rerouted on the 25 cm grid lands on such seams): when the
+    trace finds nothing or a drop of more than a curb, it is repeated 2 cm to either side and the highest
+    surface wins."""
+    g = _trace_down(world, x, y, z)
+    if g is None or g < z - 20.0:
+        alts = [h for h in (_trace_down(world, x + dx, y + dy, z) for dx, dy in ((2.0, 2.0), (-2.0, -2.0), (2.0, -2.0), (-2.0, 2.0))) if h is not None]
+        if alts:
+            g = max(alts + ([g] if g is not None else []))
+    return z if g is None else g
+
+
+GROUND_STEP = 50.0      # lane sampling interval along a run, cm
+
+
+def _follow_ground(world, pts):
+    """The polyline pts [(x, y, z)] resampled every GROUND_STEP cm onto the walking surface below it.
+    Each sample traces down from the previous sample's height, so a run steps down a curb ramp or the
+    road and back up the far side; samples where the ground carries on in a straight line are dropped
+    again (the corners of the input are always kept)."""
+    out = []
+    zref = pts[0][2]
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        L = _len(_sub(b[:2], a[:2]))
+        n = max(1, int(math.ceil(L / GROUND_STEP)))
+        for k in range(n):
+            t = k / n
+            x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+            zref = _ground_z(world, x, y, max(zref, a[2] + (b[2] - a[2]) * t))
+            out.append([x, y, zref, k == 0])
+    last = pts[-1]
+    out.append([last[0], last[1], _ground_z(world, last[0], last[1], max(zref, last[2])), True])
+    # Drop samples that lie on the straight line (in height too) between their neighbours.
+    keep = [out[0]]
+    for i in range(1, len(out) - 1):
+        p, nx = out[i], out[i + 1]
+        if p[3]:
+            keep.append(p)
+            continue
+        q = keep[-1]
+        dq = _len(_sub(p[:2], q[:2])); dn = _len(_sub(nx[:2], p[:2]))
+        zl = q[2] + (nx[2] - q[2]) * dq / max(dq + dn, 1e-6)
+        if abs(p[2] - zl) > 1.0:
+            keep.append(p)
+    keep.append(out[-1])
+    return [(p[0], p[1], p[2]) for p in keep]
 
 
 def _shape(points, shape_type, profile_ref, label):
@@ -644,9 +761,8 @@ def _emit(g, profile_kind, world, label_prefix):
             continue
         # Sharp points with a small turn radius: auto-bezier corners bulge out over the street.
         sp = []
-        for i, p in enumerate(clean):
-            z = _ground_z(world, p[0], p[1], p[2]) + 1.0
-            q = _pt(p[0], p[1], z, T.SHARP)
+        for x, y, z in _follow_ground(world, clean):
+            q = _pt(x, y, z + 1.0, T.SHARP)
             q.inner_turn_radius = 40.0
             sp.append(q)
         _shape(sp, unreal.FZoneShapeType.SPLINE, ref, "%s_Lane%02d" % (label_prefix, idx))
@@ -677,12 +793,16 @@ def _emit(g, profile_kind, world, label_prefix):
     return shapes, lane_cm
 
 
+BLOCKED = []       # (shape, from, to) of every segment the last check_lanes() found blocked
+
+
 def check_lanes(world=None):
     """Audit the level's crowd shapes against the geometry: (spline segments whose centre line comes within
     15 cm of something, polygon outline edges that cross something). Both should be 0."""
     world = world or unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
     clr = _Clearance(world)
     bad_lane = bad_poly = 0
+    del BLOCKED[:]
     for a in unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors():
         if not isinstance(a, unreal.ZoneShape) or not a.actor_has_tag(TAG):
             continue
@@ -692,6 +812,7 @@ def check_lanes(world=None):
         segs = list(zip(P, P[1:] + ([P[0]] if poly else [])))
         for p0, p1 in segs:
             if not clr.segment_free(p0[:2], p1[:2], p0[2], p1[2], 4.0 if poly else 15.0):
+                BLOCKED.append((a.get_actor_label(), [round(v) for v in p0], [round(v) for v in p1]))
                 if poly:
                     bad_poly += 1
                 else:
@@ -708,7 +829,7 @@ def build_crowd(gen, count=None):
     if not routes:
         return {"shapes": 0, "removed": removed, "note": "no routes"}
     indoor = str(m.get("sceneKind", "")).lower().startswith("indoor") or all(r.get("name", "").startswith("Room") for r in routes)
-    g = _indoor_graph(routes, m.get("features", [])) if indoor else _outdoor_graph(routes)
+    g = _indoor_graph(routes, m.get("features", [])) if indoor else _outdoor_graph(routes, m.get("features", []))
     world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
     kind = "narrow" if indoor else "sidewalk"
     lane_half = LANE_PROFILES[kind][2] * 0.25        # each lane's centre sits a quarter of the profile off the run
@@ -753,7 +874,7 @@ def build_crowd(gen, count=None):
     elif not profile:
         H.warn("crowd: %s not found; lanes laid, no spawner" % PROFILE_ASSET)
     bad_lane, bad_poly = check_lanes(world)
-    res = {"cleared": cleared, "blocked_lane_segments": bad_lane, "blocked_junction_edges": bad_poly, "shapes": shapes, "nodes": len(g.nodes), "edges": len(g.edges), "lane_m": round(lane_cm / 100.0),
+    res = {"cleared": cleared, "blocked_lane_segments": bad_lane, "blocked_junction_edges": bad_poly, "blocked": list(BLOCKED[:10]), "shapes": shapes, "nodes": len(g.nodes), "edges": len(g.edges), "lane_m": round(lane_cm / 100.0),
            "count": count if spawner else 0, "removed": removed, "indoor": indoor}
     H.log("crowd: %s" % res)
     return res

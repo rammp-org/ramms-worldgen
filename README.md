@@ -289,6 +289,7 @@ Kinds and the issues they can carry:
 |---|---|---|
 | `CurbRamp` | Standard, TooSteep, NoDetectableWarning | SlopeTooSteep |
 | `Crossing` | MissingCurbRamp | MissingCurbRamp |
+| `Crosswalk` | Ramped, SteepRamp, OneRamp, NoRamps (whether both ends have a curb ramp; size.x = curb to curb, yaw = the crossing direction) | — |
 | `Entrance` | Level, SteppedWithRamp, SteppedSteepRamp, SteppedNoRamp | StepAtEntrance, SlopeTooSteep, DoorTooNarrow, ThresholdTooHigh |
 | `Door`, `Threshold` | Standard, Narrow, RaisedThreshold, High/Low | DoorTooNarrow, ThresholdTooHigh |
 | `Ramp`, `Step` | Standard, TooSteep / WithRamp, NoRamp | SlopeTooSteep, StepAtEntrance |
@@ -496,8 +497,10 @@ After a level is generated, `ramms_worldgen.crowd.build_crowd` (run by
 (Mass + ZoneGraph) along the manifest's routes:
 
 - outdoors, sidewalk sides and park paths are cut where they cross into a
-  graph; dangling corner stubs are dropped and neighbouring blocks' corners
-  are joined straight across the street (where the crosswalks are);
+  graph and dangling corner stubs are dropped. Each `Crosswalk` feature joins
+  the two sidewalks it connects: a run from one sidewalk's centre line
+  straight to the curb (over the curb ramp), along the zebra, and up the far
+  side;
 - indoors, every room's door-to-door routes (already bent around the
   furniture) are linked through the doorways, and a shop's aisles become a
   ladder tied to the door routes.
@@ -511,6 +514,10 @@ run that hits something is rerouted around it on a 25 cm grid (A*, then
 string-pulled), or dropped when there is no way through. Junctions shrink to
 fit the free space around them. `crowd.check_lanes()` audits a level
 (verify.py fails a level whose lanes touch geometry).
+
+Every run is sampled about every 50 cm onto the surface below it, so lanes
+follow curb ramps, the drop to the road, path slopes and thresholds instead
+of floating in a straight line between their ends.
 
 Branch nodes become polygon `ZoneShape` junctions, the runs between them
 spline `ZoneShape`s on the `PedestrianLanesSidewalk` profile (2 x 60 cm)
@@ -530,8 +537,13 @@ and saved there (the example levels), not with runtime regeneration.
   not enter them. Indoor and street worlds are separate presets, not one
   continuous world — a doorway from a street into a generated interior is the
   natural next step (same pieces, a `Doorway` node).
-- Flares on curb ramps are rolled slabs, not true warped surfaces; the ramp
-  surface itself is exact. Sidewalks are flat (no cross slope); `MaxCrossSlope`
+- Curb ramps are perpendicular ramps cut into the sidewalk at every crossing
+  that joins two blocks: the ramp's top is the walking surface (the sidewalk
+  slab and planting strip are cut around it and its flares, and the curb is
+  open there), with flares warped from road level at the ramp to full curb
+  height at their outer edge. Crossings near an intersection are set back
+  from the corner far enough for both corners' ramps and flares to fit.
+  Sidewalks are flat (no cross slope); `MaxCrossSlope`
   is carried for the profile but not yet generated.
 - Hazard meshes stand in: an info board plays the A-frame, railings play
   barriers, the raised-cobble tree pit plays the heaved slab. Scooters have no

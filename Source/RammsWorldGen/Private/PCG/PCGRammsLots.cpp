@@ -279,6 +279,7 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 					Lots.Set(l, RammsPCG::Depth, RowDepth);
 					Lots.Set(l, RammsPCG::Setback, RammsPCG::RandRange(Rng, S->SetbackMin, S->SetbackMax));
 					Lots.SetInt(l, RammsPCG::Side, Row == 0 ? 0 : 2);
+					Lots.Set(l, FName(TEXT("RampCuts")), R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
 					(void)FaceSign;
 					x += W;
 				}
@@ -351,6 +352,26 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			const double Z0 = Xf.GetLocation().Z;
 			const double Yaw = Xf.Rotator().Yaw;
 			auto ToWorld = [&](double lx, double ly, double lz) { return Xf.TransformPosition(FVector(lx, ly, lz - Z0)); };
+			// Curb ramps in front of the lot (from the street network): nothing is planted or paved over them.
+			TArray<FBox2D> RampCuts;
+			{
+				TArray<FString> Parts;
+				R.Get<FString>(i, FName(TEXT("RampCuts")), FString()).ParseIntoArray(Parts, TEXT(";"), true);
+				for (const FString& Part : Parts)
+				{
+					TArray<FString> V;
+					if (Part.ParseIntoArray(V, TEXT(","), true) == 4)
+					{
+						RampCuts.Add(FBox2D(FVector2D(FCString::Atod(*V[0]), FCString::Atod(*V[1])), FVector2D(FCString::Atod(*V[2]), FCString::Atod(*V[3]))));
+					}
+				}
+			}
+			auto OnRamp = [&](double lx, double ly, double Margin)
+			{
+				const FVector W = ToWorld(lx, ly, Z0);
+				for (const FBox2D& Bx : RampCuts) { if (Bx.ExpandBy(Margin).IsInside(FVector2D(W.X, W.Y))) { return true; } }
+				return false;
+			};
 
 			double BW = FMath::Clamp(Width * FMath::Clamp(S->LotCoverage, 0.2, 1.0), 300.0, Width);
 			const double FrontX = Depth * 0.5 - Setback;
@@ -901,7 +922,18 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					RammsPCG::WriteManifest(Props, m, FName(TEXT("Prop")), FName(TEXT("Mailbox")), true, ERammsComplianceIssue::None, 0.0, 0.0);
 				}
 				// The driveway carries on across the sidewalk (and planting strip) to the curb as an apron.
-				if (DrivewayHi > DrivewayLo && S->SidewalkWidth > 1.0)
+				auto ApronOnRamp = [&]()
+				{
+					FBox2D Ap2(ForceInit);
+					for (int32 c = 0; c < 4; ++c)
+					{
+						const FVector W = ToWorld((c & 1) ? LotFront + S->SidewalkWidth : LotFront, (c & 2) ? DrivewayHi : DrivewayLo, Z0);
+						Ap2 += FVector2D(W.X, W.Y);
+					}
+					for (const FBox2D& Bx : RampCuts) { if (RammsPCG::Overlaps(Bx, Ap2)) { return true; } }
+					return false;
+				};
+				if (DrivewayHi > DrivewayLo && S->SidewalkWidth > 1.0 && !ApronOnRamp())
 				{
 					FRammsPieceDesc Ap;
 					Ap.Kind = ERammsProcPieceKind::Slab;
@@ -1014,7 +1046,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 						for (int32 k = 0; k < NT; ++k)
 						{
 							const double Ty = -Width * 0.5 + Width * (k + 0.5) / NT + RammsPCG::RandRange(Rng, -60.0, 60.0);
-							if (!ClearOfDrive(Ty, 90.0) || FMath::Abs(Ty) > Width * 0.5 - 80.0) { continue; }
+							if (!ClearOfDrive(Ty, 90.0) || FMath::Abs(Ty) > Width * 0.5 - 80.0 || OnRamp(StripX, Ty, 90.0)) { continue; }
 							FRammsPaletteMesh Tm;
 							if (bCanopy ? (Palette->PickMesh(RammsPaletteSlots::TreeLarge, Rng, Tm) || Palette->PickMesh(RammsPaletteSlots::Tree, Rng, Tm)) : Palette->PickMesh(RammsPaletteSlots::Tree, Rng, Tm))
 							{
@@ -1027,7 +1059,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					if (S->StreetLightSpacing > 300.0 && (LotId % FMath::Max(1, FMath::RoundToInt(S->StreetLightSpacing / FMath::Max(Width, 100.0)))) == 0)
 					{
 						const double Ly = (LotId % 2 == 0 ? -1.0 : 1.0) * (Width * 0.5 - 70.0);
-						if (ClearOfDrive(Ly, 40.0))
+						if (ClearOfDrive(Ly, 40.0) && !OnRamp(StripX, Ly, 50.0))
 						{
 							const int32 l = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::StreetLight, Rng, ToWorld(StripX, Ly, Z0), Yaw + 90.0, NextSeed());
 							RammsPCG::WriteManifest(Props, l, FName(TEXT("Prop")), RammsPaletteSlots::StreetLight, true, ERammsComplianceIssue::None, 0.0, 0.0);
@@ -1041,7 +1073,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 							for (double gx = StripX - FZs * 0.5 + 25.0; gx < StripX + FZs * 0.5 - 20.0; gx += Step)
 							{
 								const double Py = gy + RammsPCG::RandRange(Rng, -Step * 0.4, Step * 0.4);
-								if (!ClearOfDrive(Py, 30.0)) { continue; }
+								if (!ClearOfDrive(Py, 30.0) || OnRamp(gx, Py, 20.0)) { continue; }
 								FRammsPaletteMesh G; if (!Palette->PickMesh(RammsPaletteSlots::GrassClump, Rng, G)) { break; }
 								RammsPCG::WritePickedMesh(Grass, G, ToWorld(FMath::Clamp(gx + RammsPCG::RandRange(Rng, -Step * 0.3, Step * 0.3), StripX - FZs * 0.5 + 20.0, StripX + FZs * 0.5 - 20.0), Py, Z0),
 									RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(), RammsPCG::RandRange(Rng, 0.6, 1.0));

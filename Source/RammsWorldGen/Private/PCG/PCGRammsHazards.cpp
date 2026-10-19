@@ -464,12 +464,15 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 			const double y0 = C.Y - Size.Y * 0.5 + Inset, y1 = C.Y + Size.Y * 0.5 - Inset;
 			if (x1 - x0 < 400.0 || y1 - y0 < 400.0) { continue; }
 
-			// Path segments: loop (4) + cross (2). Each is a slab plus a path-side record.
+			// Path segments: loop (4) + cross (2). Each is a slab plus a path-side record. The cross paths run
+			// on past the loop to the edge of the park, so each side has a step-free entrance from the sidewalk.
 			struct FPathSeg { FVector A, B; double Yaw; };
+			const double ex0 = C.X - Size.X * 0.5 + PW * 0.5, ex1 = C.X + Size.X * 0.5 - PW * 0.5;
+			const double ey0 = C.Y - Size.Y * 0.5 + PW * 0.5, ey1 = C.Y + Size.Y * 0.5 - PW * 0.5;
 			const TArray<FPathSeg> Segs = {
 				{ FVector(x0, y0, Z0), FVector(x1, y0, Z0), 0.0 }, { FVector(x1, y0, Z0), FVector(x1, y1, Z0), 90.0 },
 				{ FVector(x1, y1, Z0), FVector(x0, y1, Z0), 180.0 }, { FVector(x0, y1, Z0), FVector(x0, y0, Z0), 270.0 },
-				{ FVector(x0, C.Y, Z0), FVector(x1, C.Y, Z0), 0.0 }, { FVector(C.X, y0, Z0), FVector(C.X, y1, Z0), 90.0 } };
+				{ FVector(ex0, C.Y, Z0), FVector(ex1, C.Y, Z0), 0.0 }, { FVector(C.X, ey0, Z0), FVector(C.X, ey1, Z0), 90.0 } };
 			TArray<FBox2D> PathBoxes;
 			for (const FPathSeg& Sg : Segs)
 			{
