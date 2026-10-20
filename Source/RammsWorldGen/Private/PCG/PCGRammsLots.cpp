@@ -802,7 +802,8 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					Wk.Kind = ERammsProcPieceKind::Slab;
 					Wk.SizeX = LotFront - WalkStart; Wk.SizeY = WalkW; Wk.SizeZ = 6.0;
 					Wk.MaterialPath = MatPath;
-					Wk.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(WalkStart, EntranceY, Z0 + 1.5));
+					// Top 5 mm above the sidewalk: under the 6.4 mm a wheelchair route allows without a bevel.
+					Wk.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(WalkStart, EntranceY, Z0 + 0.5));
 					Wk.ManifestKind = FName(TEXT("Path")); Wk.ManifestSubtype = FName(TEXT("FrontWalk")); Wk.Measure = WalkW; Wk.Threshold = S->MinClearWidth;
 					Wk.Seed = NextSeed();
 					RammsPCG::WritePiece(Pieces, Wk);
@@ -829,7 +830,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					Dv.Kind = ERammsProcPieceKind::Slab;
 					Dv.SizeX = LotFront - DStart; Dv.SizeY = DW; Dv.SizeZ = 8.0;
 					Dv.MaterialPath = MatConcrete;
-					Dv.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(DStart, DCentre, Z0 + 2.0));
+					Dv.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(DStart, DCentre, Z0 + 0.5)); // level with the apron
 					Dv.ManifestKind = FName(TEXT("Driveway")); Dv.ManifestSubtype = FName(TEXT("Concrete")); Dv.Measure = DW;
 					Dv.Seed = NextSeed();
 					RammsPCG::WritePiece(Pieces, Dv);
@@ -839,7 +840,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					if (Rng.FRand() < 0.55 && Palette && Palette->PickMesh(RammsPaletteSlots::Car, Rng, Car) && Car.Footprint.Y < DW - 40.0 && (!bGarage || DStart + Car.Footprint.X + 90.0 < LotFront))
 					{
 						const double cx = bGarage ? DStart + Car.Footprint.X * 0.5 + 90.0 : FMath::Max(DStart + Car.Footprint.X * 0.5 + 60.0, FrontX - Car.Footprint.X * 0.3);
-						const int32 c = RammsPCG::WritePickedMesh(Props, Car, ToWorld(cx, DCentre, Z0 + 2.0 + 8.0 * 0.0), Yaw + (Rng.FRand() < 0.8 ? 180.0 : 0.0), NextSeed());
+						const int32 c = RammsPCG::WritePickedMesh(Props, Car, ToWorld(cx, DCentre, Z0 + 0.5), Yaw + (Rng.FRand() < 0.8 ? 180.0 : 0.0), NextSeed());
 						RammsPCG::WriteManifest(Props, c, FName(TEXT("Vehicle")), FName(TEXT("Driveway")), true, ERammsComplianceIssue::None, 0.0, 0.0);
 					}
 				}
@@ -1032,7 +1033,8 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				}
 				// The planting strip in front of the lot (between the walk and the curb): street trees spaced along it
 				// and a street light, both clear of the driveway apron, plus grass. Canopy streets get big old trees.
-				const double FZs = FMath::Min(S->FurnitureZoneWidth, S->SidewalkWidth);
+				// The same clamp as the Street Network's furniture zone, so the strip planting matches the strip.
+				const double FZs = FMath::Clamp(S->FurnitureZoneWidth, 0.0, S->SidewalkWidth * 0.6);
 				if (S->PlantingStrip > 0.5 && FZs > 60.0 && Palette)
 				{
 					const double StripX = LotFront + S->SidewalkWidth - FZs * 0.5;

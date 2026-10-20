@@ -105,6 +105,18 @@ struct RAMMSWORLDGEN_API FRammsManifestFeature
 	/** The threshold that quantity was compared against. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Manifest")
 	double Threshold = 0.0;
+
+	/** The mesh asset placed for this feature (palette meshes), e.g. "/Game/UrbanVerse/Bench/SM_UV_bench_1c009275.SM_UV_bench_1c009275". */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Manifest")
+	FString Asset;
+
+	/** Where that asset came from, when the palette knows (e.g. "urbanverse:<uid>|<category>"). */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Manifest")
+	FString Source;
+
+	/** The route this feature sits on (sidewalk side or path), when it was placed along one. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Manifest")
+	FName Route;
 };
 
 /** A pedestrian route the generator intends to be traversable. Clear width is
@@ -140,6 +152,10 @@ struct RAMMSWORLDGEN_API FRammsWorldManifest
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Manifest")
 	FName Preset;
+
+	/** The palette the world was generated with (object path). */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Manifest")
+	FString Palette;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Manifest")
 	ERammsSceneKind SceneKind = ERammsSceneKind::Downtown;

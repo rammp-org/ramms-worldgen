@@ -182,6 +182,7 @@ def _outdoor_graph(routes, features=()):
     # Crosswalks: each curb end meets the sidewalk run parallel to the curb behind it, straight back from
     # the curb. That point becomes a cut (a node) on the run; the crossing is a run between the two.
     crossings = []
+    unmatched = 0
     for ea, eb, zr in _crosswalk_ends(features):
         d = _unit(_sub(eb, ea))
         ends = []
@@ -207,7 +208,11 @@ def _outdoor_graph(routes, features=()):
             for _e, b in ends:
                 segs[b[1]]["cuts"].append(b[2])
             crossings.append((ends[0][1][3], ends[0][0], ends[1][0], ends[1][1][3], segs[ends[0][1][1]]["z"], zr))
+        else:
+            unmatched += 1                           # no sidewalk run behind one of its curbs: no lane across
     g = _Graph(snap=60.0)
+    g.crosswalks = len(crossings)
+    g.crosswalks_unmatched = unmatched
     for s in segs:
         cuts = sorted(set(round(c, 5) for c in s["cuts"]))
         pts = [_add(s["a"], _mul(_sub(s["b"], s["a"]), c)) for c in cuts]
@@ -218,8 +223,12 @@ def _outdoor_graph(routes, features=()):
     g.prune_stubs(450.0)
     if crossings:
         for qa, ca, cb, qb, zs, zr in crossings:
-            # Interior points at both curbs; the lane follows the ground between them (ramp, road).
-            g.add(g.node(qa, zs), g.node(qb, zs), [(ca[0], ca[1], zs), (cb[0], cb[1], zs)])
+            # Interior points 2 cm either side of both curb lines, so the lane's height is sampled on the
+            # sidewalk (ramp foot) and on the road, never on the curb edge itself, where a trace can land on
+            # the curb's top corner and put a spike in the lane.
+            d = _unit(_sub(cb, ca))
+            inner = [(p[0], p[1], zs) for p in (_sub(ca, _mul(d, 2.0)), _add(ca, _mul(d, 2.0)), _sub(cb, _mul(d, 2.0)), _add(cb, _mul(d, 2.0)))]
+            g.add(g.node(qa, zs), g.node(qb, zs), inner)
         return g
     # No crosswalks recorded (an older manifest): join each block's corners to the nearest corner of a neighbouring block straight across the street.
     corner_of = {}
@@ -741,16 +750,17 @@ def _emit(g, profile_kind, world, label_prefix):
         if len(pts) < 2:
             continue
         # Pull each end back onto its junction's boundary, along the run's first / last direction.
+        ents = []
         if a in junction:
             d = _unit(_sub(pts[1][:2], pts[0][:2]))
             p0 = _add(pts[0][:2], _mul(d, radius[a]))
             pts[0] = (p0[0], p0[1], pts[0][2])
-            entries[a].append((math.atan2(d[1], d[0]), p0, pts[0][2]))
+            ents.append((a, (math.atan2(d[1], d[0]), p0, pts[0][2])))
         if b in junction:
             d = _unit(_sub(pts[-2][:2], pts[-1][:2]))
             p1 = _add(pts[-1][:2], _mul(d, radius[b]))
             pts[-1] = (p1[0], p1[1], pts[-1][2])
-            entries[b].append((math.atan2(d[1], d[0]), p1, pts[-1][2]))
+            ents.append((b, (math.atan2(d[1], d[0]), p1, pts[-1][2])))
         # Drop interior points that the pulled-back ends now pass (very short runs).
         clean = [pts[0]]
         for p in pts[1:-1]:
@@ -759,6 +769,10 @@ def _emit(g, profile_kind, world, label_prefix):
         clean.append(pts[-1])
         if _len(_sub(clean[-1][:2], clean[0][:2])) < 30.0:
             continue
+        # Only a run that is laid gets an entry in its junctions' outlines (else the polygon has a lane
+        # profile leading nowhere).
+        for n, e in ents:
+            entries[n].append(e)
         # Sharp points with a small turn radius: auto-bezier corners bulge out over the street.
         sp = []
         for x, y, z in _follow_ground(world, clean):
@@ -777,8 +791,10 @@ def _emit(g, profile_kind, world, label_prefix):
         ents.sort(key=lambda e: e[0])
         poly = []
         for i, (ang, p, _z) in enumerate(ents):
-            # Lane-profile point on the boundary, facing into the junction.
-            poly.append(_pt(p[0], p[1], cz, T.LANE_PROFILE, math.degrees(ang) + 180.0))
+            # Lane-profile point on the boundary, facing into the junction, on the ground where it is (a
+            # junction at the top of a ramp or on a slope is not flat).
+            pz = _ground_z(world, p[0], p[1], cz - 1.0) + 1.0
+            poly.append(_pt(p[0], p[1], pz, T.LANE_PROFILE, math.degrees(ang) + 180.0))
             # A sharp corner between this run and the next one, out along the bisector.
             nxt = ents[(i + 1) % len(ents)][0]
             gap = (nxt - ang) % (2.0 * math.pi)
@@ -787,7 +803,8 @@ def _emit(g, profile_kind, world, label_prefix):
             mid = ang + gap * 0.5
             # On the junction's (cleared) circle, not beyond it: the outline must not poke through a wall.
             r = radius[n] * (1.0 if gap < math.pi else 0.85)
-            poly.append(_pt(c[0] + math.cos(mid) * r, c[1] + math.sin(mid) * r, cz, T.SHARP))
+            qx, qy = c[0] + math.cos(mid) * r, c[1] + math.sin(mid) * r
+            poly.append(_pt(qx, qy, _ground_z(world, qx, qy, cz - 1.0) + 1.0, T.SHARP))
         _shape(poly, unreal.FZoneShapeType.POLYGON, ref, "%s_Junction%02d" % (label_prefix, n))
         shapes += 1
     return shapes, lane_cm
@@ -875,6 +892,7 @@ def build_crowd(gen, count=None):
         H.warn("crowd: %s not found; lanes laid, no spawner" % PROFILE_ASSET)
     bad_lane, bad_poly = check_lanes(world)
     res = {"cleared": cleared, "blocked_lane_segments": bad_lane, "blocked_junction_edges": bad_poly, "blocked": list(BLOCKED[:10]), "shapes": shapes, "nodes": len(g.nodes), "edges": len(g.edges), "lane_m": round(lane_cm / 100.0),
-           "count": count if spawner else 0, "removed": removed, "indoor": indoor}
+           "count": count if spawner else 0, "removed": removed, "indoor": indoor,
+           "crosswalks": getattr(g, "crosswalks", 0), "crosswalks_unmatched": getattr(g, "crosswalks_unmatched", 0)}
     H.log("crowd: %s" % res)
     return res

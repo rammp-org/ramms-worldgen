@@ -34,6 +34,7 @@ public class RammsWorldGen : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"Projects",
+			"PhysicsCore",         // FBodyInstance: which bodies of a held player were simulating
 		});
 
 		if (Target.bBuildEditor)

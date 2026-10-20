@@ -26,6 +26,7 @@ import argparse
 import ast
 import json
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -53,9 +54,13 @@ SLOTS = {
     "Hazard.Dumpster":  (["dumpster"], (1.0, 2.2), (1.4, 4.0), 6),
     "Hazard.Box":       (["storage box"], (0.15, 0.9), (0.2, 1.0), 6),
 }
-# slot -> words that disqualify an asset by its description (the "bench" category also holds picnic tables)
-EXCLUDE = {"Bench": ["picnic", "table"], "Hazard.Cafe": ["desk", "dining", "coffee table"], "Hazard.Scooter": ["motor", "vespa", "moped"]}
-COMMERCIAL_OK = ("cc0", "by", "by-sa")   # license short names that allow commercial use
+# slot -> words that disqualify an asset by its short description (the "bench" category also holds picnic
+# tables). Whole words only, so "table" does not reject "stable" or "comfortable" and "motor" not "motorway".
+EXCLUDE = {"Bench": ["picnic", "table"], "Hazard.Cafe": ["desk", "dining", "coffee table"],
+           "Hazard.Scooter": ["motor", "motorcycle", "motorbike", "vespa", "moped"]}
+# Creative Commons license tokens; an asset is usable commercially only if every token is in COMMERCIAL_OK.
+COMMERCIAL_OK = {"cc0", "by", "sa"}
+KNOWN_LICENSE_TOKENS = {"cc0", "by", "sa", "nc", "nd"}
 
 
 def _license(ann: dict) -> dict:
@@ -76,11 +81,55 @@ def _license_name(li: dict) -> str:
     return "unknown"
 
 
+def _license_tokens(li: dict) -> set[str]:
+    """CC license as tokens: "by-nc-sa" / "CC BY-NC-SA 4.0" / "cc_by_nc" -> {"by", "nc", "sa"}; "cc0" -> {"cc0"}.
+    Anything unrecognised ("unknown", "editorial", "standard") becomes its own token and so fails the whitelist."""
+    n = _license_name(li).lower()
+    n = n.replace("noncommercial", "nc").replace("non-commercial", "nc").replace("noderivatives", "nd").replace("sharealike", "sa")
+    toks = {t for t in re.split(r"[^a-z0-9]+", n) if t and not re.fullmatch(r"\d+(\.\d+)?", t)}
+    toks.discard("cc")
+    toks.discard("creative")
+    toks.discard("commons")
+    if "attribution" in toks:
+        toks.discard("attribution")
+        toks.add("by")
+    if "public" in toks and "domain" in toks:
+        toks -= {"public", "domain"}
+        toks.add("cc0")
+    return toks
+
+
 def _commercial_ok(li: dict) -> bool:
-    n = _license_name(li).lower().replace("_", "-")
-    if "nc" in n.split("-") or "noncommercial" in n or "non-commercial" in n:
-        return False
-    return any(t in n for t in ("cc0", "by"))
+    toks = _license_tokens(li)
+    return bool(toks) and toks <= COMMERCIAL_OK
+
+
+def _excluded(slot: str, desc: str) -> bool:
+    return any(re.search(r"\b" + re.escape(w) + r"s?\b", desc) for w in EXCLUDE.get(slot, ()))
+
+
+def _attribution_row(slot: str, it: dict) -> str:
+    li = it.get("license_info") or {}
+    who = li.get("creator_display_name") or li.get("creator") or li.get("author") or li.get("creator_username") or "unknown"
+    prof = li.get("creator_profile_url") or ""
+    uid = it["uid"]
+    url = li.get("uri") or li.get("url") or li.get("source") or ""
+    if not url or "api.sketchfab.com/v3/models/" in url:
+        url = "https://sketchfab.com/models/" + (url.rsplit("/", 1)[-1] if url else uid)
+    toks = _license_tokens(li)
+    name = it.get("license") or "unknown"
+    if toks == {"cc0"}:
+        lic = "[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)"
+    elif toks and toks <= KNOWN_LICENSE_TOKENS and "by" in toks:
+        code = "-".join(t for t in ("by", "nc", "nd", "sa") if t in toks)
+        lic = "[CC %s 4.0](https://creativecommons.org/licenses/%s/4.0/)" % (code.upper(), code)   # Sketchfab's CC licenses are 4.0
+    else:
+        lic = name
+    title = (it.get("description") or it.get("category") or "").split(".")[0].strip().replace("|", "/").replace("[", "(").replace("]", ")")
+    if len(title) > 70:
+        title = title[:67].rstrip() + "..."
+    author = "[%s](%s)" % (who, prof) if prof else who
+    return "| %s | %s | [%s](%s) | %s | %s | `%s` |" % (slot, it.get("category", ""), title or uid, url, author, lic, uid)
 
 
 def main() -> int:
@@ -111,10 +160,24 @@ def main() -> int:
     _core._ensure_per_asset_annotations()
     ann_dir = cache / "assets_std_annotation_flat"
     ann_path = {p.stem[4:]: p for p in ann_dir.rglob("std_*.json")}   # annotations sit in bucket_NNNN folders
-    rng = random.Random(args.seed)
+    sel_path = cache / "ramms_selection.json"
+    # Fetching a subset of slots must not drop the others from an earlier run.
     selection = {"source": "UrbanVerse-100K", "repo": _core.REPO_ID, "slots": {}, "categories": {}}
+    if sel_path.exists():
+        try:
+            old = json.loads(sel_path.read_text(encoding="utf-8"))
+            selection["slots"].update(old.get("slots", {}))
+            selection["categories"].update(old.get("categories", {}))
+        except Exception as exc:  # noqa: BLE001
+            print("warning: %s unreadable (%s); starting a new selection" % (sel_path, exc))
+    fetched: set[str] = set()
     to_load: list[str] = []
     for slot in want:
+        if slot not in SLOTS:
+            print("unknown slot %r (known: %s)" % (slot, ", ".join(SLOTS)))
+            return 2
+        # One RNG per slot: the tie-break order of a slot does not depend on which other slots ran.
+        rng = random.Random("%s:%s" % (args.seed, slot))
         keywords, hr, lr, qmin = SLOTS[slot]
         leafs = [l3 for l3 in keywords if l3 in cats]
         selection["categories"][slot] = leafs
@@ -134,8 +197,9 @@ def main() -> int:
                     continue
                 if str(a.get("asset_composition_type", "single")).lower() != "single" or q < qmin:
                     continue
-                desc = (str(a.get("description", "")) + " " + str(a.get("description_long", ""))).lower()
-                if any(w in desc for w in EXCLUDE.get(slot, ())):
+                # The short description names the object; the long one also describes its surroundings
+                # ("a bench next to a picnic table"), which would reject good assets.
+                if _excluded(slot, str(a.get("description", "")).lower()):
                     continue
                 if not (hr[0] <= h <= hr[1] and lr[0] <= max(L, W) <= lr[1]):
                     continue
@@ -156,6 +220,7 @@ def main() -> int:
                     picked.append(by_cat[l3].pop(0))
         print("%-18s %3d categories, %5d candidates, %d picked  (%s)" % (slot, len(leafs), len(cands), len(picked), ", ".join(leafs[:6]) + ("..." if len(leafs) > 6 else "")))
         selection["slots"][slot] = []
+        fetched.add(slot)
         for q, _r, uid, l3, a, li in picked:
             selection["slots"][slot].append({
                 "uid": uid, "category": l3, "quality": q, "height": a.get("height"), "length": a.get("length"),
@@ -168,27 +233,26 @@ def main() -> int:
 
     res = uva.object.load(to_load, num_workers=args.workers, what=("std_glb", "std_annotation", "thumbnail"))
     for slot, items in selection["slots"].items():
+        if slot not in fetched:
+            continue
         for it in items:
             r = res.get(it["uid"], {})
             it["glb"] = str(r.get("std_glb") or "")
             it["thumbnail"] = str(r.get("thumbnail") or "")
         selection["slots"][slot] = [it for it in items if it["glb"]]
-    (cache / "ramms_selection.json").write_text(json.dumps(selection, indent=1), encoding="utf-8")
+    sel_path.write_text(json.dumps(selection, indent=1), encoding="utf-8")
 
     lines = ["# UrbanVerse-100K assets used by RammsWorldGen", "",
              "From [UrbanVerse-100K](https://huggingface.co/datasets/Oatmealliu/UrbanVerse-100K) (collection: ODC-BY; "
              "each asset keeps its own license, below). Liu et al., *UrbanVerse: Scaling Urban Simulation by Watching "
              "City-Tour Videos*, ICLR 2026.", "",
-             "| Slot | Category | UID | License | Source |", "|---|---|---|---|---|"]
+             "Each row: the model (title from its description, linked to its Sketchfab page), its author, and its "
+             "license. Changes: converted to Unreal static meshes and rescaled to metres by UrbanVerse; materials "
+             "and collision set up for simulation.", "",
+             "| Slot | Category | Model | Author | License | UID |", "|---|---|---|---|---|---|"]
     for slot, items in selection["slots"].items():
         for it in items:
-            li = it["license_info"] or {}
-            who = li.get("creator") or li.get("author") or li.get("creator_display_name") or ""
-            url = li.get("uri") or li.get("url") or li.get("source") or ""
-            if "api.sketchfab.com/v3/models/" in url:
-                url = "https://sketchfab.com/3d-models/" + url.rsplit("/", 1)[-1]
-            src = ("%s, %s" % (who, url)).strip(", ")
-            lines.append("| %s | %s | `%s` | %s | %s |" % (slot, it["category"], it["uid"], it["license"], src))
+            lines.append(_attribution_row(slot, it))
     (cache / "ATTRIBUTION.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     n = sum(len(v) for v in selection["slots"].values())
     print("%d assets -> %s" % (n, cache / "ramms_selection.json"))

@@ -555,6 +555,15 @@ FRammsManifestFeature ARammsProcPiece::ToManifestFeature() const
 	F.Location = GetActorLocation();
 	F.Rotation = GetActorRotation();
 	F.Size = FVector(SizeX, SizeY, SizeZ);
+	if (GetEffectiveKind() == ERammsProcPieceKind::CurbRamp)
+	{
+		// The whole cut: the ramp's run, its width with both flares, and the curb height; centred on the ramp.
+		const double H = FMath::Max(Rise, 1.0);
+		const double Run = H / FMath::Max(Slope, 0.01);
+		const double FlareRun = FlareSlope < 50.0 ? H / FMath::Max(FlareSlope, 0.01) : 0.0;
+		F.Size = FVector(Run, FMath::Max(SizeY, 60.0) + 2.0 * FlareRun, H);
+		F.Location = GetActorTransform().TransformPosition(FVector(Run * 0.5, 0.0, -H * 0.5));
+	}
 	F.bCompliant = bCompliant;
 	F.Issue = static_cast<ERammsComplianceIssue>(FMath::Clamp(IssueId, 0, static_cast<int32>(ERammsComplianceIssue::ObstacleInRoute)));
 	if (Measure != 0.0)

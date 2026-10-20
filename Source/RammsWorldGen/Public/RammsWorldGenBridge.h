@@ -32,6 +32,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	static TArray<FString> ListPresets();
 
+	/** Asset paths of every URammsWorldPalette (the built-in ones and e.g. PAL_UrbanVerse once imported). */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
+	static TArray<FString> ListPalettes();
+
+	/**
+	 * Generate with another palette: an asset path or short name ("PAL_UrbanVerse"); "" goes back to the
+	 * preset's palette. Takes effect on the next Generate. Returns false if the generator or palette is not found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
+	static bool SetPalette(const FString& GeneratorPath, const FString& Palette);
+
 	/** JSON array describing the presets: name, path, scene kind, description, site size. */
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	static FString DescribePresets();
@@ -51,7 +62,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	static bool SetPreset(const FString& GeneratorPath, const FString& Preset);
 
-	/** Regenerate with Seed (Seed < 0 keeps the current seed). Returns false if the generator was not found. */
+	/** Regenerate with Seed (Seed < 0 keeps the current seed). Returns false if the generator was not found or
+	 *  nothing could be scheduled (no graph), in which case no new manifest will arrive. */
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	static bool Generate(const FString& GeneratorPath, int32 Seed = -1);
 
@@ -79,13 +91,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	static FString ExportManifest(const FString& GeneratorPath, const FString& AbsolutePath);
 
-	/** Resolved parameter block (preset + profile + overrides) as a JSON object of name -> number. */
+	/** Resolved parameter block (preset + profile + overrides) as a JSON object of name -> number, plus the
+	 *  string parameters (Palette, FacadeStyles, ...) as strings. */
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	static FString GetParamsJson(const FString& GeneratorPath);
 
 	/**
-	 * Apply overrides from a JSON object of name -> number (bools as 0/1). Unknown names are reported in
-	 * the returned JSON ({"applied": [...], "unknown": [...]}). Takes effect on the next Generate.
+	 * Apply overrides from a JSON object of name -> number (bools as 0/1) or string (Palette, FacadeStyles and
+	 * other text parameters). Unknown names and values that do not apply are reported in the returned JSON
+	 * ({"applied": [...], "unknown": [...]}). Takes effect on the next Generate.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
 	static FString SetParamsJson(const FString& GeneratorPath, const FString& Json);
@@ -113,5 +127,7 @@ private:
 	static UWorld* GetCurrentWorld();
 	static ARammsWorldGenerator* Find(const FString& GeneratorPath);
 	static FString ResolvePresetPath(const FString& Preset);
+	static FString ResolvePalettePath(const FString& Palette);
+	static bool SetStringParam(ARammsWorldGenerator* Gen, const FString& Name, const FString& Value);
 	static FString ResolveMapPath(const FString& Map);
 };

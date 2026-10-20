@@ -836,6 +836,7 @@ def _ensure_solid_material(name, rgb, roughness, metallic):
 
 def build_default_palette(path=DEFAULT_PALETTE):
     """Create or refresh the default palette. Returns (palette, report dict)."""
+    _COLLISION_DONE.clear()   # a new build re-checks every mesh (an asset may have been re-imported since)
     for name, (rgb, rough, metal) in SOLID_MATERIALS.items():
         _ensure_solid_material(name, rgb, rough, metal)
     from . import surfaces

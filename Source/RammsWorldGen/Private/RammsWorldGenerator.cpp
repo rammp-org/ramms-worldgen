@@ -13,6 +13,9 @@
 #include "JsonObjectConverter.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
+#include "PhysicsEngine/BodyInstance.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "PCGComponent.h"
 #include "PCGData.h"
 #include "PCGGraph.h"
@@ -56,6 +59,7 @@ void ARammsWorldGenerator::EnsureBound()
 	if (PCGComponent && !bBoundDelegate)
 	{
 		PCGComponent->OnPCGGraphGeneratedDelegate.AddUObject(this, &ARammsWorldGenerator::HandleGenerated);
+		PCGComponent->OnPCGGraphCancelledDelegate.AddUObject(this, &ARammsWorldGenerator::HandleCancelled);
 		bBoundDelegate = true;
 	}
 }
@@ -86,6 +90,18 @@ void ARammsWorldGenerator::BeginPlay()
 	}
 }
 
+void ARammsWorldGenerator::EndPlay(const EEndPlayReason::Type Reason)
+{
+	// Never leave a pawn frozen because the generator went away mid-generation.
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReleaseTimer);
+		World->GetTimerManager().ClearTimer(HoldSafetyTimer);
+	}
+	ReleasePlayers();
+	Super::EndPlay(Reason);
+}
+
 // --- params ------------------------------------------------------------------------
 
 void ARammsWorldGenerator::ResolveParams()
@@ -93,10 +109,6 @@ void ARammsWorldGenerator::ResolveParams()
 	if (Preset)
 	{
 		Params = Preset->ResolveParams();
-		if (Params.Palette.IsNull())
-		{
-			Params.Palette = Preset->Palette;
-		}
 	}
 
 	// Named overrides, by reflection so the key list is the only thing to maintain.
@@ -110,6 +122,11 @@ void ARammsWorldGenerator::ResolveParams()
 				It->CopyCompleteValue_InContainer(&Params, &ParamOverrides);
 			}
 		}
+	}
+	// After the overrides, so an override key with no palette set still falls back to the preset's.
+	if (Params.Palette.IsNull() && Preset)
+	{
+		Params.Palette = Preset->Palette;
 	}
 
 	if (SiteBounds)
@@ -172,11 +189,47 @@ TArray<FName> ARammsWorldGenerator::GetParamNames() const
 
 // --- generation ----------------------------------------------------------------------
 
-void ARammsWorldGenerator::Regenerate()
+bool ARammsWorldGenerator::SetPalette(const FString& Palette)
+{
+	const FName Key(TEXT("Palette"));
+	if (Palette.IsEmpty())
+	{
+		ParamOverrides.Palette.Reset();
+		OverrideKeys.Remove(Key);
+		ResolveParams();
+		return true;
+	}
+	FString Path = Palette;
+	if (!Path.StartsWith(TEXT("/")))
+	{
+		Path = FString::Printf(TEXT("/RammsWorldGen/Palettes/%s"), *Path);
+	}
+	if (!Path.Contains(TEXT(".")))
+	{
+		Path = FString::Printf(TEXT("%s.%s"), *Path, *FPackageName::GetShortName(Path));
+	}
+	URammsWorldPalette* Loaded = LoadObject<URammsWorldPalette>(nullptr, *Path);
+	if (!Loaded)
+	{
+		UE_LOG(LogRammsWorldGen, Warning, TEXT("%s: palette '%s' not found"), *GetName(), *Palette);
+		return false;
+	}
+	ParamOverrides.Palette = Loaded;
+	OverrideKeys.Add(Key);
+	ResolveParams();
+	return true;
+}
+
+FString ARammsWorldGenerator::GetPalettePath() const
+{
+	return Params.Palette.ToSoftObjectPath().ToString();
+}
+
+bool ARammsWorldGenerator::Regenerate()
 {
 	if (!PCGComponent)
 	{
-		return;
+		return false;
 	}
 	ResolveParams();
 
@@ -192,7 +245,7 @@ void ARammsWorldGenerator::Regenerate()
 	if (!PCGComponent->GetGraph())
 	{
 		UE_LOG(LogRammsWorldGen, Warning, TEXT("%s: no PCG graph on the preset or the component; nothing to generate"), *GetName());
-		return;
+		return false;
 	}
 
 	EnsureBound();
@@ -200,16 +253,19 @@ void ARammsWorldGenerator::Regenerate()
 	Manifest.Seed = Seed;
 	Manifest.Preset = Preset ? Preset->GetFName() : NAME_None;
 	Manifest.SceneKind = Preset ? Preset->SceneKind : ERammsSceneKind::Downtown;
+	Manifest.Palette = Params.Palette.ToSoftObjectPath().ToString();
+	bPlayersTaken = false;
 
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generating preset=%s seed=%d site=%.0fx%.0f"), *GetName(), *Manifest.Preset.ToString(), Seed, Params.SiteSizeX, Params.SiteSizeY);
 	HoldPlayers();
 	PCGComponent->GenerateLocal(/*bForce=*/true);
+	return true;
 }
 
-void ARammsWorldGenerator::RegenerateWithSeed(int32 NewSeed)
+bool ARammsWorldGenerator::RegenerateWithSeed(int32 NewSeed)
 {
 	Seed = NewSeed;
-	Regenerate();
+	return Regenerate();
 }
 
 void ARammsWorldGenerator::Randomize()
@@ -233,13 +289,19 @@ bool ARammsWorldGenerator::IsGenerating() const
 	return PCGComponent && PCGComponent->IsGenerating();
 }
 
+void ARammsWorldGenerator::HandleCancelled(UPCGComponent* Component)
+{
+	UE_LOG(LogRammsWorldGen, Warning, TEXT("%s: generation cancelled"), *GetName());
+	ReleasePlayers();
+}
+
 void ARammsWorldGenerator::HandleGenerated(UPCGComponent* Component)
 {
 	BuildManifestFromOutput();
 	CollectProcPieces();
 	Manifest.Bounds = SiteBounds ? SiteBounds->Bounds.GetBox() : FBox(ForceInit);
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generated seed=%d features=%d routes=%d issues=%d"), *GetName(), Seed, Manifest.Features.Num(), Manifest.Routes.Num(), Manifest.CountIssues());
-	if (bPlacePlayersOnGenerate && GetWorld() && GetWorld()->IsGameWorld())
+	if (bPlacePlayersOnGenerate && !bPlayersTaken && GetWorld() && GetWorld()->IsGameWorld())
 	{
 		PlacePlayerStart();
 		PlacePlayers();
@@ -299,8 +361,12 @@ void ARammsWorldGenerator::CollectProcPieces()
 	for (TActorIterator<ARammsProcPiece> It(World); It; ++It)
 	{
 		ARammsProcPiece* Piece = *It;
-		const bool bOurs = Piece->ActorHasTag(Tag) || Piece->GetAttachParentActor() == this || Piece->GetOwner() == this
-			|| (Piece->ActorHasTag(FName(TEXT("RammsProcPiece"))) && SiteBounds && SiteBounds->Bounds.GetBox().ExpandBy(500.0).IsInside(Piece->GetActorLocation()));
+		// A piece attached to (or owned by) another generator is that generator's, wherever it stands.
+		const AActor* Parent = Piece->GetAttachParentActor();
+		const AActor* PieceOwner = Piece->GetOwner();
+		const bool bOther = (Parent && Parent != this && Parent->IsA<ARammsWorldGenerator>()) || (PieceOwner && PieceOwner != this && PieceOwner->IsA<ARammsWorldGenerator>());
+		const bool bOurs = !bOther && (Piece->ActorHasTag(Tag) || Parent == this || PieceOwner == this
+			|| (Piece->ActorHasTag(FName(TEXT("RammsProcPiece"))) && SiteBounds && SiteBounds->Bounds.GetBox().ExpandBy(500.0).IsInside(Piece->GetActorLocation())));
 		if (!bOurs || Piece->ManifestKind.IsNone())
 		{
 			continue;
@@ -419,6 +485,21 @@ void ARammsWorldGenerator::HoldPlayers()
 		return;
 	}
 	World->GetTimerManager().ClearTimer(ReleaseTimer);
+	// Another generator still holding the players (two regenerating at once): this one, started last, takes the
+	// held bodies over and places the players when it is done; the other leaves them alone.
+	for (TActorIterator<ARammsWorldGenerator> It(World); It; ++It)
+	{
+		ARammsWorldGenerator* Other = *It;
+		if (Other == this || Other->HeldBodies.Num() == 0)
+		{
+			continue;
+		}
+		World->GetTimerManager().ClearTimer(Other->ReleaseTimer);
+		World->GetTimerManager().ClearTimer(Other->HoldSafetyTimer);
+		HeldBodies.Append(Other->HeldBodies);
+		Other->HeldBodies.Reset();
+		Other->bPlayersTaken = true;
+	}
 	ForEachPlayerPawn(World, [this](APawn* Pawn)
 	{
 		TArray<UPrimitiveComponent*> Prims;
@@ -432,12 +513,28 @@ void ARammsWorldGenerator::HoldPlayers()
 			}
 			C->SetAllPhysicsLinearVelocity(FVector::ZeroVector);
 			C->SetAllPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
-			HeldBodies.Add({ C, C->GetComponentTransform().GetRelativeTransform(ActorXf) });
+			FHeldBody H{ C, C->GetComponentTransform().GetRelativeTransform(ActorXf) };
+			if (USkeletalMeshComponent* Sk = Cast<USkeletalMeshComponent>(C))
+			{
+				int32 Sim = 0;
+				for (const FBodyInstance* B : Sk->Bodies)
+				{
+					if (B && B->IsInstanceSimulatingPhysics() && B->BodySetup.IsValid())
+					{
+						H.SimulatedBones.Add(B->BodySetup->BoneName);
+						++Sim;
+					}
+				}
+				H.bAllBodies = Sim == Sk->Bodies.Num();
+			}
+			HeldBodies.Add(H);
 			C->SetSimulatePhysics(false);
 		}
 	});
 	if (HeldBodies.Num() > 0)
 	{
+		// If the generation never reports back (cancelled, failed), let the players go anyway.
+		World->GetTimerManager().SetTimer(HoldSafetyTimer, this, &ARammsWorldGenerator::ReleasePlayers, 120.0f, false);
 		UE_LOG(LogRammsWorldGen, Log, TEXT("%s: holding %d simulated player bodies while the world is rebuilt"), *GetName(), HeldBodies.Num());
 	}
 }
@@ -491,11 +588,30 @@ void ARammsWorldGenerator::PlacePlayers()
 
 void ARammsWorldGenerator::ReleasePlayers()
 {
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(HoldSafetyTimer);
+	}
 	for (const FHeldBody& H : HeldBodies)
 	{
 		if (UPrimitiveComponent* C = H.Component.Get())
 		{
-			C->SetSimulatePhysics(true);
+			USkeletalMeshComponent* Sk = Cast<USkeletalMeshComponent>(C);
+			if (Sk && !H.bAllBodies)
+			{
+				// Only the bodies that were simulating before.
+				for (const FName& Bone : H.SimulatedBones)
+				{
+					if (FBodyInstance* B = Sk->GetBodyInstance(Bone))
+					{
+						B->SetInstanceSimulatePhysics(true);
+					}
+				}
+			}
+			else
+			{
+				C->SetSimulatePhysics(true);
+			}
 			C->SetAllPhysicsLinearVelocity(FVector::ZeroVector);
 			C->SetAllPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 			C->WakeAllRigidBodies();

@@ -87,6 +87,10 @@ struct RAMMSWORLDGEN_API FRammsPaletteMesh
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	double HandleSide = 0.0;
 
+	/** Where the asset came from, for datasets: e.g. "urbanverse:<uid>|<category>". Copied into the manifest. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	FString SourceId;
+
 	/** Composite entries (Mesh unset): every part is spawned with the entry's placement applied. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	TArray<FRammsPalettePart> Parts;

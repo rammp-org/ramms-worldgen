@@ -203,6 +203,15 @@ int32 RammsPCG::WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& P
 	const FVector Half(Picked.Footprint.X * 0.5 * ScaleMul, Picked.Footprint.Y * 0.5 * ScaleMul, Picked.Height * 0.5 * ScaleMul);
 	const int32 i = W.Add(FTransform(Rot, Loc, FVector(Picked.Scale * ScaleMul)), FVector(-Half.X, -Half.Y, 0.0), FVector(Half.X, Half.Y, Picked.Height * ScaleMul), Seed);
 	W.SetPath(i, Mesh, Picked.Mesh.ToSoftObjectPath());
+	// The point transform is the mesh pivot (rotation offset, scale): record the object's own box for the manifest.
+	// Footprint and Height are already at the entry's scale; only ScaleMul is applied on top.
+	W.Set(i, ManifestCenter, Location);
+	W.Set(i, ManifestYaw, YawDeg);
+	W.Set(i, ManifestSize, FVector(Picked.Footprint.X * ScaleMul, Picked.Footprint.Y * ScaleMul, Picked.Height * ScaleMul));
+	if (!Picked.SourceId.IsEmpty())
+	{
+		W.Set(i, SourceId, Picked.SourceId);
+	}
 	return i;
 }
 

@@ -76,7 +76,7 @@ namespace
 		for (const FString& P : Parts)
 		{
 			FString A, B;
-			if (P.Split(TEXT("-"), &A, &B))
+			if (P.Split(TEXT(":"), &A, &B))
 			{
 				Occ.Take(FCString::Atod(*A), FCString::Atod(*B));
 			}
@@ -157,6 +157,14 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 			ParseKeepouts(R.GetS(i, FName(TEXT("Keepouts"))), Occ);
 			Occ.Take(-1e9, 150.0);               // corners
 			Occ.Take(Length - 150.0, 1e9);
+			// A park block's street side: the park's cross path enters at the middle of the side, so nothing
+			// stands on the lawn in front of that step-free entrance.
+			if (bPark && RouteName.ToString().StartsWith(TEXT("Block")))
+			{
+				const double Gate = R.GetD(i, FName(TEXT("ParkPathWidth")), 180.0) * 0.5 + 60.0;
+				Occ.Take(Length * 0.5 - Gate, Length * 0.5 + Gate);
+			}
+			const int32 PropsBefore = Props.Num();
 			double MinClear = RouteW;
 			bool bRouteCompliant = RouteW >= S->MinClearWidth;
 
@@ -384,6 +392,9 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				}
 			}
 
+			// Everything placed along this side records the route it stands on.
+			for (int32 k = PropsBefore; k < Props.Num(); ++k) { Props.Set(k, RammsPCG::RouteName, RouteName); }
+
 			// --- route record ---------------------------------------------------------------------
 			const int32 r = Routes.Add(Xf, FVector(0.0, FZ, 0.0), FVector(Length, SW, 0.0), NextSeed());
 			Routes.Set(r, RammsPCG::RouteName, RouteName);
@@ -473,11 +484,34 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				{ FVector(x0, y0, Z0), FVector(x1, y0, Z0), 0.0 }, { FVector(x1, y0, Z0), FVector(x1, y1, Z0), 90.0 },
 				{ FVector(x1, y1, Z0), FVector(x0, y1, Z0), 180.0 }, { FVector(x0, y1, Z0), FVector(x0, y0, Z0), 270.0 },
 				{ FVector(ex0, C.Y, Z0), FVector(ex1, C.Y, Z0), 0.0 }, { FVector(C.X, ey0, Z0), FVector(C.X, ey1, Z0), 90.0 } };
-			TArray<FBox2D> PathBoxes;
+			TArray<FBox2D> PathBoxes;   // each path plus a path width all round: kept clear of trees, ponds, mounds
+			TArray<FBox2D> PathRects;   // the paved paths themselves
 			for (const FPathSeg& Sg : Segs)
 			{
 				PathBoxes.Add(FBox2D(FVector2D(FMath::Min(Sg.A.X, Sg.B.X) - PW, FMath::Min(Sg.A.Y, Sg.B.Y) - PW), FVector2D(FMath::Max(Sg.A.X, Sg.B.X) + PW, FMath::Max(Sg.A.Y, Sg.B.Y) + PW)));
+				PathRects.Add(FBox2D(FVector2D(FMath::Min(Sg.A.X, Sg.B.X) - PW * 0.5, FMath::Min(Sg.A.Y, Sg.B.Y) - PW * 0.5), FVector2D(FMath::Max(Sg.A.X, Sg.B.X) + PW * 0.5, FMath::Max(Sg.A.Y, Sg.B.Y) + PW * 0.5)));
 			}
+			// Where other paths meet a path, along it: kept free of benches and hazards (junctions, the plaza,
+			// the entrances where the cross paths pass the loop).
+			auto Junctions = [&](int32 SegI)
+			{
+				TArray<double> Out;
+				const FPathSeg& Sg = Segs[SegI];
+				const FVector D = (Sg.B - Sg.A).GetSafeNormal();
+				for (int32 o = 0; o < Segs.Num(); ++o)
+				{
+					if (o == SegI) { continue; }
+					const FVector& P0 = Segs[o].A; const FVector& P1 = Segs[o].B;
+					const FVector D2 = (P1 - P0).GetSafeNormal();
+					if (FMath::Abs(FVector::DotProduct(D, D2)) > 0.5) { continue; }   // parallel
+					// Perpendicular axis-aligned segments: the crossing is at the other path's constant coordinate.
+					const double t = FVector::DotProduct((FMath::Abs(D2.X) < 0.5 ? P0 : P1) - Sg.A, D);
+					const FVector Hit = Sg.A + D * t;
+					const double u = FVector::DotProduct(Hit - P0, D2), L2 = FVector::Dist(P0, P1);
+					if (t > -PW && t < FVector::Dist(Sg.A, Sg.B) + PW && u > -PW && u < L2 + PW) { Out.Add(t); }
+				}
+				return Out;
+			};
 			int32 SegIndex = 0;
 			for (const FPathSeg& Sg : Segs)
 			{
@@ -508,6 +542,12 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				Paths.Set(p, RammsPCG::RouteWidth, PW);
 				Paths.SetBool(p, RammsPCG::IsPark, true);
 				Paths.Set(p, RammsPCG::RouteName, FName(*FString::Printf(TEXT("Park%d_Path%d"), ParkIndex, SegIndex)));
+				const TArray<double> Junc = Junctions(SegIndex);
+				{
+					FString Keep;
+					for (const double t : Junc) { Keep += FString::Printf(TEXT("%.0f:%.0f;"), t - PW, t + PW); }
+					Paths.Set(p, FName(TEXT("Keepouts")), Keep);
+				}
 				if (bUneven)
 				{
 					const int32 f = Features.AddBox((Sg.A + Sg.B) * 0.5, Sg.Yaw, FVector(Len, PW, 2.0), NextSeed());
@@ -522,8 +562,13 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 					const double a = Len * 0.5 + (bi - (NB - 1) * 0.5) * BS;
 					// Bench on the -Y side of the path, its front (+X after the facing offset) turned to +Y = the path.
 					const FVector P = Sg.A + Rot.RotateVector(FVector(a, -PW * 0.5 - 60.0, 0.0));
+					// Not at a junction, and the bench (about 2 m by 0.8 m) clear of every other path.
 					bool bOnPath = false;
-					for (const FBox2D& B : PathBoxes) { if (B.ExpandBy(-PW * 0.5 + 10.0).IsInside(FVector2D(P.X, P.Y))) { bOnPath = true; break; } }
+					for (const double t : Junc) { if (FMath::Abs(a - t) < PW + 120.0) { bOnPath = true; break; } }
+					for (int32 o = 0; o < PathRects.Num() && !bOnPath; ++o)
+					{
+						if (o != SegIndex && PathRects[o].ExpandBy(110.0).IsInside(FVector2D(P.X, P.Y))) { bOnPath = true; }
+					}
 					if (bOnPath) { continue; }
 					const int32 b = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::Bench, Rng, P, Sg.Yaw + 90.0, NextSeed());
 					if (b >= 0) { RammsPCG::WriteManifest(Props, b, FName(TEXT("Prop")), FName(TEXT("Bench")), true, ERammsComplianceIssue::None, PW, S->MinClearWidth); }

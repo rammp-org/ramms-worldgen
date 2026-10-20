@@ -212,12 +212,12 @@ maps by asset path or short name. The CDO path is
 | Function | Purpose |
 |---|---|
 | `GetWorldInfo` | JSON: current map, editor vs play world, generator count |
-| `FindGenerators` / `ListPresets` / `DescribePresets` / `ListGeneratedMaps` | Discovery |
-| `SpawnGenerator(Preset, Seed, Location, Label)` | Spawn a generator pointed at a preset |
-| `SetPreset`, `Generate(Path, Seed)`, `Randomize`, `Cleanup`, `IsGenerating`, `PlacePlayerStart` | Lifecycle |
-| `GetStatusJson` | Cheap poll: preset, seed, generating?, counts, suggested start |
+| `FindGenerators` / `ListPresets` / `DescribePresets` / `ListPalettes` / `ListGeneratedMaps` | Discovery |
+| `SpawnGenerator(Preset, Seed, Location, Label)` | Spawn a generator pointed at a preset (the label is also an actor tag, so it finds the generator in packaged builds) |
+| `SetPreset`, `SetPalette(Path, Palette)`, `Generate(Path, Seed)`, `Randomize`, `Cleanup`, `IsGenerating`, `PlacePlayerStart` | Lifecycle. `SetPalette("")` goes back to the preset's palette; `Generate` returns false when nothing could be scheduled (no graph) |
+| `GetStatusJson` | Cheap poll: preset, palette, seed, generating?, counts, suggested start |
 | `GetManifestJson` / `ExportManifest` | The manifest |
-| `GetParamsJson` / `SetParamsJson` / `ClearOverrides` | Parameters as a JSON object of name → number |
+| `GetParamsJson` / `SetParamsJson` / `ClearOverrides` | Parameters as a JSON object of name → number, or string for text parameters (`Palette`, `FacadeStyles`) |
 | `OpenMap` | Load a map in the editor, or travel to it in a game |
 
 [ramms-tools](https://github.com/rammp-org/ramms-tools) wraps this as
@@ -275,13 +275,20 @@ The only editor-only parts are the Python builders and the MCP toolset.
 
 ## The manifest
 
-`FRammsWorldManifest` (also the JSON): `seed`, `preset`, `sceneKind`,
-`bounds`, `suggestedStart`, then
+`FRammsWorldManifest` (also the JSON): `seed`, `preset`, `palette` (object
+path), `sceneKind`, `bounds`, `suggestedStart`, then
 
 - `routes[]`: `name`, `points[]` (polyline, cm), `nominalWidth`,
   `minClearWidth` (after hazards), `bCompliant`.
 - `features[]`: `kind` / `subtype`, `location`, `rotation`, `size`,
-  `bCompliant`, `issue`, `measure`, `threshold`.
+  `bCompliant`, `issue`, `measure`, `threshold`, `asset` (the palette mesh
+  placed, if any), `source` (where it came from, e.g.
+  `urbanverse:<uid>|<category>`), `route` (the sidewalk side or path it was
+  placed along). For palette meshes `location` / `rotation` / `size` are the
+  box the mesh was fitted to (the centre of its base on the ground, its
+  facing, its size after scale), not the mesh pivot; trees are placed by their
+  trunk, so for them `location` is the trunk and the canopy box can sit off it; for curb ramps `size.x` is the ramp run and `size.y`
+  includes the flares.
 
 Kinds and the issues they can carry:
 
@@ -402,9 +409,13 @@ street-furniture, vehicle and hazard slots with far more variety than the Fab pa
    - The `SLOTS` table maps each palette slot to UrbanVerse leaf categories (`--list` writes all 659), with
      height and length limits in metres and a minimum quality score (0–10, from the annotations). Only single
      objects are taken, and the categories in a slot are taken in turn.
+   - Description-based excludes (picnic tables are not benches) match whole words of the short description.
    - It writes `ramms_selection.json` (slot to assets, with size, mass, friction, license) and
-     `ATTRIBUTION.md` (creator and source of every asset).
-   - `--commercial` keeps only assets whose license allows commercial use. Licenses vary per asset: most are
+     `ATTRIBUTION.md` (per asset: title, Sketchfab link, author, license with its link). Fetching some slots
+     (`--slots Bench,Car`) keeps the other slots of an earlier run; each slot's choice depends only on
+     `--seed` and that slot.
+   - `--commercial` keeps only assets whose license allows commercial use (CC0, CC BY, CC BY-SA; anything
+     with NC or ND, or a license it does not recognise, is dropped). Licenses vary per asset: most are
      CC BY, some CC BY-NC.
 2. **Import and build the palette** (in the editor):
    ```python
@@ -413,15 +424,21 @@ street-furniture, vehicle and hazard slots with far more variety than the Fab pa
    ```
    - The GLBs are imported with Interchange under `/Game/UrbanVerse/<Slot>/`, with their materials and
      textures. GLBs over 40 MB (heavy scans) are skipped.
-   - Each mesh gets a physical material with its annotated friction and complex-as-simple collision.
-     Meshes over 50K triangles become Nanite.
-   - `PAL_UrbanVerse` is `PAL_Default` with those slots replaced. Assets keep their real size; their front
-     comes from the same geometric test as the Fab meshes, and long-fronted pieces (benches, shelters,
-     dumpsters) are turned so the long side is the front.
+   - Each mesh gets complex-as-simple collision and a physical material with its annotated friction, set on
+     the body and on the mesh's own material instances (complex collision takes the material's physical
+     material). Meshes over 50K triangles become Nanite. A GLB that imports as several meshes keeps the
+     largest, with a warning.
+   - `PAL_UrbanVerse` is `PAL_Default` with those slots replaced, refreshed in place on a rebuild (references
+     to it stay valid). Assets keep their real size; their front comes from the same geometric test as the
+     Fab meshes, and long-fronted pieces (benches, shelters, dumpsters) are turned so a long side is the
+     front, the annotation's `frontView` choosing which. Each entry's `SourceId` is
+     `urbanverse:<uid>|<category>`, which the manifest carries as the feature's `source`.
    - To check facing: `LINEUP_PALETTE = "/RammsWorldGen/Palettes/PAL_UrbanVerse"` with
      `Scripts/worldgen/lineup.py`.
 
-Use it by setting a preset's or generator's `Palette` (a generator override does not touch the preset).
+Use it by setting a preset's or generator's `Palette` (a generator override does not touch the preset), or
+from outside with `SetPalette` / `ramms-worldgen generate --palette PAL_UrbanVerse`. Packaged builds cook
+`/RammsWorldGen/Palettes` and `/Game/UrbanVerse` through ramms-sim's `DirectoriesToAlwaysCook`.
 The imported assets stay out of git, like the Fab packs.
 
 ## Streets and yards
@@ -580,6 +597,13 @@ and saved there (the example levels), not with runtime regeneration.
   open there), with flares warped from road level at the ramp to full curb
   height at their outer edge. Crossings near an intersection are set back
   from the corner far enough for both corners' ramps and flares to fit.
+  A ramp runs at `RampMaxSlope` when the sidewalk leaves a 90 cm landing behind
+  it; on a narrower sidewalk it is shortened (no shorter than half the
+  sidewalk), recorded as `TooSteep` and the crossing as `SteepRamp`. Where the
+  cut is deeper than the ramp (a planting strip), a level walk fills the rest.
+  Lane markings stop at a midblock crossing, which gets its own stop lines;
+  parked cars, street-side props and park benches keep clear of crossings,
+  ramps and path junctions.
   Sidewalks are flat (no cross slope); `MaxCrossSlope`
   is carried for the profile but not yet generated.
 - Hazard meshes stand in: an info board plays the A-frame, railings play

@@ -75,13 +75,22 @@ def _import_glb(glb, dest_dir, name):
         if isinstance(a, unreal.StaticMesh):
             meshes.append(a)
     if not meshes:
-        # Interchange can name the mesh after the glTF node: take any static mesh in the folder it wrote to.
+        # Interchange can name the mesh after the glTF node and put it in a folder named after the file: look
+        # (by class, without loading everything) for static meshes under the destination that match either.
+        stem = os.path.splitext(os.path.basename(glb))[0]
         for p in H.EAL.list_assets(dest_dir, recursive=True):
-            a = unreal.load_asset(p)
-            if isinstance(a, unreal.StaticMesh) and name in a.get_name():
-                meshes.append(a)
+            ad = H.EAL.find_asset_data(p)
+            if str(ad.asset_class_path.asset_name) != "StaticMesh":
+                continue
+            if name in str(ad.asset_name) or ("/" + stem + "/") in str(ad.package_path) + "/" or str(ad.package_path).endswith("/" + stem):
+                a = unreal.load_asset(p)
+                if a is not None:
+                    meshes.append(a)
     if not meshes:
         return None
+    if len(meshes) > 1:
+        # Only the largest is used: a GLB holding several objects (a scene, or a model split per part) loses the rest.
+        H.warn("urbanverse: %s imported as %d meshes (%s); keeping the largest" % (os.path.basename(glb), len(meshes), ", ".join(m.get_name() for m in meshes[:4])))
     mesh = max(meshes, key=lambda m: m.get_bounds().box_extent.length())
     if mesh.get_path_name().split(".")[0] != path:
         try:
@@ -118,6 +127,26 @@ def _physical_material(item):
     return pm
 
 
+def _apply_friction(mesh, pm):
+    """Give the mesh the friction of its physical material on every collision path. The body setup's physical
+    material only covers simple shapes; palette meshes without simple collision collide complex-as-simple, where
+    the material's physical material is the one used. The imported material instances are per asset (Interchange
+    writes them under the GLB's own folder), so they can carry it without touching anything else."""
+    bs = mesh.get_editor_property("body_setup")
+    if bs is not None:
+        bs.set_editor_property("phys_material", pm)
+    for sm in mesh.get_editor_property("static_materials") or []:
+        mat = sm.get_editor_property("material_interface")
+        if isinstance(mat, unreal.MaterialInstanceConstant) and mat.get_path_name().startswith(DEST + "/"):
+            try:
+                if mat.get_editor_property("phys_material") != pm:
+                    mat.set_editor_property("phys_material", pm)
+                    H.EAL.save_loaded_asset(mat, False)
+            except Exception as exc:  # noqa: BLE001
+                H.warn("urbanverse: physical material on %s: %s" % (mat.get_name(), exc))
+    H.EAL.save_loaded_asset(mesh, False)
+
+
 def import_selection(cache_dir, slots=None):
     """Import every asset listed in <cache_dir>/ramms_selection.json. Returns {slot: [(mesh, item)]}."""
     sel = json.load(open(os.path.join(cache_dir, "ramms_selection.json"), encoding="utf-8"))
@@ -145,9 +174,7 @@ def import_selection(cache_dir, slots=None):
             pm = _physical_material(it)
             if pm is not None:
                 try:
-                    bs = mesh.get_editor_property("body_setup")
-                    bs.set_editor_property("phys_material", pm)
-                    H.EAL.save_loaded_asset(mesh, False)
+                    _apply_friction(mesh, pm)
                 except Exception as exc:  # noqa: BLE001
                     H.warn("urbanverse: physical material for %s: %s" % (mesh.get_name(), exc))
             out.setdefault(slot, []).append((mesh, it))
@@ -176,7 +203,8 @@ def front_yaw(item):
 def _yaw(mesh, item, slot, facing):
     """Facing yaw for an imported mesh: the annotation's frontView ("annotation"), or the palette's geometric
     heuristic ("geometry", the default: backrests and cisterns mark the back). For long-fronted slots the
-    heuristic's answer is kept only if it puts the long side across the facing direction."""
+    heuristic's answer is kept only if it puts the long side across the facing direction; otherwise the front is
+    one of the two long faces, and the annotation picks which."""
     if facing == "annotation":
         return front_yaw(item)
     if slot in LONG_FRONT_SLOTS:
@@ -184,23 +212,43 @@ def _yaw(mesh, item, slot, facing):
         y = P._facing_yaw(mesh, mesh.get_bounds(), slot)
         long_x = b.x >= b.y
         across = (abs(y) % 180.0 < 1.0) != long_x      # yaw 0/180 keeps X as the facing axis
-        return y if across else (90.0 if long_x else 0.0)
+        if across:
+            return y
+        cands = (90.0, -90.0) if long_x else (0.0, 180.0)
+        a = front_yaw(item)
+        return min(cands, key=lambda c: abs((c - a + 180.0) % 360.0 - 180.0))
     return None
+
+
+def source_id(item):
+    """Where a palette entry came from, carried into the manifest (features' "source")."""
+    return "urbanverse:%s|%s" % (item.get("uid", ""), item.get("category", ""))
 
 
 def build(cache_dir, mode="replace", slots=None, path=PALETTE, facing="geometry"):
     """Import the selection and build the UrbanVerse palette. mode: "replace" (UrbanVerse only in the slots it
     fills) or "mix" (added to the Fab variants). Returns (palette, report)."""
+    P._COLLISION_DONE.clear()
     imported = import_selection(cache_dir, slots)
     if not H.EAL.does_asset_exist(P.DEFAULT_PALETTE):
         P.build_default_palette()
-    if H.EAL.does_asset_exist(path):
-        H.EAL.delete_asset(path)
-    pal = H.EAL.duplicate_asset(P.DEFAULT_PALETTE, path)
+    default = unreal.load_asset(P.DEFAULT_PALETTE)
+    if default is None:
+        raise RuntimeError("urbanverse: default palette %s did not load" % P.DEFAULT_PALETTE)
+    # Refresh in place (deleting it would break every reference to it: presets, open levels, generators set to it).
+    pal = unreal.load_asset(path) if H.EAL.does_asset_exist(path) else H.EAL.duplicate_asset(P.DEFAULT_PALETTE, path)
+    if pal is None:
+        raise RuntimeError("urbanverse: could not create palette %s" % path)
+    pal.set_editor_property("slots", default.get_editor_property("slots"))
+    pal.set_editor_property("default_material", default.get_editor_property("default_material"))
     slots_map = pal.get_editor_property("slots")
     report = {"slots": {}, "mode": mode}
     for slot, pairs in imported.items():
-        entries = [P._mesh_entry(mesh, slot, yaw=_yaw(mesh, it, slot, facing), normalise=False) for mesh, it in pairs]
+        entries = []
+        for mesh, it in pairs:
+            e = P._mesh_entry(mesh, slot, yaw=_yaw(mesh, it, slot, facing), normalise=False)
+            e.set_editor_property("source_id", source_id(it))
+            entries.append(e)
         s = slots_map.get(unreal.Name(slot)) if slots_map else None
         if s is None:
             s = unreal.RammsPaletteSlot()

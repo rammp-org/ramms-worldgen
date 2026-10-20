@@ -58,6 +58,12 @@ namespace RammsPCG
 	inline const FName IssueId(TEXT("IssueId"));
 	inline const FName Measure(TEXT("Measure"));
 	inline const FName Threshold(TEXT("Threshold"));
+	// Ground-truth box of a placed palette mesh, written by WritePickedMesh: the point's own transform is the
+	// mesh pivot (rotation offset included, scale applied), which is not the object's footprint.
+	inline const FName ManifestCenter(TEXT("ManifestCenter"));   // base centre (on the ground)
+	inline const FName ManifestYaw(TEXT("ManifestYaw"));         // facing yaw (front = +X of the footprint)
+	inline const FName ManifestSize(TEXT("ManifestSize"));       // footprint X (depth along the front) / Y, height
+	inline const FName SourceId(TEXT("SourceId"));               // where the asset came from (e.g. urbanverse:<uid>|<category>)
 	// structure
 	inline const FName BlockId(TEXT("BlockId"));
 	inline const FName LotId(TEXT("LotId"));
