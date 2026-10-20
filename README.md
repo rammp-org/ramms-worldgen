@@ -387,6 +387,43 @@ runs it at 0.2, the office at 0.1.
 - **New piece kind**: add to `ERammsProcPieceKind`, a `Build*` in
   `RammsProcPiece.cpp`, and emit it from a node.
 
+## UrbanVerse assets
+
+[UrbanVerse-100K](https://huggingface.co/datasets/Oatmealliu/UrbanVerse-100K) (Liu et al., ICLR 2026) is
+a gated Hugging Face dataset of about 100K metric-scaled, annotated urban objects (GLB). It can fill the
+street-furniture, vehicle and hazard slots with far more variety than the Fab packs. It takes two steps:
+
+1. **Choose and download** (outside Unreal). `Tools/urbanverse_fetch.py` needs Python with
+   `pip install --no-deps urbanverse-asset` plus `pip install "huggingface_hub[cli]" pillow tqdm trimesh`,
+   and a Hugging Face login (`hf auth login`) on an account that has accepted the dataset's terms.
+   ```
+   python Tools/urbanverse_fetch.py --cache D:/urbanverse --per-slot 8
+   ```
+   - The `SLOTS` table maps each palette slot to UrbanVerse leaf categories (`--list` writes all 659), with
+     height and length limits in metres and a minimum quality score (0–10, from the annotations). Only single
+     objects are taken, and the categories in a slot are taken in turn.
+   - It writes `ramms_selection.json` (slot to assets, with size, mass, friction, license) and
+     `ATTRIBUTION.md` (creator and source of every asset).
+   - `--commercial` keeps only assets whose license allows commercial use. Licenses vary per asset: most are
+     CC BY, some CC BY-NC.
+2. **Import and build the palette** (in the editor):
+   ```python
+   import ramms_worldgen.urbanverse as UV
+   UV.build(r"D:/urbanverse")                 # or mode="mix" to keep the Fab variants too
+   ```
+   - The GLBs are imported with Interchange under `/Game/UrbanVerse/<Slot>/`, with their materials and
+     textures. GLBs over 40 MB (heavy scans) are skipped.
+   - Each mesh gets a physical material with its annotated friction and complex-as-simple collision.
+     Meshes over 50K triangles become Nanite.
+   - `PAL_UrbanVerse` is `PAL_Default` with those slots replaced. Assets keep their real size; their front
+     comes from the same geometric test as the Fab meshes, and long-fronted pieces (benches, shelters,
+     dumpsters) are turned so the long side is the front.
+   - To check facing: `LINEUP_PALETTE = "/RammsWorldGen/Palettes/PAL_UrbanVerse"` with
+     `Scripts/worldgen/lineup.py`.
+
+Use it by setting a preset's or generator's `Palette` (a generator override does not touch the preset).
+The imported assets stay out of git, like the Fab packs.
+
 ## Streets and yards
 
 - **Curbs and ground**: every surface material projects its texture by the
