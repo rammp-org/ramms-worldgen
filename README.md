@@ -405,6 +405,7 @@ street-furniture, vehicle and hazard slots with far more variety than the Fab pa
    and a Hugging Face login (`hf auth login`) on an account that has accepted the dataset's terms.
    ```
    python Tools/urbanverse_fetch.py --cache D:/urbanverse --per-slot 8
+   python Tools/urbanverse_fetch.py --cache D:/urbanverse --analyze    # material analysis only, no downloads
    ```
    - The `SLOTS` table maps each palette slot to UrbanVerse leaf categories (`--list` writes all 659), with
      height and length limits in metres and a minimum quality score (0–10, from the annotations). Only single
@@ -424,6 +425,15 @@ street-furniture, vehicle and hazard slots with far more variety than the Fab pa
    ```
    - The GLBs are imported with Interchange under `/Game/UrbanVerse/<Slot>/`, with their materials and
      textures. GLBs over 40 MB (heavy scans) are skipped.
+   - Materials: Interchange makes every glTF material flagged `BLEND` translucent, and many UrbanVerse
+     exporters flag whole models that way (opaque bodywork, benches, shelters baked into one texture), which
+     renders milky and badly lit. The fetch step records each material's alpha (factor, and a histogram of
+     the texture's alpha; `--analyze` adds it to an existing selection), and the import makes such a
+     material opaque, masked (cut-outs, leaves) or real glass: `M_RammsGlass` for panes (thin, two-sided,
+     near-black base, Fresnel opacity) or `M_RammsGlassAtlas` for one texture holding glass and solid parts
+     (masked; the glass texels dithered with glass roughness). `urbanverse.MATERIAL_OVERRIDES` covers
+     panes the analysis cannot tell from opaque parts. Fully transparent helpers and baked shadow cards stay
+     as authored.
    - Each mesh gets complex-as-simple collision and a physical material with its annotated friction, set on
      the body and on the mesh's own material instances (complex collision takes the material's physical
      material). Meshes over 50K triangles become Nanite. A GLB that imports as several meshes keeps the

@@ -9,6 +9,7 @@ that has accepted the dataset's terms (`hf auth login`).
     python urbanverse_fetch.py --cache D:/urbanverse --list            # write the category tree (no meshes)
     python urbanverse_fetch.py --cache D:/urbanverse --per-slot 6       # choose and download
     python urbanverse_fetch.py --cache D:/urbanverse --slots Bench,Car --per-slot 10
+    python urbanverse_fetch.py --cache D:/urbanverse --analyze          # material analysis only (no downloads)
 
 Each palette slot below lists UrbanVerse leaf categories, size
 limits in metres and a minimum quality score (0-10, from the dataset's annotations). Only single objects
@@ -132,10 +133,80 @@ def _attribution_row(slot: str, it: dict) -> str:
     return "| %s | %s | [%s](%s) | %s | %s | `%s` |" % (slot, it.get("category", ""), title or uid, url, author, lic, uid)
 
 
+def glb_materials(path: str) -> dict:
+    """Per glTF material of a GLB: alpha mode, base colour / alpha factor, roughness, transmission and, for
+    BLEND materials with a base colour texture, a 16-bin histogram of the effective alpha (texture alpha x
+    factor). ramms_worldgen.urbanverse uses it to tell real glass from surfaces only flagged BLEND by their
+    exporter (fully opaque, or cut-out), which Unreal would otherwise render translucent."""
+    import io
+    import struct
+    from PIL import Image
+    data = Path(path).read_bytes()
+    if data[:4] != b"glTF":
+        return {}
+    off, js, binc = 12, None, b""
+    while off + 8 <= len(data):
+        clen, ctype = struct.unpack_from("<II", data, off)
+        chunk = data[off + 8: off + 8 + clen]
+        off += 8 + clen
+        if ctype == 0x4E4F534A:
+            js = json.loads(chunk)
+        elif ctype == 0x004E4942:
+            binc = chunk
+    if not js:
+        return {}
+    out = {}
+    for i, m in enumerate(js.get("materials", [])):
+        name = m.get("name") or "material_%d" % i
+        pbr = m.get("pbrMetallicRoughness", {})
+        fac = list(pbr.get("baseColorFactor", [1.0, 1.0, 1.0, 1.0]))
+        info = {"alpha_mode": m.get("alphaMode", "OPAQUE"), "alpha_factor": float(fac[3]), "color": [float(c) for c in fac[:3]],
+                "roughness": float(pbr.get("roughnessFactor", 1.0)), "metallic": float(pbr.get("metallicFactor", 1.0)),
+                "textured": "baseColorTexture" in pbr}
+        tr = (m.get("extensions") or {}).get("KHR_materials_transmission")
+        if tr:
+            info["transmission"] = float(tr.get("transmissionFactor", 0.0))
+        if info["alpha_mode"] == "BLEND" and info["textured"]:
+            try:
+                src = js["textures"][pbr["baseColorTexture"]["index"]]["source"]
+                bv = js["bufferViews"][js["images"][src]["bufferView"]]
+                o = bv.get("byteOffset", 0)
+                im = Image.open(io.BytesIO(binc[o:o + bv["byteLength"]]))
+                bins = [0] * 16
+                if "A" in im.getbands():
+                    # Full resolution: a downscaled alpha would blur cut-out edges into partial alpha.
+                    for v, n in enumerate(im.getchannel("A").histogram()):
+                        bins[min(15, int(v / 255.0 * info["alpha_factor"] * 16))] += n
+                else:
+                    bins[min(15, int(info["alpha_factor"] * 16))] = 1
+                tot = float(sum(bins)) or 1.0
+                info["alpha_hist"] = [round(b / tot, 4) for b in bins]
+            except Exception as exc:  # noqa: BLE001 - external image or undecodable: decided by name / factor
+                info["alpha_err"] = str(exc)[:120]
+        out[name] = info
+    return out
+
+
+def analyze(cache: Path) -> int:
+    """Add the material analysis to an existing selection (no downloads)."""
+    sel_path = cache / "ramms_selection.json"
+    sel = json.loads(sel_path.read_text(encoding="utf-8"))
+    n = 0
+    for items in sel.get("slots", {}).values():
+        for it in items:
+            if it.get("glb") and Path(it["glb"]).exists():
+                it["materials"] = glb_materials(it["glb"])
+                n += 1
+    sel_path.write_text(json.dumps(sel, indent=1), encoding="utf-8")
+    print("materials analysed for %d assets -> %s" % (n, sel_path))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cache", required=True, help="download folder (outside any git repo)")
     ap.add_argument("--list", action="store_true", help="write categories.json and stop")
+    ap.add_argument("--analyze", action="store_true", help="re-analyse the materials of an existing selection and stop")
     ap.add_argument("--slots", default="", help="comma-separated subset of slots")
     ap.add_argument("--per-slot", type=int, default=6)
     ap.add_argument("--commercial", action="store_true", help="only assets whose license allows commercial use")
@@ -143,10 +214,13 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
+    cache = Path(args.cache)
+    if args.analyze:
+        return analyze(cache)
+
     import urbanverse_asset as uva
     from urbanverse_asset import _core
 
-    cache = Path(args.cache)
     uva.set(str(cache))
     cats = uva.object.categories()           # {l3: {class_name_l1, class_name_l2, class_name_l3, asset_uids, asset_count}}
     if args.list:
@@ -239,6 +313,11 @@ def main() -> int:
             r = res.get(it["uid"], {})
             it["glb"] = str(r.get("std_glb") or "")
             it["thumbnail"] = str(r.get("thumbnail") or "")
+            if it["glb"]:
+                try:
+                    it["materials"] = glb_materials(it["glb"])
+                except Exception as exc:  # noqa: BLE001
+                    print("warning: materials of %s: %s" % (it["uid"], exc))
         selection["slots"][slot] = [it for it in items if it["glb"]]
     sel_path.write_text(json.dumps(selection, indent=1), encoding="utf-8")
 
