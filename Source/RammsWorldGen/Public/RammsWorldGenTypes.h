@@ -319,4 +319,16 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Indoor", meta = (ClampMin = 0, ClampMax = 1)) double RetailFraction = 0.0;
 	/** Probability an interior room is a corridor-connected room vs. open plan. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Indoor", meta = (ClampMin = 0, ClampMax = 1)) double CorridorChance = 0.6;
+
+	// --- glass -------------------------------------------------------------------
+	/** How far each placed glass instance (bus-shelter panes, car windows, ...) may stray from its asset's own
+	 *  look: 0 = every copy identical, 1 = the full range below. Written as per-instance custom data that the
+	 *  RammsWorldGen glass materials read (frost, opacity, tint, bump), seeded by the world seed and position. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = 0, ClampMax = 1)) double GlassVariation = 1.0;
+	/** Probability a glass instance is frosted / milky (rougher, brighter, more opaque; blurs what is behind). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = 0, ClampMax = 1)) double GlassFrostChance = 0.3;
+	/** Probability a glass instance is tinted (green, blue, bronze or smoked) rather than near-clear. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = 0, ClampMax = 1)) double GlassTintChance = 0.35;
+	/** Probability a glass instance is rippled / textured (patterned glass) rather than flat float glass. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = 0, ClampMax = 1)) double GlassBumpChance = 0.25;
 };

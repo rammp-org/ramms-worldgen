@@ -25,6 +25,7 @@
 #include "Metadata/PCGMetadataAttributeTraits.h"
 #include "RammsAccessibilityProfile.h"
 #include "RammsProcPiece.h"
+#include "RammsWorldGenGraphLibrary.h"
 #include "RammsWorldGenModule.h"
 #include "RammsWorldPalette.h"
 #include "RammsWorldPreset.h"
@@ -300,6 +301,7 @@ void ARammsWorldGenerator::HandleGenerated(UPCGComponent* Component)
 	BuildManifestFromOutput();
 	CollectProcPieces();
 	Manifest.Bounds = SiteBounds ? SiteBounds->Bounds.GetBox() : FBox(ForceInit);
+	ApplyGlassVariation();
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generated seed=%d features=%d routes=%d issues=%d"), *GetName(), Seed, Manifest.Features.Num(), Manifest.Routes.Num(), Manifest.CountIssues());
 	if (bPlacePlayersOnGenerate && !bPlayersTaken && GetWorld() && GetWorld()->IsGameWorld())
 	{
@@ -307,6 +309,34 @@ void ARammsWorldGenerator::HandleGenerated(UPCGComponent* Component)
 		PlacePlayers();
 	}
 	OnWorldGenerated.Broadcast(Manifest);
+}
+
+// Each placed glass instance (bus-shelter panes, car windows, ...) gets its own frost / opacity / tint / bump
+// as per-instance custom data, drawn from the seed and its position. PCG puts its instanced meshes on this
+// actor (or, for a partitioned graph, on partition actors inside the site), so both are visited.
+int32 ARammsWorldGenerator::ApplyGlassVariation()
+{
+	const float V = static_cast<float>(Params.GlassVariation);
+	const float Fc = static_cast<float>(Params.GlassFrostChance), Tc = static_cast<float>(Params.GlassTintChance), Bc = static_cast<float>(Params.GlassBumpChance);
+	int32 N = URammsWorldGenGraphLibrary::VaryGlassInstances(this, Seed, V, Fc, Tc, Bc);
+	UWorld* World = GetWorld();
+	if (World && SiteBounds)
+	{
+		const FBox Site = SiteBounds->Bounds.GetBox().ExpandBy(500.0);
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* A = *It;
+			if (A != this && A->GetClass()->GetName().Contains(TEXT("PCGPartitionActor")) && Site.IsInside(A->GetActorLocation()))
+			{
+				N += URammsWorldGenGraphLibrary::VaryGlassInstances(A, Seed, V, Fc, Tc, Bc);
+			}
+		}
+	}
+	if (N > 0)
+	{
+		UE_LOG(LogRammsWorldGen, Log, TEXT("%s: glass variation %.2f on %d instances"), *GetName(), V, N);
+	}
+	return N;
 }
 
 // The manifest node emits one attribute set whose "Json" attribute is a serialized

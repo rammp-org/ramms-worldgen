@@ -137,6 +137,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "World Generator|Play")
 	void PlacePlayers();
 
+	/** Re-roll the per-instance look of the generated glass (Params.Glass*); done after every generation.
+	 *  Returns the number of glass instances written. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "World Generator")
+	int32 ApplyGlassVariation();
+
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void OnConstruction(const FTransform& Transform) override;

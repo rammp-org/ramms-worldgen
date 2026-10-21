@@ -434,6 +434,19 @@ street-furniture, vehicle and hazard slots with far more variety than the Fab pa
      (masked; the glass texels dithered with glass roughness). `urbanverse.MATERIAL_OVERRIDES` covers
      panes the analysis cannot tell from opaque parts. Fully transparent helpers and baked shadow cards stay
      as authored.
+   - Glass look per placement: both glass materials take `Frost` (0 clear .. 1 milky), `Bump` (0 flat .. 1
+     rippled / patterned), `Tint`, `Roughness` and opacity parameters per material instance, and read six
+     floats of per-instance custom data on top: frost offset, opacity multiplier, tint multiplier (RGB) and
+     bump offset. `M_RammsGlass` also reads what is behind the pane back from the scene colour, so frost
+     really blurs it (`BlurRadius`, cm), ripples shift it (`Refraction`, cm) and the tint colours it
+     (`ScreenSpace` 0 limits that to frosted or rippled glass). After each generation
+     `ARammsWorldGenerator::ApplyGlassVariation` gives every placed glass instance its own look from the seed
+     and its position: `GlassVariation` (0 = all identical) scales the range, `GlassFrostChance`,
+     `GlassTintChance` and `GlassBumpChance` pick frosted, tinted (green, blue, bronze, smoked) and rippled
+     ones. Vehicle glass (`InstanceFrost` / `InstanceBump` 0) varies in tint and opacity only.
+     `URammsWorldGenGraphLibrary::SetGlassInstanceLook` / `VaryGlassInstances` / `SpawnInstancedMesh` do the
+     same from Blueprint or Python. In the atlas material the glass texels are dithered, so frost there is
+     denser, brighter coverage rather than a blur.
    - Each mesh gets complex-as-simple collision and a physical material with its annotated friction, set on
      the body and on the mesh's own material instances (complex collision takes the material's physical
      material). Meshes over 50K triangles become Nanite. A GLB that imports as several meshes keeps the

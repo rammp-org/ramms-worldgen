@@ -13,6 +13,12 @@
 #include "PCGNode.h"
 #include "PCGInputOutputSettings.h"
 #include "UObject/UnrealType.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+#include "GameFramework/Actor.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInterface.h"
 #if WITH_EDITOR
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SWindow.h"
@@ -300,4 +306,154 @@ bool URammsWorldGenGraphLibrary::CaptureGraphEditor(UPCGGraph* Graph, const FStr
 #else
 	return false;
 #endif
+}
+
+// --- glass ------------------------------------------------------------------------------------------------
+
+bool URammsWorldGenGraphLibrary::UsesRammsGlass(const UPrimitiveComponent* Component)
+{
+	if (!Component)
+	{
+		return false;
+	}
+	for (int32 i = 0; i < Component->GetNumMaterials(); ++i)
+	{
+		const UMaterialInterface* MI = Component->GetMaterial(i);
+		const UMaterial* Base = MI ? MI->GetMaterial() : nullptr;
+		if (Base && Base->GetName().StartsWith(TEXT("M_RammsGlass")))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool URammsWorldGenGraphLibrary::SetGlassInstanceLook(UInstancedStaticMeshComponent* Component, int32 InstanceIndex, float Frost, float OpacityScale,
+	FLinearColor Tint, float Bump, bool bMarkRenderStateDirty)
+{
+	if (!Component || !Component->IsValidInstance(InstanceIndex))
+	{
+		return false;
+	}
+	if (Component->NumCustomDataFloats < GlassCustomDataFloats)
+	{
+		Component->SetNumCustomDataFloats(GlassCustomDataFloats);
+	}
+	const float Data[GlassCustomDataFloats] = { Frost, OpacityScale, Tint.R, Tint.G, Tint.B, Bump };
+	for (int32 i = 0; i < GlassCustomDataFloats; ++i)
+	{
+		Component->SetCustomDataValue(InstanceIndex, i, Data[i], false);
+	}
+	if (bMarkRenderStateDirty)
+	{
+		Component->MarkRenderStateDirty();
+	}
+	return true;
+}
+
+namespace
+{
+	// Glass tints as multipliers on the material's own (mostly neutral) tint: float-glass green, blue, bronze, smoked grey.
+	const FLinearColor GlassTints[] = {
+		FLinearColor(0.70f, 1.10f, 0.85f),
+		FLinearColor(0.60f, 0.85f, 1.25f),
+		FLinearColor(1.25f, 0.90f, 0.55f),
+		FLinearColor(0.45f, 0.45f, 0.48f),
+	};
+}
+
+int32 URammsWorldGenGraphLibrary::VaryGlassInstances(AActor* Actor, int32 Seed, float Variation, float FrostChance, float TintChance, float BumpChance)
+{
+	if (!Actor)
+	{
+		return 0;
+	}
+	const float V = FMath::Clamp(Variation, 0.f, 1.f);
+	int32 Changed = 0;
+	TArray<UInstancedStaticMeshComponent*> Components;
+	Actor->GetComponents<UInstancedStaticMeshComponent>(Components);
+	for (UInstancedStaticMeshComponent* ISM : Components)
+	{
+		if (!ISM || ISM->GetInstanceCount() == 0 || !UsesRammsGlass(ISM))
+		{
+			continue;
+		}
+		if (V <= 0.f)
+		{
+			if (ISM->NumCustomDataFloats > 0)
+			{
+				ISM->SetNumCustomDataFloats(0);
+				ISM->MarkRenderStateDirty();
+			}
+			continue;
+		}
+		for (int32 i = 0; i < ISM->GetInstanceCount(); ++i)
+		{
+			FTransform T;
+			ISM->GetInstanceTransform(i, T, true);
+			// one stream per placement (10 cm grid), so every glass component of one shelter or car agrees and
+			// the same seed gives the same look
+			const FIntVector Q(FMath::RoundToInt(T.GetLocation().X / 10.0), FMath::RoundToInt(T.GetLocation().Y / 10.0), FMath::RoundToInt(T.GetLocation().Z / 10.0));
+			FRandomStream R(static_cast<int32>(HashCombine(HashCombine(HashCombine(GetTypeHash(Seed), GetTypeHash(Q.X)), HashCombine(GetTypeHash(Q.Y), GetTypeHash(Q.Z))), 0x9a55u)));
+			// draw everything up front so changing one chance does not reshuffle the others
+			const float RFrost = R.FRand(), RFrostAmt = R.FRand(), ROpac = R.FRand(), RTint = R.FRand(), RTintPick = R.FRand(), RBump = R.FRand(), RBumpAmt = R.FRand();
+			const float Frost = RFrost < FrostChance ? V * FMath::Lerp(0.35f, 1.f, RFrostAmt) : 0.f;
+			const float Opacity = 1.f + V * 0.25f * (2.f * ROpac - 1.f);
+			FLinearColor Tint = FLinearColor::White;
+			if (RTint < TintChance)
+			{
+				const int32 Pick = FMath::Min(static_cast<int32>(RTintPick * UE_ARRAY_COUNT(GlassTints)), static_cast<int32>(UE_ARRAY_COUNT(GlassTints)) - 1);
+				Tint = FMath::Lerp(FLinearColor::White, GlassTints[Pick], V);
+			}
+			const float Bump = RBump < BumpChance ? V * FMath::Lerp(0.3f, 1.f, RBumpAmt) : 0.f;
+			Changed += SetGlassInstanceLook(ISM, i, Frost, Opacity, Tint, Bump, false) ? 1 : 0;
+		}
+		ISM->MarkRenderStateDirty();
+	}
+	return Changed;
+}
+
+AActor* URammsWorldGenGraphLibrary::SpawnInstancedMesh(UObject* WorldContextObject, UStaticMesh* Mesh, const TArray<FTransform>& Transforms,
+	const TArray<float>& CustomData, int32 NumCustomDataFloats, FName Tag)
+{
+	UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : nullptr;
+	if (!World || !Mesh)
+	{
+		return nullptr;
+	}
+	FActorSpawnParameters SP;
+	SP.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* Actor = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, SP);
+	if (!Actor)
+	{
+		return nullptr;
+	}
+	UInstancedStaticMeshComponent* ISM = NewObject<UInstancedStaticMeshComponent>(Actor, TEXT("Instances"), RF_Transactional);
+	ISM->SetMobility(EComponentMobility::Movable);
+	Actor->SetRootComponent(ISM);
+	Actor->AddInstanceComponent(ISM);
+	ISM->SetStaticMesh(Mesh);
+	ISM->RegisterComponent();
+	const int32 N = FMath::Max(NumCustomDataFloats, 0);
+	if (N > 0)
+	{
+		ISM->SetNumCustomDataFloats(N);
+	}
+	for (int32 i = 0; i < Transforms.Num(); ++i)
+	{
+		const int32 Index = ISM->AddInstance(Transforms[i], true);
+		for (int32 k = 0; k < N && i * N + k < CustomData.Num(); ++k)
+		{
+			ISM->SetCustomDataValue(Index, k, CustomData[i * N + k], false);
+		}
+	}
+	ISM->MarkRenderStateDirty();
+	if (!Tag.IsNone())
+	{
+		Actor->Tags.Add(Tag);
+	}
+#if WITH_EDITOR
+	Actor->SetActorLabel(Tag.IsNone() ? FString(TEXT("RammsInstancedMesh")) : Tag.ToString());
+#endif
+	return Actor;
 }

@@ -18,6 +18,7 @@ four turntable renders, 0/90/180/270 degrees, shows the functional front); FRONT
 map that to the yaw that turns the front to +X, the palette convention (checked with Scripts/worldgen/lineup.py).
 """
 import json
+import math
 import os
 import shutil
 
@@ -117,7 +118,7 @@ def _import_glb(glb, dest_dir, name):
 # material is made opaque, masked, or real glass (our own glass material), or left alone.
 GLASS = H.ROOT + "/Materials/M_RammsGlass"
 GLASS_TEX = H.ROOT + "/Materials/M_RammsGlassAtlas"
-GLASS_VERSION = "8"      # bump when the glass graphs change: existing assets are rebuilt in place
+GLASS_VERSION = "14"      # bump when the glass graphs change: existing assets are rebuilt in place
 GLASS_WORDS = ("glass", "vitre", "window", "windshield", "windscreen", "lens", "clear", "transparent", "phare", "headlight")
 FOLIAGE_WORDS = ("fern", "leaf", "leaves", "plant", "grass", "foliage", "flower", "bush", "ivy")
 
@@ -168,17 +169,144 @@ def _param(mat, cls, name, x, y, default=None):
     return e
 
 
+# Per-instance custom data the glass materials read (ISM instances; RammsWorldGen's generator writes it, see
+# ARammsWorldGenerator::ApplyGlassVariation). A mesh that is not instanced, or an ISM without custom data,
+# gets the defaults, i.e. the material instance's own look.
+GLASS_CUSTOM_DATA = (
+    ("Frost", 0.0),        # 0: added to the instance's Frost (0 clear .. 1 milky)
+    ("Opacity", 1.0),      # 1: opacity multiplier
+    ("TintR", 1.0),        # 2-4: colour multiplier
+    ("TintG", 1.0),
+    ("TintB", 1.0),
+    ("Bump", 0.0),         # 5: added to the instance's Bump (0 flat .. 1 strongly rippled)
+)
+BUMP_TEXTURE = "/Engine/Functions/Engine_MaterialFunctions02/ExampleContent/Textures/water_n"
+
+
+class _G:
+    """Small helper for building material graphs from Python."""
+
+    def __init__(self, mat):
+        self.m = mat
+        self.mel = unreal.MaterialEditingLibrary
+
+    def x(self, cls, pos, **props):
+        e = self.mel.create_material_expression(self.m, cls, pos[0], pos[1])
+        for k, v in props.items():
+            if isinstance(k, str) and "|" in k:
+                for alt in k.split("|"):
+                    try:
+                        e.set_editor_property(alt, v)
+                        break
+                    except Exception:  # noqa: BLE001
+                        continue
+            else:
+                e.set_editor_property(k, v)
+        return e
+
+    def scalar(self, name, default, pos):
+        return self.x(unreal.MaterialExpressionScalarParameter, pos, parameter_name=name, default_value=default)
+
+    def c(self, src, dst, pin, out=""):
+        return _connect(src, out, dst, (pin,))
+
+    def op(self, cls, a, b, pos, a_out="", b_out=""):
+        """Two-input node (A, B); b may be a number (set as ConstB)."""
+        e = self.x(cls, pos)
+        self.c(a, e, "A", a_out)
+        if isinstance(b, (int, float)):
+            e.set_editor_property("const_b", float(b))
+        else:
+            self.c(b, e, "B", b_out)
+        return e
+
+    def lerp(self, a, b, alpha, pos):
+        e = self.x(unreal.MaterialExpressionLinearInterpolate, pos)
+        for v, pin in ((a, "A"), (b, "B"), (alpha, "Alpha")):
+            if isinstance(v, (int, float)):
+                e.set_editor_property("const_" + pin.lower(), float(v))
+            else:
+                self.c(v, e, pin)
+        return e
+
+    def clamp01(self, a, pos):
+        lo = self.op(unreal.MaterialExpressionMax, a, 0.0, pos)
+        return self.op(unreal.MaterialExpressionMin, lo, 1.0, (pos[0] + 120, pos[1]))
+
+    def custom(self, index, default, pos):
+        return self.x(unreal.MaterialExpressionPerInstanceCustomData, pos, data_index=index,
+                      **{"const_default_value|default_value": float(default)})
+
+    def custom3(self, index, default, pos):
+        return self.x(unreal.MaterialExpressionPerInstanceCustomData3Vector, pos, data_index=index,
+                      **{"const_default_value|default_value": unreal.LinearColor(default[0], default[1], default[2], 1.0)})
+
+    def prop(self, e, mp):
+        self.mel.connect_material_property(e, "", mp)
+
+
+def _glass_inputs(g, frost_default, y0=-600):
+    """Shared inputs of both glass materials: tint, frost and bump, each the instance's parameter combined with
+    the per-instance custom data. Returns (tint, frost 0..1, bump 0..1, opacity multiplier, rough, frost_rough,
+    frost_bright)."""
+    tint_p = g.x(unreal.MaterialExpressionVectorParameter, (-1900, y0), parameter_name="Tint",
+                 default_value=unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
+    tint = g.op(unreal.MaterialExpressionMultiply, tint_p, g.custom3(2, (1.0, 1.0, 1.0), (-1900, y0 + 120)), (-1600, y0 + 60))
+    # InstanceFrost / InstanceBump: how much this material instance follows the per-instance offsets (car
+    # windows, for instance, take tint and opacity variation but are never frosted or rippled)
+    cfrost = g.op(unreal.MaterialExpressionMultiply, g.custom(0, 0.0, (-2100, y0 + 330)), g.scalar("InstanceFrost", 1.0, (-2100, y0 + 400)), (-1800, y0 + 330))
+    frost = g.clamp01(g.op(unreal.MaterialExpressionAdd, g.scalar("Frost", frost_default, (-1900, y0 + 240)), cfrost, (-1600, y0 + 280)), (-1450, y0 + 280))
+    cbump = g.op(unreal.MaterialExpressionMultiply, g.custom(5, 0.0, (-2100, y0 + 510)), g.scalar("InstanceBump", 1.0, (-2100, y0 + 580)), (-1800, y0 + 510))
+    bump = g.clamp01(g.op(unreal.MaterialExpressionAdd, g.scalar("Bump", 0.0, (-1900, y0 + 420)), cbump, (-1600, y0 + 460)), (-1450, y0 + 460))
+    oscale = g.custom(1, 1.0, (-1900, y0 + 600))
+    rough = g.scalar("Roughness", 0.03, (-1900, y0 + 690))
+    frough = g.scalar("FrostRoughness", 0.55, (-1900, y0 + 780))
+    fbright = g.scalar("FrostBrightness", 0.3, (-1900, y0 + 870))
+    return tint, frost, bump, oscale, rough, frough, fbright
+
+
+def _glass_normal(g, bump, pos, mask=None):
+    """Rippled-glass normal: a tiling normal map, world-aligned on vertical panes (x+y across, z up) so it
+    does not depend on the model's UVs, blended in by `bump` (times `mask`, e.g. glass texels only)."""
+    wp = g.x(unreal.MaterialExpressionWorldPosition, (pos[0] - 900, pos[1]))
+    across = g.x(unreal.MaterialExpressionConstant3Vector, (pos[0] - 900, pos[1] + 90), constant=unreal.LinearColor(1.0, 1.0, 0.0, 1.0))
+    up = g.x(unreal.MaterialExpressionConstant3Vector, (pos[0] - 900, pos[1] + 170), constant=unreal.LinearColor(0.0, 0.0, 1.0, 1.0))
+    u = g.op(unreal.MaterialExpressionDotProduct, wp, across, (pos[0] - 700, pos[1]))
+    v = g.op(unreal.MaterialExpressionDotProduct, wp, up, (pos[0] - 700, pos[1] + 120))
+    uv = g.op(unreal.MaterialExpressionAppendVector, u, v, (pos[0] - 550, pos[1] + 60))
+    tile = g.scalar("BumpTiling", 90.0, (pos[0] - 700, pos[1] + 220))
+    uvs = g.op(unreal.MaterialExpressionDivide, uv, tile, (pos[0] - 420, pos[1] + 60))
+    tex = g.x(unreal.MaterialExpressionTextureSampleParameter2D, (pos[0] - 300, pos[1] + 60), parameter_name="BumpTexture",
+              texture=unreal.load_asset(BUMP_TEXTURE), sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
+    g.c(uvs, tex, "UVs")
+    flat = g.x(unreal.MaterialExpressionConstant3Vector, (pos[0] - 300, pos[1] - 60), constant=unreal.LinearColor(0.0, 0.0, 1.0, 1.0))
+    w = bump if mask is None else g.op(unreal.MaterialExpressionMultiply, bump, mask, (pos[0] - 300, pos[1] + 250))
+    n = g.x(unreal.MaterialExpressionLinearInterpolate, pos)
+    g.c(flat, n, "A")
+    _connect(tex, "RGB", n, ("B",))
+    g.c(w, n, "Alpha")
+    g.prop(n, unreal.MaterialProperty.MP_NORMAL)
+    return tex
+
+
 def _glass_parent(textured):
-    """The two glass materials (built once under /RammsWorldGen/Materials):
+    """The two glass materials (built once under /RammsWorldGen/Materials, versioned by GLASS_VERSION).
 
-    M_RammsGlass, for panes: thin two-sided translucency, forward shaded, with a near-black base colour (glass
-    shows what is behind it and what it reflects, not a colour of its own) and Fresnel opacity - almost clear
-    face-on, reflective at grazing angles.
+    Both take, per material instance: Tint, Roughness, Frost (0 clear .. 1 milky: rougher, brighter, denser),
+    FrostRoughness / FrostBrightness, Bump (0 flat .. 1 rippled), BumpTexture / BumpTiling; and per placed
+    instance (ISM custom data, GLASS_CUSTOM_DATA) a frost and bump offset, an opacity multiplier and a tint
+    multiplier, so one asset can look different at each placement.
 
-    M_RammsGlassAtlas, for one texture holding both glass and solid parts (a whole shelter, a car with its
-    windows): masked, so frames, posters and bodywork stay solid and fully lit; the see-through parts are
-    dithered (temporal AA resolves them to partial cover) with glass roughness and a dark base, so they read
-    as glass with real reflections rather than a milky film."""
+    M_RammsGlass, for panes: thin, two-sided, forward-shaded translucency with a near-black base (glass shows
+    what is behind it and what it reflects) and Fresnel opacity (OpacityFront / OpacityEdge). What is behind is
+    also read back from the scene colour (screen-space transmission, weight ScreenSpace): blurred by frost
+    (BlurRadius, cm), shifted by the ripples (Refraction, cm) and coloured by the tint, so frosted glass blurs,
+    patterned glass distorts and tinted glass colours the view; frost also dims it (FrostTransmit) and adds a
+    lit milky layer (FrostBrightness).
+
+    M_RammsGlassAtlas, for one texture holding glass and solid parts (a whole shelter, a car with its
+    windows): masked, so frames, posters and bodywork stay solid and fully lit; the see-through texels are
+    dithered at GlassCover (FrostCover when frosted) with glass roughness, tint and bump."""
     path = GLASS_TEX if textured else GLASS
     mel = unreal.MaterialEditingLibrary
     MP = unreal.MaterialProperty
@@ -191,19 +319,17 @@ def _glass_parent(textured):
         d, n = path.rsplit("/", 1)
         H.ensure_dir(d)
         mat = H.asset_tools().create_asset(n, d, unreal.Material, unreal.MaterialFactoryNew())
+    g = _G(mat)
     mat.set_editor_property("two_sided", True)
-    metal = mel.create_material_expression(mat, unreal.MaterialExpressionConstant, -300, 450)
-    metal.set_editor_property("r", 0.0)
-    mel.connect_material_property(metal, "", MP.MP_METALLIC)
-    spec = mel.create_material_expression(mat, unreal.MaterialExpressionConstant, -300, 350)
-    spec.set_editor_property("r", 0.5)            # F0 0.04, as for glass
-    mel.connect_material_property(spec, "", MP.MP_SPECULAR)
-    tint = _param(mat, unreal.MaterialExpressionVectorParameter, "Tint", -1100, -300, unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
-    rough = _param(mat, unreal.MaterialExpressionScalarParameter, "Roughness", -1100, 250, 0.03)
-    dark = _param(mat, unreal.MaterialExpressionScalarParameter, "GlassBrightness", -1100, -180, 0.08)
-    gcol = mel.create_material_expression(mat, unreal.MaterialExpressionMultiply, -800, -250)
-    mel.connect_material_expressions(tint, "", gcol, "A")
-    mel.connect_material_expressions(dark, "", gcol, "B")
+    mat.set_editor_property("used_with_instanced_static_meshes", True)   # PCG places them as instances
+    g.prop(g.x(unreal.MaterialExpressionConstant, (-300, 450), r=0.0), MP.MP_METALLIC)
+    g.prop(g.x(unreal.MaterialExpressionConstant, (-300, 350), r=0.5), MP.MP_SPECULAR)   # F0 0.04, as for glass
+    tint, frost, bump, oscale, rough, frough, fbright = _glass_inputs(g, 0.0)
+    gbright = g.scalar("GlassBrightness", 0.08, (-1900, 400))
+    clear_col = g.op(unreal.MaterialExpressionMultiply, tint, gbright, (-1250, 380))
+    frost_col = g.op(unreal.MaterialExpressionMultiply, tint, fbright, (-1250, 480))
+    gcol = g.lerp(clear_col, frost_col, frost, (-1050, 420))
+    grough = g.lerp(rough, frough, frost, (-1050, 560))
     if not textured:
         mat.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
         mat.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_SURFACE_PER_PIXEL_LIGHTING)
@@ -212,18 +338,61 @@ def _glass_parent(textured):
                 mat.set_editor_property(prop, val)
             except Exception:  # noqa: BLE001
                 pass
-        mel.connect_material_property(gcol, "", MP.MP_BASE_COLOR)
-        mel.connect_material_property(rough, "", MP.MP_ROUGHNESS)
-        fres = mel.create_material_expression(mat, unreal.MaterialExpressionFresnel, -800, 100)
-        fres.set_editor_property("exponent", 5.0)
-        fres.set_editor_property("base_reflect_fraction", 0.0)
-        o0 = _param(mat, unreal.MaterialExpressionScalarParameter, "OpacityFront", -1100, 50, 0.5)
-        o1 = _param(mat, unreal.MaterialExpressionScalarParameter, "OpacityEdge", -1100, 150, 0.85)
-        ol = mel.create_material_expression(mat, unreal.MaterialExpressionLinearInterpolate, -500, 100)
-        mel.connect_material_expressions(o0, "", ol, "A")
-        mel.connect_material_expressions(o1, "", ol, "B")
-        mel.connect_material_expressions(fres, "", ol, "Alpha")
-        mel.connect_material_property(ol, "", MP.MP_OPACITY)
+        g.prop(grough, MP.MP_ROUGHNESS)
+        # Clear-glass opacity (Fresnel: denser at grazing angles) times the per-instance multiplier.
+        fres = g.x(unreal.MaterialExpressionFresnel, (-1250, 700), exponent=5.0, base_reflect_fraction=0.0)
+        o_clear = g.lerp(g.scalar("OpacityFront", 0.5, (-1450, 650)), g.scalar("OpacityEdge", 0.85, (-1450, 740)), fres, (-1050, 700))
+        o_s = g.op(unreal.MaterialExpressionMin, g.op(unreal.MaterialExpressionMultiply, o_clear, oscale, (-900, 700)), 0.97, (-780, 700))
+        # Screen-space transmission: what is behind the pane, read from the scene colour, blurred by frost,
+        # shifted by the ripple normal (bump) and coloured by the tint, so frosted glass really blurs, patterned
+        # glass really distorts and tinted glass really colours the view through it. Weight ScreenSpace (1 =
+        # always; 0 = only for frosted or rippled glass); the rest of the light goes straight through as before.
+        ntex = _glass_normal(g, bump, (-300, 1600))
+        w = g.clamp01(g.op(unreal.MaterialExpressionAdd, g.op(unreal.MaterialExpressionAdd, frost, bump, (-900, 900)),
+                           g.scalar("ScreenSpace", 1.0, (-1100, 980)), (-760, 920)), (-640, 920))
+        opac = g.lerp(o_s, 1.0, w, (-450, 760))
+        g.prop(opac, MP.MP_OPACITY)
+        depth = g.op(unreal.MaterialExpressionMax, g.x(unreal.MaterialExpressionPixelDepth, (-1450, 1300)), 10.0, (-1300, 1300))
+        # blur radius and ripple shift are sizes in cm on the pane, turned into screen fractions by depth
+        # screen offsets are fractions of width and height: scale x by height / width so the blur is round
+        vs = g.x(unreal.MaterialExpressionViewSize, (-1700, 1100))
+        vsx = g.op(unreal.MaterialExpressionDotProduct, vs, g.x(unreal.MaterialExpressionConstant2Vector, (-1700, 1170), r=1.0, g=0.0), (-1550, 1100))
+        vsy = g.op(unreal.MaterialExpressionDotProduct, vs, g.x(unreal.MaterialExpressionConstant2Vector, (-1700, 1240), r=0.0, g=1.0), (-1550, 1170))
+        aspect = g.op(unreal.MaterialExpressionAppendVector, g.op(unreal.MaterialExpressionDivide, vsy, vsx, (-1400, 1130)),
+                      g.x(unreal.MaterialExpressionConstant, (-1400, 1200), r=1.0), (-1250, 1150))
+        rad1 = g.op(unreal.MaterialExpressionDivide, g.op(unreal.MaterialExpressionMultiply, frost, g.scalar("BlurRadius", 5.0, (-1450, 1200)), (-1300, 1200)), depth, (-1150, 1250))
+        rad = g.op(unreal.MaterialExpressionMultiply, rad1, aspect, (-1000, 1250))
+        nx = g.op(unreal.MaterialExpressionDotProduct, ntex, g.x(unreal.MaterialExpressionConstant3Vector, (-1450, 1450), constant=unreal.LinearColor(1, 0, 0, 1)), (-1300, 1420))
+        ny = g.op(unreal.MaterialExpressionDotProduct, ntex, g.x(unreal.MaterialExpressionConstant3Vector, (-1450, 1530), constant=unreal.LinearColor(0, 1, 0, 1)), (-1300, 1500))
+        nxy = g.op(unreal.MaterialExpressionAppendVector, nx, ny, (-1150, 1460))
+        shift = g.op(unreal.MaterialExpressionMultiply, bump, g.scalar("Refraction", 3.0, (-1450, 1620)), (-1300, 1600))
+        dist = g.op(unreal.MaterialExpressionMultiply, g.op(unreal.MaterialExpressionDivide, g.op(unreal.MaterialExpressionMultiply, nxy, shift, (-1150, 1560)), depth, (-1000, 1500)), aspect, (-900, 1500))
+        # 25 taps on three staggered rings (a disc blur; few enough to stay cheap on glass pixels only)
+        taps = [(0.0, 0.0)]
+        for ring, n in ((0.34, 6), (0.67, 8), (1.0, 10)):
+            for k in range(n):
+                a0 = 2.0 * math.pi * (k + 0.5 * ring) / n
+                taps.append((ring * math.cos(a0), ring * math.sin(a0)))
+        acc = None
+        for k, (dx, dy) in enumerate(taps):
+            yy = 1800 + k * 60
+            d2 = g.x(unreal.MaterialExpressionConstant2Vector, (-1000, yy), r=dx, g=dy)
+            off = g.op(unreal.MaterialExpressionAdd, dist, g.op(unreal.MaterialExpressionMultiply, d2, rad, (-850, yy)), (-700, yy))
+            sc = g.x(unreal.MaterialExpressionSceneColor, (-550, yy), input_mode=unreal.MaterialSceneAttributeInputMode.OFFSET_FRACTION)
+            _connect(off, "", sc, ("",))         # its one input is unnamed from Python
+            acc = sc if acc is None else g.op(unreal.MaterialExpressionAdd, acc, sc, (-400, yy))
+        blur = g.op(unreal.MaterialExpressionMultiply, acc, 1.0 / len(taps), (-250, 1800))
+        # frosted glass passes less light straight through
+        ftrans = g.lerp(1.0, g.scalar("FrostTransmit", 0.8, (-450, 1950)), frost, (-250, 1950))
+        tr = g.op(unreal.MaterialExpressionMultiply, g.op(unreal.MaterialExpressionMultiply, blur, tint, (-100, 1800)), ftrans, (50, 1850))
+        # emissive x opacity = w (1 - o_s) x transmitted; the straight-through share (1 - opacity) is unchanged
+        ew = g.op(unreal.MaterialExpressionMultiply, w, g.op(unreal.MaterialExpressionSubtract,
+              g.x(unreal.MaterialExpressionConstant, (-450, 1100), r=1.0), o_s, (-300, 1100)), (-150, 1050))
+        g.prop(g.op(unreal.MaterialExpressionMultiply, tr, g.op(unreal.MaterialExpressionDivide, ew, opac, (0, 1050)), (200, 1300)),
+               MP.MP_EMISSIVE_COLOR)
+        # the lit glass layer keeps its clear-glass strength (o_s), up to full strength when frosted (milky)
+        lscale = g.lerp(g.op(unreal.MaterialExpressionDivide, o_s, opac, (-300, 400)), 1.0, frost, (-150, 400))
+        g.prop(g.op(unreal.MaterialExpressionMultiply, gcol, lscale, (0, 400)), MP.MP_BASE_COLOR)
     else:
         mat.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
         mat.set_editor_property("opacity_mask_clip_value", 0.5)
@@ -233,71 +402,38 @@ def _glass_parent(textured):
             pass
         white = unreal.load_asset("/Engine/EngineResources/WhiteSquareTexture")
         black = unreal.load_asset("/Engine/EngineResources/Black")
-        tex = _param(mat, unreal.MaterialExpressionTextureSampleParameter2D, "BaseTexture", -1500, -100, white)
-        scale = _param(mat, unreal.MaterialExpressionScalarParameter, "AlphaScale", -1500, 150, 1.0)
-        a = mel.create_material_expression(mat, unreal.MaterialExpressionMultiply, -1200, 100)
-        mel.connect_material_expressions(tex, "A", a, "A")
-        mel.connect_material_expressions(scale, "", a, "B")
-        # solid weight: 0 for glass (alpha < ~0.85), 1 for opaque texels
-        w = mel.create_material_expression(mat, unreal.MaterialExpressionSubtract, -1000, 250)
-        mel.connect_material_expressions(a, "", w, "A")
-        w.set_editor_property("const_b", 0.85)
-        w2 = mel.create_material_expression(mat, unreal.MaterialExpressionMultiply, -850, 250)
-        mel.connect_material_expressions(w, "", w2, "A")
-        w2.set_editor_property("const_b", 6.67)
-        # clamp to [0, 1] with Max / Min (their inputs have names Python can address, unlike Saturate's)
-        lo = mel.create_material_expression(mat, unreal.MaterialExpressionMax, -720, 250)
-        _connect(w2, "", lo, ("A",))
-        lo.set_editor_property("const_b", 0.0)
-        sw = mel.create_material_expression(mat, unreal.MaterialExpressionMin, -600, 250)
-        _connect(lo, "", sw, ("A",))
-        sw.set_editor_property("const_b", 1.0)
-        tcol = mel.create_material_expression(mat, unreal.MaterialExpressionMultiply, -800, -100)
-        mel.connect_material_expressions(tex, "RGB", tcol, "A")
-        mel.connect_material_expressions(tint, "", tcol, "B")
-        col = mel.create_material_expression(mat, unreal.MaterialExpressionLinearInterpolate, -450, -150)
-        mel.connect_material_expressions(gcol, "", col, "A")
-        mel.connect_material_expressions(tcol, "", col, "B")
-        mel.connect_material_expressions(sw, "", col, "Alpha")
-        mel.connect_material_property(col, "", MP.MP_BASE_COLOR)
-        solid = _param(mat, unreal.MaterialExpressionScalarParameter, "SolidRoughness", -1100, 400, 0.5)
-        rl = mel.create_material_expression(mat, unreal.MaterialExpressionLinearInterpolate, -450, 250)
-        mel.connect_material_expressions(rough, "", rl, "A")
-        mel.connect_material_expressions(solid, "", rl, "B")
-        mel.connect_material_expressions(sw, "", rl, "Alpha")
-        mel.connect_material_property(rl, "", MP.MP_ROUGHNESS)
-        # coverage: solid texels 1; glass texels dithered at GlassCover (their alpha is an exporter's guess,
-        # not a measure of the glass, so it does not set the density)
-        gc = _param(mat, unreal.MaterialExpressionScalarParameter, "GlassCover", -1100, 550, 0.5)
-        cv = mel.create_material_expression(mat, unreal.MaterialExpressionLinearInterpolate, -650, 550)
-        mel.connect_material_expressions(gc, "", cv, "A")
-        cv.set_editor_property("const_b", 1.0)
-        mel.connect_material_expressions(sw, "", cv, "Alpha")
-        cut = mel.create_material_expression(mat, unreal.MaterialExpressionSubtract, -650, 700)
-        mel.connect_material_expressions(a, "", cut, "A")
-        cut.set_editor_property("const_b", 0.02)    # fully clear texels (alpha ~0) stay holes
-        # DitherTemporalAA is an engine material function, not an expression class
-        dith = mel.create_material_expression(mat, unreal.MaterialExpressionMaterialFunctionCall, -450, 550)
+        tex = g.x(unreal.MaterialExpressionTextureSampleParameter2D, (-2300, -1000), parameter_name="BaseTexture", texture=white)
+        a = g.op(unreal.MaterialExpressionMultiply, tex, g.scalar("AlphaScale", 1.0, (-2300, -800)), (-2000, -900), a_out="A")
+        # solid weight: 0 for glass texels (alpha < ~0.85), 1 for opaque ones
+        sw = g.clamp01(g.op(unreal.MaterialExpressionMultiply, g.op(unreal.MaterialExpressionSubtract, a, 0.85, (-1850, -900)), 6.67, (-1720, -900)), (-1600, -900))
+        tcol = g.op(unreal.MaterialExpressionMultiply, tex, g.x(unreal.MaterialExpressionVectorParameter, (-2300, -700), parameter_name="SolidTint",
+                                                                default_value=unreal.LinearColor(1.0, 1.0, 1.0, 1.0)), (-1600, -1050), a_out="RGB")
+        g.prop(g.lerp(gcol, tcol, sw, (-450, -150)), MP.MP_BASE_COLOR)
+        g.prop(g.lerp(grough, g.scalar("SolidRoughness", 0.5, (-900, 250)), sw, (-450, 250)), MP.MP_ROUGHNESS)
+        # coverage: solid texels 1; glass texels dithered at GlassCover (FrostCover when frosted) x the
+        # per-instance opacity multiplier
+        cover = g.lerp(g.scalar("GlassCover", 0.5, (-1450, 650)), g.scalar("FrostCover", 0.85, (-1450, 740)), frost, (-1050, 700))
+        cover = g.op(unreal.MaterialExpressionMin, g.op(unreal.MaterialExpressionMultiply, cover, oscale, (-900, 700)), 1.0, (-780, 700))
+        cv = g.lerp(cover, 1.0, sw, (-650, 650))
+        cut = g.op(unreal.MaterialExpressionSubtract, a, 0.02, (-650, 820))     # fully clear texels stay holes
+        dith = g.x(unreal.MaterialExpressionMaterialFunctionCall, (-450, 650))
         fn = unreal.load_asset("/Engine/Functions/Engine_MaterialFunctions02/Utility/DitherTemporalAA")
         try:
             dith.set_material_function(fn)
         except Exception:  # noqa: BLE001
             dith.set_editor_property("material_function", fn)
         _connect(cv, "", dith, ("Alpha Threshold", "AlphaThreshold"))
-        keep = mel.create_material_expression(mat, unreal.MaterialExpressionIf, -250, 600)
-        mel.connect_material_expressions(cut, "", keep, "A")
-        keep.set_editor_property("const_b", 0.0)
+        keep = g.x(unreal.MaterialExpressionIf, (-250, 700), const_b=0.0)
+        g.c(cut, keep, "A")
         _connect(dith, "Result", keep, ("AGreaterThanB", "A > B"))
-        zero = mel.create_material_expression(mat, unreal.MaterialExpressionConstant, -450, 750)
-        _connect(zero, "", keep, ("ALessThanB", "A < B"))
+        _connect(g.x(unreal.MaterialExpressionConstant, (-450, 850), r=0.0), "", keep, ("ALessThanB", "A < B"))
         _connect(dith, "Result", keep, ("AEqualsB", "A == B"))
-        mel.connect_material_property(keep, "", MP.MP_OPACITY_MASK)
-        etex = _param(mat, unreal.MaterialExpressionTextureSampleParameter2D, "EmissiveTexture", -1500, 850, black)
-        estr = _param(mat, unreal.MaterialExpressionScalarParameter, "EmissiveStrength", -1500, 1050, 0.0)
-        emul = mel.create_material_expression(mat, unreal.MaterialExpressionMultiply, -450, 900)
-        mel.connect_material_expressions(etex, "RGB", emul, "A")
-        mel.connect_material_expressions(estr, "", emul, "B")
-        mel.connect_material_property(emul, "", MP.MP_EMISSIVE_COLOR)
+        g.prop(keep, MP.MP_OPACITY_MASK)
+        etex = g.x(unreal.MaterialExpressionTextureSampleParameter2D, (-1100, 1000), parameter_name="EmissiveTexture", texture=black)
+        g.prop(g.op(unreal.MaterialExpressionMultiply, etex, g.scalar("EmissiveStrength", 0.0, (-1100, 1200)), (-450, 1050), a_out="RGB"),
+               MP.MP_EMISSIVE_COLOR)
+        glass_w = g.op(unreal.MaterialExpressionSubtract, g.x(unreal.MaterialExpressionConstant, (-1450, 1350), r=1.0), sw, (-1300, 1350))
+        _glass_normal(g, bump, (-300, 1400), mask=glass_w)
     mel.layout_material_expressions(mat)
     mel.recompile_material(mat)
     H.EAL.set_metadata_tag(mat, "RammsGlassVersion", GLASS_VERSION)
@@ -364,7 +500,8 @@ def _glass_instance(mi, kind):
     else:
         if tx.get("BaseColorTexture") is not None:
             mel.set_material_instance_texture_parameter_value(g, "BaseTexture", tx["BaseColorTexture"])
-        mel.set_material_instance_vector_parameter_value(g, "Tint", unreal.LinearColor(col[0], col[1], col[2], 1.0))
+        for p in ("Tint", "SolidTint"):
+            mel.set_material_instance_vector_parameter_value(g, p, unreal.LinearColor(col[0], col[1], col[2], 1.0))
         mel.set_material_instance_scalar_parameter_value(g, "AlphaScale", a)
         mel.set_material_instance_scalar_parameter_value(g, "SolidRoughness", max(0.3, float(sc.get("RoughnessFactor", 0.6))))
         if tx.get("EmissiveTexture") is not None:
@@ -372,6 +509,10 @@ def _glass_instance(mi, kind):
             e = ve.get("EmissiveFactor")
             # glTF emissive is often a lightmap-like bake of the whole atlas: keep it faint
             mel.set_material_instance_scalar_parameter_value(g, "EmissiveStrength", 0.25 * (1.0 if e is None else max(e.r, e.g, e.b)))
+    # Vehicle glass varies in tint and opacity only (no frosted or patterned windscreens).
+    vehicle = "/Car/" in mi.get_path_name() or "/Bus/" in mi.get_path_name() or "/Truck/" in mi.get_path_name()
+    mel.set_material_instance_scalar_parameter_value(g, "InstanceFrost", 0.0 if vehicle else 1.0)
+    mel.set_material_instance_scalar_parameter_value(g, "InstanceBump", 0.0 if vehicle else 1.0)
     try:
         g.set_editor_property("phys_material", mi.get_editor_property("phys_material"))
     except Exception:  # noqa: BLE001
