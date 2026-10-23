@@ -658,13 +658,17 @@ def _handle_side(mesh, yaw):
     return 1.0 if pos > neg else -1.0
 
 
-def _mesh_entry(mesh, slot=""):
+def _mesh_entry(mesh, slot="", yaw=None, normalise=True):
+    """Palette entry for a mesh. yaw: the yaw that turns the mesh's front to +X when the source says where
+    the front is (UrbanVerse annotations); otherwise it is measured. normalise=False keeps the mesh's own
+    size (metric sources) instead of pulling it toward the slot's expected height."""
     import math
     _ensure_collision(mesh, slot)
     bounds = mesh.get_bounds()
     ext = bounds.box_extent
     origin = bounds.origin
-    yaw = _facing_yaw(mesh, bounds, slot)
+    if yaw is None:
+        yaw = _facing_yaw(mesh, bounds, slot)
     if mesh.get_name() in FACING_FIX:
         yaw = (yaw + FACING_FIX[mesh.get_name()] + 180.0) % 360.0 - 180.0
     e = unreal.RammsPaletteMesh()
@@ -672,7 +676,7 @@ def _mesh_entry(mesh, slot=""):
     e.set_editor_property("weight", 1.0)
     scale = 1.0
     expected = SLOT_HEIGHTS.get(slot)
-    if expected and slot not in NO_NORMALISE and ext.z > 1.0:
+    if normalise and expected and slot not in NO_NORMALISE and ext.z > 1.0:
         ratio = expected / (ext.z * 2.0)
         if abs(ratio - 1.0) > 0.12:
             scale = max(0.5, min(1.6, ratio))
@@ -832,6 +836,7 @@ def _ensure_solid_material(name, rgb, roughness, metallic):
 
 def build_default_palette(path=DEFAULT_PALETTE):
     """Create or refresh the default palette. Returns (palette, report dict)."""
+    _COLLISION_DONE.clear()   # a new build re-checks every mesh (an asset may have been re-imported since)
     for name, (rgb, rough, metal) in SOLID_MATERIALS.items():
         _ensure_solid_material(name, rgb, rough, metal)
     from . import surfaces

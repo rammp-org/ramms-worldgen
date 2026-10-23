@@ -212,12 +212,12 @@ maps by asset path or short name. The CDO path is
 | Function | Purpose |
 |---|---|
 | `GetWorldInfo` | JSON: current map, editor vs play world, generator count |
-| `FindGenerators` / `ListPresets` / `DescribePresets` / `ListGeneratedMaps` | Discovery |
-| `SpawnGenerator(Preset, Seed, Location, Label)` | Spawn a generator pointed at a preset |
-| `SetPreset`, `Generate(Path, Seed)`, `Randomize`, `Cleanup`, `IsGenerating`, `PlacePlayerStart` | Lifecycle |
-| `GetStatusJson` | Cheap poll: preset, seed, generating?, counts, suggested start |
+| `FindGenerators` / `ListPresets` / `DescribePresets` / `ListPalettes` / `ListGeneratedMaps` | Discovery |
+| `SpawnGenerator(Preset, Seed, Location, Label)` | Spawn a generator pointed at a preset (the label is also an actor tag, so it finds the generator in packaged builds) |
+| `SetPreset`, `SetPalette(Path, Palette)`, `Generate(Path, Seed)`, `Randomize`, `Cleanup`, `IsGenerating`, `PlacePlayerStart` | Lifecycle. `SetPalette("")` goes back to the preset's palette; `Generate` returns false when nothing could be scheduled (no graph) |
+| `GetStatusJson` | Cheap poll: preset, palette, seed, generating?, counts, suggested start |
 | `GetManifestJson` / `ExportManifest` | The manifest |
-| `GetParamsJson` / `SetParamsJson` / `ClearOverrides` | Parameters as a JSON object of name → number |
+| `GetParamsJson` / `SetParamsJson` / `ClearOverrides` | Parameters as a JSON object of name → number, or string for text parameters (`Palette`, `FacadeStyles`) |
 | `OpenMap` | Load a map in the editor, or travel to it in a game |
 
 [ramms-tools](https://github.com/rammp-org/ramms-tools) wraps this as
@@ -275,13 +275,20 @@ The only editor-only parts are the Python builders and the MCP toolset.
 
 ## The manifest
 
-`FRammsWorldManifest` (also the JSON): `seed`, `preset`, `sceneKind`,
-`bounds`, `suggestedStart`, then
+`FRammsWorldManifest` (also the JSON): `seed`, `preset`, `palette` (object
+path), `sceneKind`, `bounds`, `suggestedStart`, then
 
 - `routes[]`: `name`, `points[]` (polyline, cm), `nominalWidth`,
   `minClearWidth` (after hazards), `bCompliant`.
 - `features[]`: `kind` / `subtype`, `location`, `rotation`, `size`,
-  `bCompliant`, `issue`, `measure`, `threshold`.
+  `bCompliant`, `issue`, `measure`, `threshold`, `asset` (the palette mesh
+  placed, if any), `source` (where it came from, e.g.
+  `urbanverse:<uid>|<category>`), `route` (the sidewalk side or path it was
+  placed along). For palette meshes `location` / `rotation` / `size` are the
+  box the mesh was fitted to (the centre of its base on the ground, its
+  facing, its size after scale), not the mesh pivot; trees are placed by their
+  trunk, so for them `location` is the trunk and the canopy box can sit off it; for curb ramps `size.x` is the ramp run and `size.y`
+  includes the flares.
 
 Kinds and the issues they can carry:
 
@@ -386,6 +393,76 @@ runs it at 0.2, the office at 0.1.
   `WritePiece`, `WriteManifest`), add it to `graphs.py`.
 - **New piece kind**: add to `ERammsProcPieceKind`, a `Build*` in
   `RammsProcPiece.cpp`, and emit it from a node.
+
+## UrbanVerse assets
+
+[UrbanVerse-100K](https://huggingface.co/datasets/Oatmealliu/UrbanVerse-100K) (Liu et al., ICLR 2026) is
+a gated Hugging Face dataset of about 100K metric-scaled, annotated urban objects (GLB). It can fill the
+street-furniture, vehicle and hazard slots with far more variety than the Fab packs. It takes two steps:
+
+1. **Choose and download** (outside Unreal). `Tools/urbanverse_fetch.py` needs Python with
+   `pip install --no-deps urbanverse-asset` plus `pip install "huggingface_hub[cli]" pillow tqdm trimesh`,
+   and a Hugging Face login (`hf auth login`) on an account that has accepted the dataset's terms.
+   ```
+   python Tools/urbanverse_fetch.py --cache D:/urbanverse --per-slot 8
+   python Tools/urbanverse_fetch.py --cache D:/urbanverse --analyze    # material analysis only, no downloads
+   ```
+   - The `SLOTS` table maps each palette slot to UrbanVerse leaf categories (`--list` writes all 659), with
+     height and length limits in metres and a minimum quality score (0–10, from the annotations). Only single
+     objects are taken, and the categories in a slot are taken in turn.
+   - Description-based excludes (picnic tables are not benches) match whole words of the short description.
+   - It writes `ramms_selection.json` (slot to assets, with size, mass, friction, license) and
+     `ATTRIBUTION.md` (per asset: title, Sketchfab link, author, license with its link). Fetching some slots
+     (`--slots Bench,Car`) keeps the other slots of an earlier run; each slot's choice depends only on
+     `--seed` and that slot.
+   - `--commercial` keeps only assets whose license allows commercial use (CC0, CC BY, CC BY-SA; anything
+     with NC or ND, or a license it does not recognise, is dropped). Licenses vary per asset: most are
+     CC BY, some CC BY-NC.
+2. **Import and build the palette** (in the editor):
+   ```python
+   import ramms_worldgen.urbanverse as UV
+   UV.build(r"D:/urbanverse")                 # or mode="mix" to keep the Fab variants too
+   ```
+   - The GLBs are imported with Interchange under `/Game/UrbanVerse/<Slot>/`, with their materials and
+     textures. GLBs over 40 MB (heavy scans) are skipped.
+   - Materials: Interchange makes every glTF material flagged `BLEND` translucent, and many UrbanVerse
+     exporters flag whole models that way (opaque bodywork, benches, shelters baked into one texture), which
+     renders milky and badly lit. The fetch step records each material's alpha (factor, and a histogram of
+     the texture's alpha; `--analyze` adds it to an existing selection), and the import makes such a
+     material opaque, masked (cut-outs, leaves) or real glass: `M_RammsGlass` for panes (thin, two-sided,
+     near-black base, Fresnel opacity) or `M_RammsGlassAtlas` for one texture holding glass and solid parts
+     (masked; the glass texels dithered with glass roughness). `urbanverse.MATERIAL_OVERRIDES` covers
+     panes the analysis cannot tell from opaque parts. Fully transparent helpers and baked shadow cards stay
+     as authored.
+   - Glass look per placement: both glass materials take `Frost` (0 clear .. 1 milky), `Bump` (0 flat .. 1
+     rippled / patterned), `Tint`, `Roughness` and opacity parameters per material instance, and read six
+     floats of per-instance custom data on top: frost offset, opacity multiplier, tint multiplier (RGB) and
+     bump offset. `M_RammsGlass` also reads what is behind the pane back from the scene colour, so frost
+     really blurs it (`BlurRadius`, cm), ripples shift it (`Refraction`, cm) and the tint colours it
+     (`ScreenSpace` 0 limits that to frosted or rippled glass). After each generation
+     `ARammsWorldGenerator::ApplyGlassVariation` gives every placed glass instance its own look from the seed
+     and its position: `GlassVariation` (0 = all identical) scales the range, `GlassFrostChance`,
+     `GlassTintChance` and `GlassBumpChance` pick frosted, tinted (green, blue, bronze, smoked) and rippled
+     ones. Vehicle glass (`InstanceFrost` / `InstanceBump` 0) varies in tint and opacity only.
+     `URammsWorldGenGraphLibrary::SetGlassInstanceLook` / `VaryGlassInstances` / `SpawnInstancedMesh` do the
+     same from Blueprint or Python. In the atlas material the glass texels are dithered, so frost there is
+     denser, brighter coverage rather than a blur.
+   - Each mesh gets complex-as-simple collision and a physical material with its annotated friction, set on
+     the body and on the mesh's own material instances (complex collision takes the material's physical
+     material). Meshes over 50K triangles become Nanite. A GLB that imports as several meshes keeps the
+     largest, with a warning.
+   - `PAL_UrbanVerse` is `PAL_Default` with those slots replaced, refreshed in place on a rebuild (references
+     to it stay valid). Assets keep their real size; their front comes from the same geometric test as the
+     Fab meshes, and long-fronted pieces (benches, shelters, dumpsters) are turned so a long side is the
+     front, the annotation's `frontView` choosing which. Each entry's `SourceId` is
+     `urbanverse:<uid>|<category>`, which the manifest carries as the feature's `source`.
+   - To check facing: `LINEUP_PALETTE = "/RammsWorldGen/Palettes/PAL_UrbanVerse"` with
+     `Scripts/worldgen/lineup.py`.
+
+Use it by setting a preset's or generator's `Palette` (a generator override does not touch the preset), or
+from outside with `SetPalette` / `ramms-worldgen generate --palette PAL_UrbanVerse`. Packaged builds cook
+`/RammsWorldGen/Palettes` and `/Game/UrbanVerse` through ramms-sim's `DirectoriesToAlwaysCook`.
+The imported assets stay out of git, like the Fab packs.
 
 ## Streets and yards
 
@@ -543,6 +620,13 @@ and saved there (the example levels), not with runtime regeneration.
   open there), with flares warped from road level at the ramp to full curb
   height at their outer edge. Crossings near an intersection are set back
   from the corner far enough for both corners' ramps and flares to fit.
+  A ramp runs at `RampMaxSlope` when the sidewalk leaves a 90 cm landing behind
+  it; on a narrower sidewalk it is shortened (no shorter than half the
+  sidewalk), recorded as `TooSteep` and the crossing as `SteepRamp`. Where the
+  cut is deeper than the ramp (a planting strip), a level walk fills the rest.
+  Lane markings stop at a midblock crossing, which gets its own stop lines;
+  parked cars, street-side props and park benches keep clear of crossings,
+  ramps and path junctions.
   Sidewalks are flat (no cross slope); `MaxCrossSlope`
   is carried for the profile but not yet generated.
 - Hazard meshes stand in: an info board plays the A-frame, railings play

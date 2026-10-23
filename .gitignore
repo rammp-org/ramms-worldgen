@@ -4,3 +4,5 @@ DerivedDataCache/
 __pycache__/
 *.pyc
 .DS_Store
+# Built locally by ramms_worldgen.urbanverse.build() from the user's own UrbanVerse import (not committed)
+Content/Palettes/PAL_UrbanVerse.uasset

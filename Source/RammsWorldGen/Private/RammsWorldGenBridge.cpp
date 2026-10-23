@@ -4,6 +4,7 @@
 #include "RammsWorldGenerator.h"
 #include "RammsWorldGenModule.h"
 #include "RammsWorldPreset.h"
+#include "RammsWorldPalette.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Engine.h"
@@ -104,6 +105,11 @@ ARammsWorldGenerator* URammsWorldGenBridge::Find(const FString& GeneratorPath)
 			return Gen;
 		}
 #endif
+		// SpawnGenerator tags the actor with its label, so labels also work where actors have none (packaged builds).
+		if (Gen->ActorHasTag(FName(*GeneratorPath)))
+		{
+			return Gen;
+		}
 		First = First ? First : Gen;
 	}
 	return nullptr;
@@ -127,6 +133,22 @@ FString URammsWorldGenBridge::ResolvePresetPath(const FString& Preset)
 		}
 	}
 	return FString::Printf(TEXT("/RammsWorldGen/Presets/%s"), *Preset);
+}
+
+FString URammsWorldGenBridge::ResolvePalettePath(const FString& Palette)
+{
+	if (Palette.IsEmpty() || Palette.StartsWith(TEXT("/")))
+	{
+		return Palette;
+	}
+	for (const FString& Path : ListPalettes())
+	{
+		if (FPackageName::GetShortName(Path) == Palette || Path.EndsWith(TEXT("/") + Palette) || Path.EndsWith(TEXT(".") + Palette))
+		{
+			return Path;
+		}
+	}
+	return Palette; // the generator falls back to /RammsWorldGen/Palettes/<name>
 }
 
 FString URammsWorldGenBridge::ResolveMapPath(const FString& Map)
@@ -183,6 +205,33 @@ TArray<FString> URammsWorldGenBridge::ListPresets()
 	}
 	Out.Sort();
 	return Out;
+}
+
+TArray<FString> URammsWorldGenBridge::ListPalettes()
+{
+	TArray<FString> Out;
+	const FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	TArray<FAssetData> Assets;
+	ARM.Get().GetAssetsByClass(URammsWorldPalette::StaticClass()->GetClassPathName(), Assets, true);
+	for (const FAssetData& A : Assets)
+	{
+		Out.Add(A.GetObjectPathString());
+	}
+	for (TObjectIterator<URammsWorldPalette> It; It; ++It)
+	{
+		if (It->IsAsset())
+		{
+			Out.AddUnique(It->GetPathName());
+		}
+	}
+	Out.Sort();
+	return Out;
+}
+
+bool URammsWorldGenBridge::SetPalette(const FString& GeneratorPath, const FString& Palette)
+{
+	ARammsWorldGenerator* Gen = Find(GeneratorPath);
+	return Gen && Gen->SetPalette(ResolvePalettePath(Palette));
 }
 
 FString URammsWorldGenBridge::DescribePresets()
@@ -258,12 +307,13 @@ FString URammsWorldGenBridge::SpawnGenerator(const FString& Preset, int32 Seed, 
 	{
 		return FString();
 	}
-#if WITH_EDITOR
 	if (!Label.IsEmpty())
 	{
+#if WITH_EDITOR
 		Gen->SetActorLabel(Label);
-	}
 #endif
+		Gen->Tags.AddUnique(FName(*Label));
+	}
 	Gen->Seed = Seed;
 	if (!Preset.IsEmpty())
 	{
@@ -304,15 +354,7 @@ bool URammsWorldGenBridge::Generate(const FString& GeneratorPath, int32 Seed)
 	{
 		return false;
 	}
-	if (Seed >= 0)
-	{
-		Gen->RegenerateWithSeed(Seed);
-	}
-	else
-	{
-		Gen->Regenerate();
-	}
-	return true;
+	return Seed >= 0 ? Gen->RegenerateWithSeed(Seed) : Gen->Regenerate();
 }
 
 bool URammsWorldGenBridge::Randomize(const FString& GeneratorPath)
@@ -375,6 +417,8 @@ FString URammsWorldGenBridge::GetStatusJson(const FString& GeneratorPath)
 #endif
 	O->SetStringField(TEXT("preset"), Gen->Preset ? Gen->Preset->GetPathName() : FString());
 	O->SetStringField(TEXT("scene_kind"), SceneKindName(Gen->Preset ? Gen->Preset->SceneKind : ERammsSceneKind::Downtown));
+	O->SetStringField(TEXT("palette"), Gen->GetPalettePath());
+	O->SetStringField(TEXT("manifest_palette"), M.Palette);
 	O->SetNumberField(TEXT("seed"), Gen->Seed);
 	O->SetBoolField(TEXT("generating"), Gen->IsGenerating());
 	O->SetBoolField(TEXT("has_manifest"), M.Features.Num() > 0 || M.Routes.Num() > 0);
@@ -428,7 +472,28 @@ FString URammsWorldGenBridge::GetParamsJson(const FString& GeneratorPath)
 		}
 	}
 	O->SetStringField(TEXT("Palette"), Gen->Params.Palette.ToSoftObjectPath().ToString());
+	for (TFieldIterator<FStrProperty> It(FRammsWorldGenParams::StaticStruct()); It; ++It)
+	{
+		O->SetStringField(It->GetName(), It->GetPropertyValue_InContainer(&Gen->Params));
+	}
 	return ToJson(O.ToSharedRef());
+}
+
+bool URammsWorldGenBridge::SetStringParam(ARammsWorldGenerator* Gen, const FString& Name, const FString& Value)
+{
+	if (Name == TEXT("Palette"))
+	{
+		return Gen->SetPalette(ResolvePalettePath(Value));
+	}
+	FStrProperty* Prop = FindFProperty<FStrProperty>(FRammsWorldGenParams::StaticStruct(), FName(*Name));
+	if (!Prop)
+	{
+		return false;
+	}
+	Prop->SetPropertyValue_InContainer(&Gen->ParamOverrides, Value);
+	Gen->OverrideKeys.Add(FName(*Name));
+	Gen->ResolveParams();
+	return true;
 }
 
 FString URammsWorldGenBridge::SetParamsJson(const FString& GeneratorPath, const FString& Json)
@@ -451,14 +516,23 @@ FString URammsWorldGenBridge::SetParamsJson(const FString& GeneratorPath, const 
 			for (const auto& Pair : In->Values)
 			{
 				const FString Key(Pair.Key);
-				double V = 0.0;
-				bool bNumber = Pair.Value->TryGetNumber(V);
-				if (!bNumber)
+				bool bDone = false;
+				if (Pair.Value->Type == EJson::String)
 				{
-					bool B = false;
-					if (Pair.Value->TryGetBool(B)) { V = B ? 1.0 : 0.0; bNumber = true; }
+					// Text parameters by value. (A JSON string also "converts" to a bool or, when numeric, a number,
+					// so the type decides, not TryGet*.) A numeric string still sets a number parameter.
+					const FString Str = Pair.Value->AsString();
+					bDone = SetStringParam(Gen, Key, Str) || (Str.IsNumeric() && Gen->SetParam(FName(*Key), FCString::Atod(*Str)));
 				}
-				if (bNumber && Gen->SetParam(FName(*Key), V))
+				else if (Pair.Value->Type == EJson::Number)
+				{
+					bDone = Gen->SetParam(FName(*Key), Pair.Value->AsNumber());
+				}
+				else if (Pair.Value->Type == EJson::Boolean)
+				{
+					bDone = Gen->SetParam(FName(*Key), Pair.Value->AsBool() ? 1.0 : 0.0);
+				}
+				if (bDone)
 				{
 					Applied.Add(MakeShared<FJsonValueString>(Key));
 				}

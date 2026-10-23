@@ -64,7 +64,9 @@ namespace
 		FVector Inward = FVector::RightVector;
 		double Length = 0.0;
 		double Yaw = 0.0;
-		TArray<FVector2D> Keepouts; // [along start, along end] of curb ramps
+		TArray<FVector2D> Keepouts; // [along start, along end] of curb ramps and flares: the curb is open there
+		TArray<FVector2D> Clear;    // [along start, along end] kept free of props and parked cars (every crossing)
+		double StripDepth = 0.0;    // planting strip width at the curb (0 = paved to the curb)
 	};
 
 	FVector2D RandomLineSpacings(const FRandomStream& Rng, double Total, double Min, double Max, double RoadWidth, TArray<double>& Out)
@@ -206,6 +208,10 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 		AddSide(2, FVector(ox1, oy1, Z0), FVector(-1, 0, 0), FVector(0, -1, 0), ox1 - ox0, 180.0);
 		AddSide(3, FVector(ox0, oy1, Z0), FVector(0, -1, 0), FVector(1, 0, 0), oy1 - oy0, 270.0);
 	}
+	for (FSide& Sd : Sides)
+	{
+		Sd.StripDepth = (S->PlantingStrip > 0.5 && FZ > 30.0 && !Blocks[Sd.BlockId].bPark) ? FZ : 0.0;
+	}
 	// Find the side of a block that faces a road line at a coordinate.
 	auto FindSide = [&](bool bRoadAlongX, double Across, double Pos, bool bNegativeSide) -> FSide*
 	{
@@ -256,11 +262,25 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 	TArray<FBox2D> RampCuts;
 	struct FRampEnd { bool bRamp = false; bool bCompliant = false; };
 
-	// Crossings: one near each end of every live segment, plus optional mid-block.
+	// Crossings: one near each end of every live segment, plus optional mid-block. A crossing is only built
+	// where it joins two sidewalks (the site-edge roads have a block on one side only).
+	const double Landing = 90.0; // level space kept at the top of a ramp (ADA 406.4: 36 in)
 	auto EmitCrossing = [&](const FSeg& Sg, double Pos)
 	{
 		const bool bRoadAlongX = Sg.bAlongX;
 		const double Across = bRoadAlongX ? Y[Sg.J] : X[Sg.I];
+		FSide* SideAt[2] = { nullptr, nullptr };
+		double AlongAt[2] = { 0.0, 0.0 };
+		FVector CurbAt[2];
+		for (int32 k = 0; k < 2; ++k)
+		{
+			FSide* Sd = FindSide(bRoadAlongX, Across, Pos, k == 0);
+			if (!Sd) { return; }
+			CurbAt[k] = bRoadAlongX ? FVector(Pos, Across + (k == 0 ? -RW * 0.5 : RW * 0.5), Z0) : FVector(Across + (k == 0 ? -RW * 0.5 : RW * 0.5), Pos, Z0);
+			AlongAt[k] = AlongOnSide(*Sd, CurbAt[k]);
+			if (AlongAt[k] < RampWidth || AlongAt[k] > Sd->Length - RampWidth) { return; }
+			SideAt[k] = Sd;
+		}
 		// Zebra bars: long along the road (CW), stacked across the road from curb to curb.
 		const double BarW = 40.0, Gap = 40.0;
 		const int32 Bars = FMath::Max(1, FMath::FloorToInt((RW - 2.0 * 30.0) / (BarW + Gap)));
@@ -271,17 +291,21 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 			const FVector C = bRoadAlongX ? FVector(Pos, Across + Off, Zr + 0.3) : FVector(Across + Off, Pos, Zr + 0.3);
 			RammsPCG::WriteCube(Primitives, C, bRoadAlongX ? FVector(CW, BarW, 0.6) : FVector(BarW, CW, 0.6), 0.0, MatPaint, NextSeed());
 		}
-		// Curb ramps on both sides where a block exists.
+		// Curb ramps at both ends.
 		FRampEnd Ends[2];
-		int32 NumEnds = 0;
 		for (int32 k = 0; k < 2; ++k)
 		{
-			FSide* Sd = FindSide(bRoadAlongX, Across, Pos, k == 0);
-			if (!Sd) { continue; }
-			const FVector CurbPoint = bRoadAlongX ? FVector(Pos, Across + (k == 0 ? -RW * 0.5 : RW * 0.5), Z0) : FVector(Across + (k == 0 ? -RW * 0.5 : RW * 0.5), Pos, Z0);
-			const double Along = AlongOnSide(*Sd, CurbPoint);
-			if (Along < RampWidth || Along > Sd->Length - RampWidth) { continue; }
-			++NumEnds;
+			FSide* Sd = SideAt[k];
+			const FVector CurbPoint = CurbAt[k];
+			const double Along = AlongAt[k];
+			// Whatever is built at this end, nothing stands in front of the crossing: no props, no parked car.
+			Sd->Clear.Add(FVector2D(Along - CW * 0.5 - 40.0, Along + CW * 0.5 + 40.0));
+			if (CH < 1.0)
+			{
+				// No curb to speak of: a flush crossing.
+				Ends[k].bRamp = true; Ends[k].bCompliant = true;
+				continue;
+			}
 
 			const double Roll = Rng.FRand();
 			const bool bBreak = Roll < S->NonCompliance;
@@ -321,8 +345,14 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 				P.WarningDepth = S->DetectableWarningDepth;
 				P.ManifestSubtype = FName(TEXT("Standard"));
 			}
-			const double Run = FMath::Min(CH / P.Slope, SW);
+			// On a narrow sidewalk the ramp is shortened to keep a landing at its top, which steepens it: then it
+			// is recorded as too steep, whatever it was meant to be.
+			const double Run = FMath::Max(FMath::Min(CH / P.Slope, SW - Landing), FMath::Min(SW * 0.5, CH / P.Slope));
 			P.Slope = CH / Run;
+			if (P.bCompliant && P.Slope > S->RampMaxSlope * 1.01)
+			{
+				P.bCompliant = false; P.Issue = ERammsComplianceIssue::SlopeTooSteep; P.ManifestSubtype = FName(TEXT("TooSteep"));
+			}
 			P.Measure = P.Slope;
 			// Flares: as wide as the slope allows, but never past the end of the side (the corner).
 			const double Flare = FMath::Clamp(FMath::Min(Along, Sd->Length - Along) - RampWidth * 0.5, 0.0, FlareRunMax);
@@ -334,24 +364,30 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 			Ends[k].bRamp = true;
 			Ends[k].bCompliant = P.bCompliant;
 			const double Half = RampWidth * 0.5 + (Flare > 5.0 ? Flare : 0.0);
-			// The ramp and flares replace the walk (and any planting strip) from the curb to the top of the ramp.
+			// The ramp and flares replace the walk and any planting strip from the curb to the top of the ramp; a
+			// strip wider than the ramp's run is paved over the rest, so the ramp top meets the walk directly.
+			const double CutDepth = FMath::Max(Run, Sd->StripDepth);
 			{
-				const FVector C0 = CurbPoint - Sd->Dir * Half, C1 = CurbPoint + Sd->Dir * Half + Sd->Inward * Run;
+				const FVector C0 = CurbPoint - Sd->Dir * Half, C1 = CurbPoint + Sd->Dir * Half + Sd->Inward * CutDepth;
 				RampCuts.Add(FBox2D(FVector2D(FMath::Min(C0.X, C1.X), FMath::Min(C0.Y, C1.Y)), FVector2D(FMath::Max(C0.X, C1.X), FMath::Max(C0.Y, C1.Y))));
 			}
+			if (CutDepth > Run + 1.0)
+			{
+				RammsPCG::WriteCube(Primitives, CurbPoint + Sd->Inward * ((Run + CutDepth) * 0.5) + FVector(0, 0, -10.0), FVector(2.0 * Half, CutDepth - Run, 20.0), Sd->Yaw, MatWalk, NextSeed());
+			}
 			// Nothing else on the ramp, its flares or the landing at the top: no curb, props or parked cars.
-			Sd->Keepouts.Add(FVector2D(Along - Half - 10.0, Along + Half + 10.0));
+			Sd->Keepouts.Add(FVector2D(FMath::Max(Along - Half - 10.0, 0.0), FMath::Min(Along + Half + 10.0, Sd->Length)));
+			Sd->Clear.Add(Sd->Keepouts.Last());
 		}
-		// The crossing itself, curb to curb, when it joins two sidewalks: crowd lanes and route planners use
-		// it. The subtype says whether a wheelchair can get on and off it without climbing a curb.
-		if (NumEnds == 2)
+		// The crossing itself, curb to curb: crowd lanes and route planners use it. The subtype says whether a
+		// wheelchair can get on and off it without climbing a curb.
 		{
 			const FVector C = bRoadAlongX ? FVector(Pos, Across, Zr) : FVector(Across, Pos, Zr);
 			const int32 f = Features.AddBox(C, bRoadAlongX ? 90.0 : 0.0, FVector(RW, CW, 1.0), NextSeed());
 			const int32 Ramps = (Ends[0].bRamp ? 1 : 0) + (Ends[1].bRamp ? 1 : 0);
 			const bool bAllCompliant = Ends[0].bCompliant && Ends[1].bCompliant;
 			RammsPCG::WriteManifest(Features, f, FName(TEXT("Crosswalk")),
-				Ramps == 2 ? (bAllCompliant ? FName(TEXT("Ramped")) : FName(TEXT("SteepRamp"))) : Ramps == 1 ? FName(TEXT("OneRamp")) : FName(TEXT("NoRamps")),
+				CH < 1.0 ? FName(TEXT("Flush")) : Ramps == 2 ? (bAllCompliant ? FName(TEXT("Ramped")) : FName(TEXT("SteepRamp"))) : Ramps == 1 ? FName(TEXT("OneRamp")) : FName(TEXT("NoRamps")),
 				true, ERammsComplianceIssue::None, RW, 0.0);
 		}
 	};
@@ -390,8 +426,13 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 				RammsPCG::WritePiece(Pieces, Dc);
 			}
 		}
+		// Which crossings this segment gets (decided before the markings, which leave them clear).
+		const bool bEnds = Len > 2.0 * (CrossOff + CW * 0.5) + 200.0;
+		const bool bMid = bEnds ? (Len > 3000.0 && Rng.FRand() < S->MidblockCrossingChance) : Len > CW;
+		const double MidPos = (A + B) * 0.5;
+		const double MidHalf = CW * 0.5 + 80.0; // the mid-block crossing and its stop lines, kept free of lane markings
 		// Markings: a dashed yellow centre line between the crossings, white edge lines along the
-		// gutters, and a stop line before each end of the segment.
+		// gutters, and a stop line before each crossing.
 		{
 			const double a0 = A + RW * 0.5, b0 = B - RW * 0.5;
 			const double Keep = CrossOff + CW * 0.5 + 80.0; // leave the crossings and stop lines clear
@@ -400,35 +441,49 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 				const FVector P = Sg.bAlongX ? FVector(Pos, Across + Off, Zr + 0.3) : FVector(Across + Off, Pos, Zr + 0.3);
 				RammsPCG::WriteCube(Primitives, P, Sg.bAlongX ? FVector(LenAlong, Wide, 0.6) : FVector(Wide, LenAlong, 0.6), 0.0, Mat, NextSeed());
 			};
+			const bool bMidGap = bMid && bEnds;
 			if (RW >= 500.0)
 			{
-				for (double p = a0 + Keep; p + 300.0 <= b0 - Keep; p += 600.0) { Along(p + 150.0, 0.0, 300.0, 12.0, MatMarkingYellow); }
+				for (double p = a0 + Keep; p + 300.0 <= b0 - Keep; p += 600.0)
+				{
+					if (bMidGap && p + 300.0 > MidPos - MidHalf && p < MidPos + MidHalf) { continue; }
+					Along(p + 150.0, 0.0, 300.0, 12.0, MatMarkingYellow);
+				}
 			}
 			if (b0 - a0 > 2.0 * Keep + 200.0)
 			{
-				Along((a0 + b0) * 0.5, RW * 0.5 - 30.0, b0 - a0 - 2.0 * Keep, 10.0, MatMarking);
-				Along((a0 + b0) * 0.5, -RW * 0.5 + 30.0, b0 - a0 - 2.0 * Keep, 10.0, MatMarking);
+				// Edge lines, in two pieces around a mid-block crossing.
+				TArray<FVector2D> Runs;
+				if (bMidGap) { Runs = { FVector2D(a0 + Keep, MidPos - MidHalf), FVector2D(MidPos + MidHalf, b0 - Keep) }; }
+				else { Runs = { FVector2D(a0 + Keep, b0 - Keep) }; }
+				for (const FVector2D& Rn : Runs)
+				{
+					if (Rn.Y - Rn.X < 100.0) { continue; }
+					Along((Rn.X + Rn.Y) * 0.5, RW * 0.5 - 30.0, Rn.Y - Rn.X, 10.0, MatMarking);
+					Along((Rn.X + Rn.Y) * 0.5, -RW * 0.5 + 30.0, Rn.Y - Rn.X, 10.0, MatMarking);
+				}
 			}
 			if (Len > 2.0 * (CrossOff + CW * 0.5) + 400.0)
 			{
-				// Stop lines sit between the crossing and the intersection, on the approach half of the road.
+				// Stop lines sit before each crossing (away from the intersection), on the approach half of the road.
 				Along(a0 + CrossOff + CW * 0.5 + 55.0, -RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
 				Along(b0 - CrossOff - CW * 0.5 - 55.0, RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
 			}
+			if (bMidGap)
+			{
+				Along(MidPos - CW * 0.5 - 55.0, -RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
+				Along(MidPos + CW * 0.5 + 55.0, RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
+			}
 		}
-		// Crossings near both ends.
-		if (Len > 2.0 * (CrossOff + CW * 0.5) + 200.0)
+		// Crossings near both ends, and mid-block.
+		if (bEnds)
 		{
 			EmitCrossing(Sg, A + RW * 0.5 + CrossOff);
 			EmitCrossing(Sg, B - RW * 0.5 - CrossOff);
-			if (Len > 3000.0 && Rng.FRand() < S->MidblockCrossingChance)
-			{
-				EmitCrossing(Sg, (A + B) * 0.5);
-			}
 		}
-		else if (Len > CW)
+		if (bMid)
 		{
-			EmitCrossing(Sg, (A + B) * 0.5);
+			EmitCrossing(Sg, MidPos);
 		}
 	}
 	// Intersection squares at nodes touched by a live segment.
@@ -543,16 +598,22 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 			FRammsPaletteMesh CarMesh;
 			if (Palette && Palette->PickMesh(RammsPaletteSlots::Car, Rng, CarMesh))
 			{
-				const double CarL = FMath::Max(CarMesh.Footprint.X, 380.0), CarW = FMath::Max(CarMesh.Footprint.Y, 160.0);
-				for (double a = CW + 260.0 + CarL * 0.5; a < Sd.Length - CW - 260.0 - CarL * 0.5; a += CarL + RammsPCG::RandRange(Rng, 120.0, 320.0))
+				// Each car is picked first, so the spacing and the crossing checks use its own length.
+				double a = CW + 260.0;   // rear end of the next slot
+				while (true)
 				{
-					if (Rng.FRand() > FMath::Clamp(S->ParkingDensity, 0.0, 1.0)) { continue; }
-					bool bSkip = false;
-					for (const FVector2D& K : Sd.Keepouts) { if (a + CarL * 0.5 > K.X - 60.0 && a - CarL * 0.5 < K.Y + 60.0) { bSkip = true; break; } }
-					if (bSkip) { continue; }
 					FRammsPaletteMesh Pick;
 					if (!Palette->PickMesh(RammsPaletteSlots::Car, Rng, Pick)) { break; }
-					const FVector P = Sd.Start + Sd.Dir * a - Sd.Inward * (FMath::Max(Pick.Footprint.Y, 160.0) * 0.5 + 25.0) + FVector(0, 0, Zr - Z0);
+					const double CarL = FMath::Max(Pick.Footprint.X, 380.0);
+					if (a + CarL > Sd.Length - CW - 260.0) { break; }
+					const double Gap = RammsPCG::RandRange(Rng, 120.0, 320.0);
+					const double c0 = a, c1 = a + CarL;
+					a = c1 + Gap;
+					if (Rng.FRand() > FMath::Clamp(S->ParkingDensity, 0.0, 1.0)) { continue; }
+					bool bSkip = false;
+					for (const FVector2D& K : Sd.Clear) { if (c1 > K.X - 60.0 && c0 < K.Y + 60.0) { bSkip = true; break; } }
+					if (bSkip) { continue; }
+					const FVector P = Sd.Start + Sd.Dir * ((c0 + c1) * 0.5) - Sd.Inward * (FMath::Max(Pick.Footprint.Y, 160.0) * 0.5 + 25.0) + FVector(0, 0, Zr - Z0);
 					const int32 c = RammsPCG::WritePickedMesh(Props, Pick, P, Sd.Yaw + (Rng.FRand() < 0.5 ? 0.0 : 180.0), NextSeed());
 					RammsPCG::WriteManifest(Props, c, FName(TEXT("Vehicle")), FName(TEXT("Parked")), true, ERammsComplianceIssue::None, 0.0, 0.0);
 				}
@@ -600,7 +661,7 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 		SidewalksOut.Set(s, RammsPCG::RouteWidth, SW - FZ);
 		SidewalksOut.SetBool(s, RammsPCG::IsPark, B.bPark);
 		FString Keep;
-		for (const FVector2D& K : Sd.Keepouts) { Keep += FString::Printf(TEXT("%.0f-%.0f;"), K.X, K.Y); }
+		for (const FVector2D& K : Sd.Clear) { Keep += FString::Printf(TEXT("%.0f:%.0f;"), K.X, K.Y); }
 		SidewalksOut.Set(s, FName(TEXT("Keepouts")), Keep);
 		SidewalksOut.Set(s, RammsPCG::RouteName, FName(*FString::Printf(TEXT("Block%d_Side%d"), B.Id, Sd.Index)));
 	}

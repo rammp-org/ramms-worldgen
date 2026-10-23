@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""Pick and download UrbanVerse-100K assets for RammsWorldGen palette slots.
+
+UrbanVerse-100K (https://huggingface.co/datasets/Oatmealliu/UrbanVerse-100K) is a gated dataset of ~100K
+metric-scaled, annotated urban objects (GLB). This script runs outside Unreal, in a Python environment with
+`pip install --no-deps urbanverse-asset` plus `huggingface_hub pillow tqdm trimesh`, and a Hugging Face login
+that has accepted the dataset's terms (`hf auth login`).
+
+    python urbanverse_fetch.py --cache D:/urbanverse --list            # write the category tree (no meshes)
+    python urbanverse_fetch.py --cache D:/urbanverse --per-slot 6       # choose and download
+    python urbanverse_fetch.py --cache D:/urbanverse --slots Bench,Car --per-slot 10
+    python urbanverse_fetch.py --cache D:/urbanverse --analyze          # material analysis only (no downloads)
+
+Each palette slot below lists UrbanVerse leaf categories, size
+limits in metres and a minimum quality score (0-10, from the dataset's annotations). Only single objects
+(asset_composition_type == "single") are taken. The best-scoring assets per slot are downloaded with their
+annotations and thumbnails, and the choice is written to <cache>/ramms_selection.json, which
+ramms_worldgen.urbanverse imports into Unreal. <cache>/ATTRIBUTION.md lists every chosen asset with its
+license and source, as the CC BY / BY-SA / BY-NC licenses require.
+
+Licenses vary per asset (CC BY, BY-SA, BY-NC, BY-NC-SA, CC0); --commercial keeps only the ones that allow
+commercial use. Nothing downloaded here belongs in git.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import random
+import re
+import sys
+from pathlib import Path
+
+# slot -> UrbanVerse leaf categories (exact names; `--list` writes them all to categories.json),
+#         (min, max) height and (min, max) longest side in metres, minimum quality (0-10)
+SLOTS = {
+    "Bench":            (["bench"], (0.5, 1.3), (0.9, 3.0), 7),
+    "Bollard":          (["bollard"], (0.5, 1.4), (0.1, 0.6), 6),
+    "BusStop":          (["bus shelter"], (2.0, 4.0), (2.0, 8.0), 6),
+    "StreetLight":      (["street light", "lamppost"], (3.0, 12.0), (0.2, 4.0), 6),
+    "TrashBin":         (["trash bin"], (0.5, 1.5), (0.3, 1.2), 7),
+    "Hydrant":          (["fire hydrant"], (0.4, 1.2), (0.2, 0.8), 6),
+    "ParkingMeter":     (["parking meter"], (0.9, 1.8), (0.1, 0.6), 6),
+    "NewspaperBox":     (["newspaper stand"], (0.7, 1.8), (0.3, 1.5), 5),
+    "Mailbox":          (["mailbox", "postbox"], (0.9, 1.8), (0.3, 1.2), 6),
+    "StreetSign":       (["stop sign", "traffic sign", "no parking sign", "do not enter sign", "directional sign"], (1.5, 4.0), (0.2, 1.5), 6),
+    "Car":              (["car", "hatchback car", "coupe car", "electric car", "convertible car", "taxi", "minivan"], (1.2, 2.2), (3.5, 5.8), 7),
+    "Flowerbed":        (["plant pot", "potted plant"], (0.3, 1.3), (0.3, 2.5), 7),
+    "Hazard.Bike":      (["bicycle"], (0.8, 1.4), (1.3, 2.1), 7),
+    "Hazard.Scooter":   (["scooter"], (0.8, 1.4), (0.8, 1.4), 6),
+    "Hazard.Cone":      (["traffic cone"], (0.3, 1.1), (0.2, 0.6), 6),
+    "Hazard.Barrier":   (["jersey barrier", "traffic barricade"], (0.6, 1.4), (0.8, 3.5), 6),
+    "Hazard.Cafe":      (["table", "picnic table"], (0.6, 0.85), (0.5, 1.4), 7),
+    "Hazard.CafeChair": (["chair"], (0.7, 1.1), (0.4, 0.8), 7),
+    "Hazard.Dumpster":  (["dumpster"], (1.0, 2.2), (1.4, 4.0), 6),
+    "Hazard.Box":       (["storage box"], (0.15, 0.9), (0.2, 1.0), 6),
+}
+# slot -> words that disqualify an asset by its short description (the "bench" category also holds picnic
+# tables). Whole words only, so "table" does not reject "stable" or "comfortable" and "motor" not "motorway".
+EXCLUDE = {"Bench": ["picnic", "table"], "Hazard.Cafe": ["desk", "dining", "coffee table"],
+           "Hazard.Scooter": ["motor", "motorcycle", "motorbike", "vespa", "moped"]}
+# Creative Commons license tokens; an asset is usable commercially only if every token is in COMMERCIAL_OK.
+COMMERCIAL_OK = {"cc0", "by", "sa"}
+KNOWN_LICENSE_TOKENS = {"cc0", "by", "sa", "nc", "nd"}
+
+
+def _license(ann: dict) -> dict:
+    li = ann.get("license_info") or {}
+    if isinstance(li, str):
+        # annotations store dicts and lists as Python literals ("{'license': 'by', ...}")
+        try:
+            li = ast.literal_eval(li)
+        except Exception:  # noqa: BLE001
+            li = {"license": li}
+    return li if isinstance(li, dict) else {"license": str(li)}
+
+
+def _license_name(li: dict) -> str:
+    for k in ("license", "license_name", "name", "type"):
+        if li.get(k):
+            return str(li[k])
+    return "unknown"
+
+
+def _license_tokens(li: dict) -> set[str]:
+    """CC license as tokens: "by-nc-sa" / "CC BY-NC-SA 4.0" / "cc_by_nc" -> {"by", "nc", "sa"}; "cc0" -> {"cc0"}.
+    Anything unrecognised ("unknown", "editorial", "standard") becomes its own token and so fails the whitelist."""
+    n = _license_name(li).lower()
+    n = n.replace("noncommercial", "nc").replace("non-commercial", "nc").replace("noderivatives", "nd").replace("sharealike", "sa")
+    toks = {t for t in re.split(r"[^a-z0-9]+", n) if t and not re.fullmatch(r"\d+(\.\d+)?", t)}
+    toks.discard("cc")
+    toks.discard("creative")
+    toks.discard("commons")
+    if "attribution" in toks:
+        toks.discard("attribution")
+        toks.add("by")
+    if "public" in toks and "domain" in toks:
+        toks -= {"public", "domain"}
+        toks.add("cc0")
+    return toks
+
+
+def _commercial_ok(li: dict) -> bool:
+    toks = _license_tokens(li)
+    return bool(toks) and toks <= COMMERCIAL_OK
+
+
+def _excluded(slot: str, desc: str) -> bool:
+    return any(re.search(r"\b" + re.escape(w) + r"s?\b", desc) for w in EXCLUDE.get(slot, ()))
+
+
+def _attribution_row(slot: str, it: dict) -> str:
+    li = it.get("license_info") or {}
+    who = li.get("creator_display_name") or li.get("creator") or li.get("author") or li.get("creator_username") or "unknown"
+    prof = li.get("creator_profile_url") or ""
+    uid = it["uid"]
+    url = li.get("uri") or li.get("url") or li.get("source") or ""
+    if not url or "api.sketchfab.com/v3/models/" in url:
+        url = "https://sketchfab.com/models/" + (url.rsplit("/", 1)[-1] if url else uid)
+    toks = _license_tokens(li)
+    name = it.get("license") or "unknown"
+    if toks == {"cc0"}:
+        lic = "[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)"
+    elif toks and toks <= KNOWN_LICENSE_TOKENS and "by" in toks:
+        code = "-".join(t for t in ("by", "nc", "nd", "sa") if t in toks)
+        lic = "[CC %s 4.0](https://creativecommons.org/licenses/%s/4.0/)" % (code.upper(), code)   # Sketchfab's CC licenses are 4.0
+    else:
+        lic = name
+    title = (it.get("description") or it.get("category") or "").split(".")[0].strip().replace("|", "/").replace("[", "(").replace("]", ")")
+    if len(title) > 70:
+        title = title[:67].rstrip() + "..."
+    author = "[%s](%s)" % (who, prof) if prof else who
+    return "| %s | %s | [%s](%s) | %s | %s | `%s` |" % (slot, it.get("category", ""), title or uid, url, author, lic, uid)
+
+
+def glb_materials(path: str) -> dict:
+    """Per glTF material of a GLB: alpha mode, base colour / alpha factor, roughness, transmission and, for
+    BLEND materials with a base colour texture, a 16-bin histogram of the effective alpha (texture alpha x
+    factor). ramms_worldgen.urbanverse uses it to tell real glass from surfaces only flagged BLEND by their
+    exporter (fully opaque, or cut-out), which Unreal would otherwise render translucent."""
+    import io
+    import struct
+    from PIL import Image
+    data = Path(path).read_bytes()
+    if data[:4] != b"glTF":
+        return {}
+    off, js, binc = 12, None, b""
+    while off + 8 <= len(data):
+        clen, ctype = struct.unpack_from("<II", data, off)
+        chunk = data[off + 8: off + 8 + clen]
+        off += 8 + clen
+        if ctype == 0x4E4F534A:
+            js = json.loads(chunk)
+        elif ctype == 0x004E4942:
+            binc = chunk
+    if not js:
+        return {}
+    out = {}
+    for i, m in enumerate(js.get("materials", [])):
+        name = m.get("name") or "material_%d" % i
+        pbr = m.get("pbrMetallicRoughness", {})
+        fac = list(pbr.get("baseColorFactor", [1.0, 1.0, 1.0, 1.0]))
+        info = {"alpha_mode": m.get("alphaMode", "OPAQUE"), "alpha_factor": float(fac[3]), "color": [float(c) for c in fac[:3]],
+                "roughness": float(pbr.get("roughnessFactor", 1.0)), "metallic": float(pbr.get("metallicFactor", 1.0)),
+                "textured": "baseColorTexture" in pbr}
+        tr = (m.get("extensions") or {}).get("KHR_materials_transmission")
+        if tr:
+            info["transmission"] = float(tr.get("transmissionFactor", 0.0))
+        if info["alpha_mode"] == "BLEND" and info["textured"]:
+            try:
+                src = js["textures"][pbr["baseColorTexture"]["index"]]["source"]
+                bv = js["bufferViews"][js["images"][src]["bufferView"]]
+                o = bv.get("byteOffset", 0)
+                im = Image.open(io.BytesIO(binc[o:o + bv["byteLength"]]))
+                bins = [0] * 16
+                if "A" in im.getbands():
+                    # Full resolution: a downscaled alpha would blur cut-out edges into partial alpha.
+                    for v, n in enumerate(im.getchannel("A").histogram()):
+                        bins[min(15, int(v / 255.0 * info["alpha_factor"] * 16))] += n
+                else:
+                    bins[min(15, int(info["alpha_factor"] * 16))] = 1
+                tot = float(sum(bins)) or 1.0
+                info["alpha_hist"] = [round(b / tot, 4) for b in bins]
+            except Exception as exc:  # noqa: BLE001 - external image or undecodable: decided by name / factor
+                info["alpha_err"] = str(exc)[:120]
+        out[name] = info
+    return out
+
+
+def analyze(cache: Path) -> int:
+    """Add the material analysis to an existing selection (no downloads)."""
+    sel_path = cache / "ramms_selection.json"
+    sel = json.loads(sel_path.read_text(encoding="utf-8"))
+    n = 0
+    for items in sel.get("slots", {}).values():
+        for it in items:
+            if it.get("glb") and Path(it["glb"]).exists():
+                it["materials"] = glb_materials(it["glb"])
+                n += 1
+    sel_path.write_text(json.dumps(sel, indent=1), encoding="utf-8")
+    print("materials analysed for %d assets -> %s" % (n, sel_path))
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--cache", required=True, help="download folder (outside any git repo)")
+    ap.add_argument("--list", action="store_true", help="write categories.json and stop")
+    ap.add_argument("--analyze", action="store_true", help="re-analyse the materials of an existing selection and stop")
+    ap.add_argument("--slots", default="", help="comma-separated subset of slots")
+    ap.add_argument("--per-slot", type=int, default=6)
+    ap.add_argument("--commercial", action="store_true", help="only assets whose license allows commercial use")
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--workers", type=int, default=8)
+    args = ap.parse_args()
+
+    cache = Path(args.cache)
+    if args.analyze:
+        return analyze(cache)
+
+    import urbanverse_asset as uva
+    from urbanverse_asset import _core
+
+    uva.set(str(cache))
+    cats = uva.object.categories()           # {l3: {class_name_l1, class_name_l2, class_name_l3, asset_uids, asset_count}}
+    if args.list:
+        out = {l3: {"l1": e.get("class_name_l1"), "l2": e.get("class_name_l2"), "count": e.get("asset_count", len(e.get("asset_uids", [])))}
+               for l3, e in sorted(cats.items())}
+        (cache / "categories.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
+        print("%d leaf categories -> %s" % (len(out), cache / "categories.json"))
+        return 0
+
+    want = [s for s in args.slots.split(",") if s] or list(SLOTS)
+    _core._ensure_per_asset_annotations()
+    ann_dir = cache / "assets_std_annotation_flat"
+    ann_path = {p.stem[4:]: p for p in ann_dir.rglob("std_*.json")}   # annotations sit in bucket_NNNN folders
+    sel_path = cache / "ramms_selection.json"
+    # Fetching a subset of slots must not drop the others from an earlier run.
+    selection = {"source": "UrbanVerse-100K", "repo": _core.REPO_ID, "slots": {}, "categories": {}}
+    if sel_path.exists():
+        try:
+            old = json.loads(sel_path.read_text(encoding="utf-8"))
+            selection["slots"].update(old.get("slots", {}))
+            selection["categories"].update(old.get("categories", {}))
+        except Exception as exc:  # noqa: BLE001
+            print("warning: %s unreadable (%s); starting a new selection" % (sel_path, exc))
+    fetched: set[str] = set()
+    to_load: list[str] = []
+    for slot in want:
+        if slot not in SLOTS:
+            print("unknown slot %r (known: %s)" % (slot, ", ".join(SLOTS)))
+            return 2
+        # One RNG per slot: the tie-break order of a slot does not depend on which other slots ran.
+        rng = random.Random("%s:%s" % (args.seed, slot))
+        keywords, hr, lr, qmin = SLOTS[slot]
+        leafs = [l3 for l3 in keywords if l3 in cats]
+        selection["categories"][slot] = leafs
+        cands = []
+        for l3 in leafs:
+            for uid in cats[l3].get("asset_uids", []):
+                p = ann_path.get(uid)
+                if p is None:
+                    continue
+                try:
+                    a = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+                try:
+                    h, L, W, q = float(a.get("height", 0)), float(a.get("length", 0)), float(a.get("width", 0)), float(a.get("quality", 0))
+                except (TypeError, ValueError):
+                    continue
+                if str(a.get("asset_composition_type", "single")).lower() != "single" or q < qmin:
+                    continue
+                # The short description names the object; the long one also describes its surroundings
+                # ("a bench next to a picnic table"), which would reject good assets.
+                if _excluded(slot, str(a.get("description", "")).lower()):
+                    continue
+                if not (hr[0] <= h <= hr[1] and lr[0] <= max(L, W) <= lr[1]):
+                    continue
+                li = _license(a)
+                if args.commercial and not _commercial_ok(li):
+                    continue
+                cands.append((q, rng.random(), uid, l3, a, li))
+        # Best first, taking the categories in turn (a slot with sedans, taxis and minivans should not end up
+        # with six coupes just because coupes score highest).
+        cands.sort(key=lambda c: (-c[0], c[1]))
+        by_cat: dict[str, list] = {}
+        for c in cands:
+            by_cat.setdefault(c[3], []).append(c)
+        picked = []
+        while len(picked) < args.per_slot and any(by_cat.values()):
+            for l3 in list(by_cat):
+                if by_cat[l3] and len(picked) < args.per_slot:
+                    picked.append(by_cat[l3].pop(0))
+        print("%-18s %3d categories, %5d candidates, %d picked  (%s)" % (slot, len(leafs), len(cands), len(picked), ", ".join(leafs[:6]) + ("..." if len(leafs) > 6 else "")))
+        selection["slots"][slot] = []
+        fetched.add(slot)
+        for q, _r, uid, l3, a, li in picked:
+            selection["slots"][slot].append({
+                "uid": uid, "category": l3, "quality": q, "height": a.get("height"), "length": a.get("length"),
+                "width": a.get("width"), "mass": a.get("mass"), "friction": a.get("friction_coefficient"),
+                "front_view": a.get("frontView"), "traversability": a.get("traversability"),
+                "clearance": a.get("recommended_clearance"), "license": _license_name(li), "license_info": li,
+                "description": a.get("description"),
+            })
+            to_load.append(uid)
+
+    res = uva.object.load(to_load, num_workers=args.workers, what=("std_glb", "std_annotation", "thumbnail"))
+    for slot, items in selection["slots"].items():
+        if slot not in fetched:
+            continue
+        for it in items:
+            r = res.get(it["uid"], {})
+            it["glb"] = str(r.get("std_glb") or "")
+            it["thumbnail"] = str(r.get("thumbnail") or "")
+            if it["glb"]:
+                try:
+                    it["materials"] = glb_materials(it["glb"])
+                except Exception as exc:  # noqa: BLE001
+                    print("warning: materials of %s: %s" % (it["uid"], exc))
+        selection["slots"][slot] = [it for it in items if it["glb"]]
+    sel_path.write_text(json.dumps(selection, indent=1), encoding="utf-8")
+
+    lines = ["# UrbanVerse-100K assets used by RammsWorldGen", "",
+             "From [UrbanVerse-100K](https://huggingface.co/datasets/Oatmealliu/UrbanVerse-100K) (collection: ODC-BY; "
+             "each asset keeps its own license, below). Liu et al., *UrbanVerse: Scaling Urban Simulation by Watching "
+             "City-Tour Videos*, ICLR 2026.", "",
+             "Each row: the model (title from its description, linked to its Sketchfab page), its author, and its "
+             "license. Changes: converted to Unreal static meshes and rescaled to metres by UrbanVerse; materials "
+             "and collision set up for simulation.", "",
+             "| Slot | Category | Model | Author | License | UID |", "|---|---|---|---|---|---|"]
+    for slot, items in selection["slots"].items():
+        for it in items:
+            lines.append(_attribution_row(slot, it))
+    (cache / "ATTRIBUTION.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    n = sum(len(v) for v in selection["slots"].values())
+    print("%d assets -> %s" % (n, cache / "ramms_selection.json"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

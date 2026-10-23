@@ -9,6 +9,9 @@ class UPCGSpawnActorSettings;
 class UPCGStaticMeshSpawnerSettings;
 class UPCGGraph;
 class UPCGNode;
+class UPrimitiveComponent;
+class UInstancedStaticMeshComponent;
+class UStaticMesh;
 
 /**
  * Graph-authoring helpers the Python builder calls for the two spawner
@@ -67,6 +70,40 @@ public:
 	/** Editor only: save a PNG of the open graph editor panel showing `Graph`. Returns false if it is not open. */
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen|Graph")
 	static bool CaptureGraphEditor(UPCGGraph* Graph, const FString& PngPath);
+
+	// --- glass ----------------------------------------------------------------------------------------------
+	// The RammsWorldGen glass materials (M_RammsGlass, M_RammsGlassAtlas and their instances) read six floats of
+	// per-instance custom data: 0 frost offset (0 = the material's own, up to +1 = fully milky), 1 opacity
+	// multiplier, 2-4 tint multiplier (RGB), 5 bump offset (0 = the material's own, up to +1 = strongly rippled).
+	// An instance without custom data looks exactly like its material instance.
+
+	/** Number of custom data floats the glass materials read. */
+	static constexpr int32 GlassCustomDataFloats = 6;
+
+	/** True if any material slot of `Component` derives from one of the RammsWorldGen glass materials. */
+	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen|Glass")
+	static bool UsesRammsGlass(const UPrimitiveComponent* Component);
+
+	/** Set one instance's glass look (grows the component's custom data to GlassCustomDataFloats if needed).
+	 *  Frost / Bump are offsets added to the material's own (0..1); OpacityScale multiplies its opacity;
+	 *  Tint multiplies its tint. */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen|Glass")
+	static bool SetGlassInstanceLook(UInstancedStaticMeshComponent* Component, int32 InstanceIndex, float Frost = 0.f, float OpacityScale = 1.f,
+		FLinearColor Tint = FLinearColor::White, float Bump = 0.f, bool bMarkRenderStateDirty = true);
+
+	/** Give every instance of every glass-using instanced component of `Actor` (or of actors whose instanced
+	 *  components overlap `Bounds`, when it is valid) a deterministic look drawn from Seed and the instance's
+	 *  position: Variation scales the whole range; the chances pick frosted, tinted and rippled instances.
+	 *  Variation 0 clears the custom data. Returns the number of instances changed. */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen|Glass")
+	static int32 VaryGlassInstances(AActor* Actor, int32 Seed, float Variation = 1.f, float FrostChance = 0.3f, float TintChance = 0.35f, float BumpChance = 0.25f);
+
+	/** Spawn an actor holding one instanced static mesh component with the given instances and per-instance
+	 *  custom data (NumCustomDataFloats floats per instance, laid out instance after instance; may be empty).
+	 *  For tests and showcases of per-instance materials such as the glass. Tagged with `Tag` when given. */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen|Glass", meta = (WorldContext = "WorldContextObject"))
+	static AActor* SpawnInstancedMesh(UObject* WorldContextObject, UStaticMesh* Mesh, const TArray<FTransform>& Transforms,
+		const TArray<float>& CustomData, int32 NumCustomDataFloats, FName Tag);
 
 	/** The ARammsProcPiece properties the piece spawner maps (the source of truth for RammsPCG::WritePiece). */
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen|Graph")

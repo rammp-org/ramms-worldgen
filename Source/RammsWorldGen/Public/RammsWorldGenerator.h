@@ -83,11 +83,21 @@ public:
 	FOnRammsWorldGenerated OnWorldGenerated;
 
 	// --- actions ---------------------------------------------------------------------
+	/** Start a generation. Returns false when nothing could be scheduled (no graph): no OnWorldGenerated follows. */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "World Generator")
-	void Regenerate();
+	bool Regenerate();
 
 	UFUNCTION(BlueprintCallable, Category = "World Generator")
-	void RegenerateWithSeed(int32 NewSeed);
+	bool RegenerateWithSeed(int32 NewSeed);
+
+	/** Generate with another palette (an asset path or a name under /RammsWorldGen/Palettes, e.g. "PAL_UrbanVerse");
+	 *  empty goes back to the preset's. Takes effect at the next Regenerate. Returns false if it does not load. */
+	UFUNCTION(BlueprintCallable, Category = "World Generator")
+	bool SetPalette(const FString& Palette);
+
+	/** The palette the next (or last) generation uses, as an object path. */
+	UFUNCTION(BlueprintPure, Category = "World Generator")
+	FString GetPalettePath() const;
 
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "World Generator")
 	void Randomize();
@@ -127,25 +137,38 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "World Generator|Play")
 	void PlacePlayers();
 
+	/** Re-roll the per-instance look of the generated glass (Params.Glass*); done after every generation.
+	 *  Returns the number of glass instances written. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "World Generator")
+	int32 ApplyGlassVariation();
+
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
 
 private:
 	void EnsureBound();
 	void HandleGenerated(UPCGComponent* Component);
+	void HandleCancelled(UPCGComponent* Component);
 	void BuildManifestFromOutput();
 	void CollectProcPieces();
 	void HoldPlayers();
 	void ReleasePlayers();
 	bool bBoundDelegate = false;
 
-	/** A simulated body of a held pawn and its transform relative to the pawn, for re-placing it. */
+	/** A simulated body of a held pawn and its transform relative to the pawn, for re-placing it. Skeletal
+	 *  meshes that simulated only some bodies remember which, so releasing does not ragdoll the rest. */
 	struct FHeldBody
 	{
 		TWeakObjectPtr<UPrimitiveComponent> Component;
 		FTransform RelativeToActor;
+		bool bAllBodies = true;
+		TArray<FName> SimulatedBones;
 	};
 	TArray<FHeldBody> HeldBodies;
 	FTimerHandle ReleaseTimer;
+	FTimerHandle HoldSafetyTimer;
+	/** Another generator took over the players while this one was generating: do not place them when done. */
+	bool bPlayersTaken = false;
 };

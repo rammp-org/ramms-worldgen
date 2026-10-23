@@ -137,9 +137,27 @@ bool FPCGRammsManifestElement::ExecuteInternal(FPCGContext* Context) const
 			FRammsManifestFeature F;
 			F.Kind = Kind;
 			F.Subtype = R.Get<FName>(i, RammsPCG::ManifestSubtype, NAME_None);
-			F.Location = R.T(i).GetLocation();
-			F.Rotation = R.T(i).Rotator();
-			F.Size = (R.Max(i) - R.Min(i)) * R.T(i).GetScale3D();
+			const FVector BoxSize = R.Get<FVector>(i, RammsPCG::ManifestSize, FVector::ZeroVector);
+			if (!BoxSize.IsNearlyZero())
+			{
+				// A palette mesh: its own footprint box, not the pivot transform.
+				F.Location = R.Get<FVector>(i, RammsPCG::ManifestCenter, R.T(i).GetLocation());
+				F.Rotation = FRotator(0.0, R.GetD(i, RammsPCG::ManifestYaw, R.T(i).Rotator().Yaw), 0.0);
+				F.Size = BoxSize;
+			}
+			else
+			{
+				F.Location = R.T(i).GetLocation();
+				F.Rotation = R.T(i).Rotator();
+				F.Size = (R.Max(i) - R.Min(i)) * R.T(i).GetScale3D();
+			}
+			const FSoftObjectPath AssetPath = R.Get<FSoftObjectPath>(i, RammsPCG::Mesh, FSoftObjectPath());
+			if (AssetPath.IsValid() && !AssetPath.ToString().StartsWith(TEXT("/Engine/")))
+			{
+				F.Asset = AssetPath.ToString();
+			}
+			F.Source = R.Get<FString>(i, RammsPCG::SourceId, FString());
+			F.Route = R.Get<FName>(i, RammsPCG::RouteName, NAME_None);
 			F.bCompliant = R.Get<bool>(i, RammsPCG::bCompliant, true);
 			F.Issue = static_cast<ERammsComplianceIssue>(FMath::Clamp(static_cast<int32>(R.GetD(i, RammsPCG::IssueId, 0.0)), 0, static_cast<int32>(ERammsComplianceIssue::ObstacleInRoute)));
 			F.Measure = R.GetD(i, RammsPCG::Measure, 0.0);
