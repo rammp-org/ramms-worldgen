@@ -588,9 +588,10 @@ as an `AMjArticulation`, where the Gen3 + 2F-85 can open it (see ramms-sim's `mu
 
 Checked so far: the ForgeCAD `refrigerator` (two doors, freezer drawer, two crispers) and `microwave_oven` (door,
 turntable, release button) convert, load, swing within their limits and import through URLab with their textures.
-In MuJoCo the Gen3 + 2F-85 opens and closes both doors (the fridge's by its bar handle, the microwave's by pinching
-its free edge); in Unreal PIE, through `RammsMjEndEffectorController`, it opens and closes the fridge door and opens
-the microwave door, whose edge then slips out of the grip on the way back. NVIDIA's `refrigerator_f01` (15 joints)
+The Gen3 + 2F-85 opens and closes the fridge's left door (by its bar handle), its freezer drawer (by its
+handle) and the microwave door (its free edge straddled by the half-closed fingers), in MuJoCo and in Unreal PIE
+through `RammsMjEndEffectorController` (ramms-sim's `mujoco/articulation_test.py` and
+`Scripts/pie_tests/simready_door/`). NVIDIA's `refrigerator_f01` (15 joints)
 and LG's `cooking_mser1130b` (with `--decompose`) convert and load; their visual meshes are dense (265 MB of
 OBJ/GLB for the NVIDIA fridge).
 
