@@ -283,3 +283,46 @@ def build(cache_dir, mode="replace", slots=None, path=PALETTE, base=None, facing
     H.save(pal)
     H.log("simready palette %s: %s" % (path, {k: len(v) for k, v in report["slots"].items()}))
     return pal, report
+
+
+# --------------------------------------------------------------- articulated assets (MuJoCo)
+
+MJ_DEST = DEST + "/MuJoCo"
+
+
+def import_mjcf(xml_paths, dest=MJ_DEST):
+    """Import MJCF models written by Tools/simready_mjcf.py as URLab articulation Blueprints, unattended.
+
+    `xml_paths` is one .xml, a list of them, or a folder holding <stem>/<stem>.xml models. URLab's
+    MujocoImportFactory makes the AMjArticulation Blueprint <dest>/<stem> and puts its meshes and
+    textures in /Game/MuJoCoImports/<stem>_Assets (ramms-sim's .gitignore leaves out the sr_* ones).
+    A Blueprint that already exists is kept: a replace-import of a URLab Blueprint asserts in the
+    editor, so delete it, restart the editor, and import again to refresh one.
+    Returns {stem: Blueprint path or None}."""
+    if isinstance(xml_paths, str) and os.path.isdir(xml_paths):
+        root = xml_paths
+        xml_paths = [os.path.join(root, n, n + ".xml") for n in sorted(os.listdir(root))
+                     if os.path.isfile(os.path.join(root, n, n + ".xml"))]
+    elif isinstance(xml_paths, str):
+        xml_paths = [xml_paths]
+    tools = unreal.AssetToolsHelpers.get_asset_tools()
+    out = {}
+    for xml in xml_paths:
+        stem = os.path.splitext(os.path.basename(xml))[0]
+        path = "%s/%s" % (dest, stem)
+        if unreal.EditorAssetLibrary.does_asset_exist(path):
+            out[stem] = path
+            H.log("%s exists; kept" % path)
+            continue
+        data = unreal.AutomatedAssetImportData()
+        data.set_editor_property("filenames", [os.path.abspath(xml).replace("\\", "/")])
+        data.set_editor_property("destination_path", dest)
+        data.set_editor_property("replace_existing", False)
+        data.set_editor_property("factory_name", "MujocoImportFactory")
+        objs = tools.import_assets_automated(data)
+        out[stem] = objs[0].get_path_name().split(".")[0] if objs else None
+        if out[stem]:
+            # An automated import leaves the Blueprint unsaved (its meshes and textures are saved).
+            unreal.EditorAssetLibrary.save_asset(out[stem], only_if_is_dirty=False)
+        H.log("mjcf %s -> %s" % (xml, out[stem]))
+    return out

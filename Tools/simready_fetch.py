@@ -12,6 +12,8 @@ Hugging Face login is needed.
     python simready_fetch.py --cache D:/simready --list             # write the candidates per slot (no downloads)
     python simready_fetch.py --cache D:/simready --per-slot 4        # choose, download and flatten
     python simready_fetch.py --cache D:/simready --slots Furniture.Sofa,TrashBin --per-slot 6
+    python simready_fetch.py --cache D:/simready --packages ForgeCAD/simready-assets:refrigerator,microwave_oven
+                                                                     # named packages as they are, for simready_mjcf.py
 
 Each palette slot below lists asset-name patterns, size limits in metres (from the package's SimReady_Metadata
 extents, checked again on the merged mesh) and the datasets to look in. Candidates are spread over asset families
@@ -277,6 +279,36 @@ def attribution(selection: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def fetch_packages(cache: Path, index: dict, spec: str) -> int:
+    """Download named packages whole (at the index's commit) and print each root USD with its license."""
+    hub = Hub(cache)
+    repo_of = ""
+    status = 0
+    for item in [x.strip() for x in spec.split(",") if x.strip()]:
+        if ":" in item:
+            repo_of, asset = item.rsplit(":", 1)
+        else:
+            asset = item
+        keys = [k for k in sorted(index) if k[1] == asset and (not repo_of or k[0] == repo_of)]
+        if not keys:
+            print("%s: not in the index%s" % (asset, " of " + repo_of if repo_of else ""))
+            status = 1
+            continue
+        repo, asset = keys[0]
+        rev, _url = index[(repo, asset)]
+        pr = probe(hub, repo, rev, asset)
+        if pr is None:
+            print("%s/%s: no root USD found" % (repo, asset))
+            status = 1
+            continue
+        hub.package(repo, rev, asset)
+        md = pr["metadata"]
+        print("%s/%s@%s  %s  (%s, %s)" % (repo, asset, rev[:12], os.path.normpath(os.path.join(hub.local_dir(repo), pr["root"])),
+                                         pr["package"].get("license") or md.get("asset_license") or "license ?",
+                                         md.get("author") or "author ?"))
+    return status
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cache", required=True, help="download folder (outside any git repo)")
@@ -289,6 +321,9 @@ def main() -> int:
     ap.add_argument("--refresh-index", action="store_true", help="read the SimReady Central index again")
     ap.add_argument("--reflatten", action="store_true", help="flatten already downloaded packages again")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--packages", default="",
+                    help="comma-separated [namespace/dataset:]asset: download these packages at their pinned commit "
+                         "and print their root USD (no slot choice, no flattening; for simready_mjcf.py)")
     args = ap.parse_args()
 
     cache = Path(args.cache)
@@ -300,6 +335,8 @@ def main() -> int:
         if s not in SLOTS:
             print("unknown slot %r (known: %s)" % (s, ", ".join(SLOTS)))
             return 2
+    if args.packages:
+        return fetch_packages(cache, index, args.packages)
     if args.list:
         out = {s: ["%s/%s" % c for c in candidates(index, s)] for s in want}
         (cache / "candidates.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
@@ -355,7 +392,7 @@ def main() -> int:
                     merged = os.path.join(pkg_dir, "ramms_merged.usdc")
                     try:
                         if args.reflatten or not os.path.exists(merged):
-                            rep = flatten(os.path.join(hub.local_dir(repo), pr["root"]), merged)
+                            rep = flatten(os.path.normpath(os.path.join(hub.local_dir(repo), pr["root"])), merged)
                             Path(merged + ".json").write_text(json.dumps(rep, indent=1), encoding="utf-8")
                         else:
                             rep = json.loads(Path(merged + ".json").read_text(encoding="utf-8"))
@@ -384,7 +421,7 @@ def main() -> int:
                     "usd_license": md.get("asset_license"), "author": md.get("author"), "category": md.get("category") or family(asset),
                     "family": family(asset), "qcode": md.get("qcode"), "mass": md.get("mass"), "friction": rep.get("friction"),
                     "length": size[0], "width": size[1], "height": size[2], "faces": rep.get("faces"),
-                    "materials": sorted(rep.get("materials", {})), "root_usd": os.path.join(hub.local_dir(repo), pr["root"]),
+                    "materials": sorted(rep.get("materials", {})), "root_usd": os.path.normpath(os.path.join(hub.local_dir(repo), pr["root"])),
                     "usd": merged, "thumbnail": thumb, "download_mb": pr["mb"],
                 })
         print("%-28s %3d candidates in %2d families, %d picked  (%s)" % (slot, len(cands), len(by_fam), len(picked), ", ".join(p["asset"] for p in picked)))
