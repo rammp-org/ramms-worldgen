@@ -60,6 +60,8 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 - [The manifest](#the-manifest)
 - [Parameters](#parameters)
 - [Extending](#extending)
+- [UrbanVerse assets](#urbanverse-assets)
+- [SimReady assets](#simready-assets)
 - [Design notes and limits](#design-notes-and-limits)
 - [First-compile checklist](#first-compile-checklist)
 
@@ -463,6 +465,76 @@ Use it by setting a preset's or generator's `Palette` (a generator override does
 from outside with `SetPalette` / `ramms-worldgen generate --palette PAL_UrbanVerse`. Packaged builds cook
 `/RammsWorldGen/Palettes` and `/Game/UrbanVerse` through ramms-sim's `DirectoriesToAlwaysCook`.
 The imported assets stay out of git, like the Fab packs.
+
+## SimReady assets
+
+[SimReady Central](https://github.com/NVIDIA-Omniverse/simready-central) is NVIDIA's index of OpenUSD
+"SimReady" assets that NVIDIA and its partners host in their own public, ungated Hugging Face datasets. Each
+file under its `submissions/` lists one dataset's reviewed packages, one URL per package pinned to a dataset
+commit. A package is metric USD with physics (mass, colliders, friction), OmniPBR (MDL) materials with a
+`UsdPreviewSurface` fallback, and a `SimReady_Metadata` block (extents, mass, license, author). It fills
+the indoor-furniture, appliance, bin, sign and hazard slots, which complements UrbanVerse's street furniture.
+Three datasets are used: `nvidia/simready-assets` (about 2,500 props: furniture, bins, signs, boxes, crates,
+office and medical equipment), `ForgeCAD/simready-assets` (household and kitchen items) and
+`LGElectronics/simready-assets` (appliances, TVs, monitors). The robot arms, data-centre equipment and
+PalatialSim's numbered scans are left out. It takes two steps:
+
+1. **Choose, download and flatten** (outside Unreal). `Tools/simready_fetch.py` needs Python with
+   `pip install huggingface_hub usd-core`; no Hugging Face login.
+   ```
+   python Tools/simready_fetch.py --cache D:/simready --list            # candidates per slot, no downloads
+   python Tools/simready_fetch.py --cache D:/simready --per-slot 4
+   python Tools/simready_fetch.py --cache D:/simready --slots Furniture.Sofa,TrashBin --per-slot 6
+   ```
+   - The `SLOTS` table maps each palette slot to asset-name patterns, with height and length limits in metres.
+     Candidates are taken from asset families in turn (`box_cardboard_a01` and `_b02` are one family), so a
+     slot gets variety rather than colour variants of one model.
+   - For each candidate only the package definition and the root USD (tens of KB) are read first, for the
+     license and `SimReady_Metadata` extents. Wall-mounted slots (`WALL_SLOTS`) are checked on the merged mesh
+     only, since their extents can include the height they hang at.
+   - The chosen packages are downloaded at the commit the index pins, without thumbnails and without NVIDIA's
+     second copy of every texture under `source_assets/`. NVIDIA's tiling textures are up to 8K, so four
+     per slot is about 7 GB; `--max-mb` (600) skips the heaviest packages.
+   - `Tools/simready_flatten.py` then merges each package into one mesh, `ramms_merged.usdc` beside it.
+     Unreal's Interchange USD import brings every rigid body in as its own static mesh at a local pivot (its
+     combine option does not apply to USD), so a ForgeCAD bin would arrive as 319 meshes. The flattener keeps
+     the renderable meshes (not guide, proxy, invisible or collider prims, nor grasp markers), bakes their
+     world transforms, converts to Z-up metres, puts the origin at the bottom centre, and writes one
+     `GeomSubset` per material. Materials keep their `UsdPreviewSurface` network with absolute texture paths;
+     identical copies on several parts become one slot. It also records the face-weighted friction of the
+     asset's physics materials.
+   - It writes `ramms_selection.json` (slot to assets, with package id, license, author, mass, friction, size)
+     and `ATTRIBUTION.md` (per asset: a link to it at its pinned commit, the dataset, author and license).
+     Fetching some slots keeps the other slots of an earlier run; each slot's choice depends only on `--seed`
+     and that slot. `--refresh-index` re-reads the index from GitHub; `--commercial` keeps only packages
+     whose license allows commercial use (all three datasets are CC BY 4.0 at the time of writing).
+2. **Import and build the palette** (in the editor):
+   ```python
+   import ramms_worldgen.simready as SR
+   SR.build(r"D:/simready")                       # or mode="mix" to keep the base palette's variants too
+   SR.build(r"D:/simready", base="/RammsWorldGen/Palettes/PAL_UrbanVerse")   # UrbanVerse streets, SimReady rooms
+   ```
+   - Each merged USD is imported with Interchange into its own folder, `/Game/SimReady/SM_SR_<NV|FC|LG>_<asset>/`,
+     with its materials and textures (textures are clamped to 2048). An asset chosen for several slots is
+     imported once. Meshes over 50K triangles become Nanite. Importing the 76 packages of a four-per-slot run (81 slot entries)
+     takes about 8 minutes, most of it texture compression; a rebuild that finds them imported takes seconds.
+   - Each mesh gets collision as the palette meshes do and a physical material with the asset's SimReady
+     friction, on the body and on its own material instances.
+   - `PAL_SimReady` is the base palette (`PAL_Default` unless `base` says otherwise) with the filled slots
+     replaced, refreshed in place on a rebuild. Assets keep their real size. Their front comes from the same
+     geometric test as the Fab meshes; SimReady has no common front axis (NVIDIA's two office-chair packages
+     are authored 90 degrees apart), so `simready.FACING_FIX` corrects the assets where that test picks the
+     back or a side (refrigerators and washers carry their weight high at the back, cabinets are plain boxes).
+     A new asset should be checked with `LINEUP_PALETTE = "/RammsWorldGen/Palettes/PAL_SimReady"` and
+     `Scripts/worldgen/lineup.py`, and added there if it faces the wrong way. Each entry's `SourceId` is
+     `simready:<namespace>/<dataset>/<asset>@<commit>|<category>`, which the manifest carries as the
+     feature's `source`.
+   - Articulated assets (bins with lids, fridges, office chairs) come in as one rigid mesh in their authored
+     pose; one LG refrigerator is authored with a door ajar.
+
+Use it like `PAL_UrbanVerse`: a preset's or generator's `Palette`, `SetPalette`, or
+`ramms-worldgen generate --palette PAL_SimReady`. Packaged builds cook `/Game/SimReady` through ramms-sim's
+`DirectoriesToAlwaysCook`. The imported assets and `PAL_SimReady` stay out of git.
 
 ## Streets and yards
 
