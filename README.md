@@ -62,6 +62,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 - [Extending](#extending)
 - [UrbanVerse assets](#urbanverse-assets)
 - [SimReady assets](#simready-assets)
+  - [Articulated SimReady assets in MuJoCo](#articulated-simready-assets-in-mujoco)
 - [Design notes and limits](#design-notes-and-limits)
 - [First-compile checklist](#first-compile-checklist)
 
@@ -508,6 +509,7 @@ PalatialSim's numbered scans are left out. It takes two steps:
      Fetching some slots keeps the other slots of an earlier run; each slot's choice depends only on `--seed`
      and that slot. `--refresh-index` re-reads the index from GitHub; `--commercial` keeps only packages
      whose license allows commercial use (all three datasets are CC BY 4.0 at the time of writing).
+     `--packages` downloads named packages whole, without choosing or flattening, for the MuJoCo conversion below.
 2. **Import and build the palette** (in the editor):
    ```python
    import ramms_worldgen.simready as SR
@@ -530,11 +532,67 @@ PalatialSim's numbered scans are left out. It takes two steps:
      `simready:<namespace>/<dataset>/<asset>@<commit>|<category>`, which the manifest carries as the
      feature's `source`.
    - Articulated assets (bins with lids, fridges, office chairs) come in as one rigid mesh in their authored
-     pose; one LG refrigerator is authored with a door ajar.
+     pose; one LG refrigerator is authored with a door ajar. To open their doors and drawers, use them through
+     MuJoCo (below).
 
 Use it like `PAL_UrbanVerse`: a preset's or generator's `Palette`, `SetPalette`, or
 `ramms-worldgen generate --palette PAL_SimReady`. Packaged builds cook `/Game/SimReady` through ramms-sim's
 `DirectoriesToAlwaysCook`. The imported assets and `PAL_SimReady` stay out of git.
+
+### Articulated SimReady assets in MuJoCo
+
+Many SimReady packages are articulated: their UsdPhysics rigid bodies are joined by revolute and prismatic joints
+with limits (fridge and microwave doors, drawers, crisper bins), with mass, colliders and friction. MuJoCo reads USD
+only from a source build with USD support, which its pip wheels and URLab's bundled MuJoCo lack, so
+`Tools/simready_mjcf.py` converts a package to MJCF. The result loads in MuJoCo as it is and imports through URLab
+as an `AMjArticulation`, where the Gen3 + 2F-85 can open it (see ramms-sim's `mujoco/articulation_test.py` and
+`Scripts/pie_tests/simready_door/`).
+
+1. **Download** the package if no palette slot chose it (`--packages` takes it whole, at the commit the index pins):
+   ```
+   python Tools/simready_fetch.py --cache D:/simready --packages ForgeCAD/simready-assets:refrigerator,microwave_oven
+   ```
+   It prints each package's root USD, license and author.
+2. **Convert** (needs `pip install usd-core numpy pillow scipy`; with `mujoco` installed it also loads the result):
+   ```
+   python Tools/simready_mjcf.py D:/simready/ForgeCAD__simready-assets/refrigerator/simready_usd/refrigerator.usda \
+       --out D:/simready/mjcf/sr_fc_refrigerator
+   ```
+   - One MJCF body per rigid body, nested along the joints from the body welded to the world (or the articulation
+     root). Revolute joints become hinges and prismatic ones slides, with the USD limits; fixed joints nest a body
+     without a joint. A body authored with its door ajar keeps that pose: the authored joint value becomes the
+     joint's `ref`, so the limits still mean what they meant in USD.
+   - `<inertial>` from PhysicsMassAPI (NVIDIA puts it on the colliders; those are summed per body). Joint damping and
+     springs come from the joints' drives, else `--hinge-damping` / `--slide-damping`.
+   - Collider cubes, spheres, capsules and cylinders become MJCF primitives (ForgeCAD's handles are capsules and
+     cylinders, which a gripper can hold); collider meshes are written as their convex hull, which is what MuJoCo
+     collides with. NVIDIA's and LG's whole-part SDF colliders are concave, so a hull closes a cavity; `--decompose`
+     splits them with CoACD (`pip install coacd`; minutes per asset). Colliders keep their physics-material friction.
+   - Visual meshes, one per body and material, with UVs and normals, as OBJ for MuJoCo and as GLB beside it, which
+     URLab imports instead (its OBJ path goes through the FBX importer, which reads metres as centimetres and drops
+     small parts as degenerate). Materials and base-colour textures come from the `UsdPreviewSurface`.
+   - Keyframes `closed` (the authored pose) and `open` (each limited joint 90% of the way to its far limit), for
+     URLab's `ResetToKeyframe`.
+   - The model is named `sr_<nv|fc|lg>_<asset>`, and its default classes are namespaced, so it composes with the
+     robot (`MjSpec.attach`) and in URLab. `conversion.json` lists the bodies, joints (range, authored value) and
+     any warning.
+3. **Import into Unreal** (or drag the `.xml` onto the Content Browser):
+   ```python
+   import ramms_worldgen.simready as SR
+   SR.import_mjcf(r"D:/simready/mjcf")        # every <name>/<name>.xml in the folder, or one .xml
+   ```
+   URLab's `MujocoImportFactory` makes the Blueprint `/Game/SimReady/MuJoCo/<name>` and puts its meshes and textures
+   in `/Game/MuJoCoImports/<name>_Assets`; ramms-sim's `.gitignore` leaves out both. A Blueprint that already exists is
+   kept, because a replace-import of a URLab Blueprint asserts in the editor: delete it, restart the editor, and
+   import again to refresh it.
+
+Checked so far: the ForgeCAD `refrigerator` (two doors, freezer drawer, two crispers) and `microwave_oven` (door,
+turntable, release button) convert, load, swing within their limits and import through URLab with their textures.
+In MuJoCo the Gen3 + 2F-85 opens and closes both doors (the fridge's by its bar handle, the microwave's by pinching
+its free edge); in Unreal PIE, through `RammsMjEndEffectorController`, it opens and closes the fridge door and opens
+the microwave door, whose edge then slips out of the grip on the way back. NVIDIA's `refrigerator_f01` (15 joints)
+and LG's `cooking_mser1130b` (with `--decompose`) convert and load; their visual meshes are dense (265 MB of
+OBJ/GLB for the NVIDIA fridge).
 
 ## Streets and yards
 
