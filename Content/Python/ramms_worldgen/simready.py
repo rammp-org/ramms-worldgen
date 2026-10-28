@@ -48,6 +48,7 @@ FACING_FIX = {
     "ForgeCAD/simready-assets/range_oven": -90.0,
     "nvidia/simready-assets/facilityFurniture_lockerUnit_multiDoor_a01": 180.0, "nvidia/simready-assets/cabinet_file_b04": 180.0,
     "nvidia/simready-assets/cabinet_file_a01": 180.0, "nvidia/simready-assets/table_bedside_b01": 180.0,
+    "nvidia/simready-assets/computer_monitor_office_a01": 180.0,
 }
 # triangle count above which an imported mesh is made a Nanite mesh
 NANITE_TRIS = 50000
