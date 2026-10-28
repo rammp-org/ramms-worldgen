@@ -25,6 +25,7 @@
 #include "Metadata/PCGMetadataAttributeTraits.h"
 #include "RammsAccessibilityProfile.h"
 #include "RammsProcPiece.h"
+#include "RammsSegmentationLabels.h"
 #include "RammsWorldGenGraphLibrary.h"
 #include "RammsWorldGenModule.h"
 #include "RammsWorldPalette.h"
@@ -88,6 +89,12 @@ void ARammsWorldGenerator::BeginPlay()
 	if (bGenerateOnBeginPlay)
 	{
 		Regenerate();
+	}
+	else
+	{
+		// A world generated before segmentation labels existed carries none; label what was saved. Cheap (one
+		// pass over the site's actors) and a no-op for anything already labelled.
+		URammsSegmentationLabels::LabelGeneratorOutput(this);
 	}
 }
 
@@ -302,6 +309,7 @@ void ARammsWorldGenerator::HandleGenerated(UPCGComponent* Component)
 	CollectProcPieces();
 	Manifest.Bounds = SiteBounds ? SiteBounds->Bounds.GetBox() : FBox(ForceInit);
 	ApplyGlassVariation();
+	URammsSegmentationLabels::LabelGeneratorOutput(this);
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generated seed=%d features=%d routes=%d issues=%d"), *GetName(), Seed, Manifest.Features.Num(), Manifest.Routes.Num(), Manifest.CountIssues());
 	if (bPlacePlayersOnGenerate && !bPlayersTaken && GetWorld() && GetWorld()->IsGameWorld())
 	{

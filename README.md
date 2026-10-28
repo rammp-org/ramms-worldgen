@@ -58,6 +58,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
   - [From an AI assistant (MCP)](#from-an-ai-assistant-mcp)
   - [At runtime](#at-runtime)
 - [The manifest](#the-manifest)
+- [Segmentation labels](#segmentation-labels)
 - [Parameters](#parameters)
 - [Extending](#extending)
 - [UrbanVerse assets](#urbanverse-assets)
@@ -317,6 +318,37 @@ Kinds and the issues they can carry:
 
 `measure` / `threshold` are the number that decided it (slope as rise/run,
 widths and heights in cm) and what it was compared to.
+
+## Segmentation labels
+
+A generator tags what it made with a fine segmentation class, a `seg:<Class>`
+tag on each primitive (`URammsSegmentationLabels::LabelGeneratorOutput`). It
+does this after every generation and in `BeginPlay`, so worlds generated
+before the labels existed are labelled when played. CameraCapture's
+segmentation pass turns the tags into custom-depth stencil values and writes
+class masks; see its README, "Segmentation". This plugin only writes tags and
+does not depend on CameraCapture.
+
+| What | Fine class |
+|---|---|
+| Palette meshes, instanced or not | the slot: `Bench`, `StreetLight`, `Hazard.AFrame`, `Furniture.Chair`, `Store.Fridge` ... |
+| Facade modules | `Facade.<Part>` (the style is dropped): `Facade.GF`, `Facade.GFDoor`, `Facade.Win`, `Facade.Top` ... |
+| Composite entries (houses) | every part gets the entry's slot (`House`) |
+| Instanced boxes with a `Mat.*` override (roads, sidewalks, paths) | the surface: `Road`, `Sidewalk`, `Path`, `Lawn`, `Floor`, `Wall.Interior` ... |
+| Slabs, patches, walls | their surface (as above); a slab more than 2.5 m above the generator is a `Roof` |
+| Other procedural pieces | the kind: `Curb`, `CurbRamp`, `Stairs`, `Ramp`, `Door`, `Bollard`, `Tree`, `Mound` ... |
+| Hazard pieces (upheavals) | `Hazard.<Subtype>` |
+| Decals (cracks, puddles) | none: a decal takes the class of what it is projected on |
+
+A mesh that answers several slots (a chair used as furniture and as a cafe
+hazard) gets its non-hazard slot. Primitives that already carry a `seg:` tag,
+or whose actor does, are left alone, so a hand-placed label wins.
+
+The coarse classes these roll up to, and their stencil values, are project
+config: RAMMS lists them in `Config/DefaultGame.ini` under
+`[/Script/CameraCapture.CameraCaptureSegmentationSettings]`.
+`URammsSegmentationLabels::ClassesForPalette` lists every class a palette can
+produce, for keeping that list complete when slots are added.
 
 ## Parameters
 
