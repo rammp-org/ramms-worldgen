@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 # Built locally by ramms_worldgen.urbanverse.build() from the user's own UrbanVerse import (not committed)
 Content/Palettes/PAL_UrbanVerse.uasset
+# Built locally by ramms_worldgen.simready.build() from the user's own SimReady import (not committed)
+Content/Palettes/PAL_SimReady.uasset
