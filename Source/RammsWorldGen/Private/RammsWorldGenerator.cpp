@@ -2,6 +2,8 @@
 #include "RammsWorldGenerator.h"
 
 #include "Components/BoxComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
@@ -257,6 +259,7 @@ bool ARammsWorldGenerator::Regenerate()
 	}
 
 	EnsureBound();
+	ClearArticulated();
 	Manifest = FRammsWorldManifest();
 	Manifest.Seed = Seed;
 	Manifest.Preset = Preset ? Preset->GetFName() : NAME_None;
@@ -288,6 +291,7 @@ void ARammsWorldGenerator::Cleanup()
 	{
 		PCGComponent->CleanupLocal(/*bRemoveComponents=*/true);
 	}
+	ClearArticulated();
 	Manifest = FRammsWorldManifest();
 	ReleasePlayers(); // never leave a pawn frozen if a regeneration is abandoned
 }
@@ -309,6 +313,10 @@ void ARammsWorldGenerator::HandleGenerated(UPCGComponent* Component)
 	CollectProcPieces();
 	Manifest.Bounds = SiteBounds ? SiteBounds->Bounds.GetBox() : FBox(ForceInit);
 	ApplyGlassVariation();
+	if (bSpawnArticulated)
+	{
+		SpawnArticulated();
+	}
 	URammsSegmentationLabels::LabelGeneratorOutput(this);
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generated seed=%d features=%d routes=%d issues=%d"), *GetName(), Seed, Manifest.Features.Num(), Manifest.Routes.Num(), Manifest.CountIssues());
 	if (bPlacePlayersOnGenerate && !bPlayersTaken && GetWorld() && GetWorld()->IsGameWorld())
@@ -345,6 +353,152 @@ int32 ARammsWorldGenerator::ApplyGlassVariation()
 		UE_LOG(LogRammsWorldGen, Log, TEXT("%s: glass variation %.2f on %d instances"), *GetName(), V, N);
 	}
 	return N;
+}
+
+FName ARammsWorldGenerator::ArticulatedTag() const
+{
+	return FName(*FString::Printf(TEXT("RammsArticulated:%s"), *GetName()));
+}
+
+void ARammsWorldGenerator::ClearArticulated()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	// By tag rather than a remembered list, so actors saved with a generated level are found too.
+	const FName	   Tag = ArticulatedTag();
+	TArray<AActor*> Old;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (It->ActorHasTag(Tag))
+		{
+			Old.Add(*It);
+		}
+	}
+	for (AActor* A : Old)
+	{
+		A->Destroy();
+	}
+}
+
+TArray<AActor*> ARammsWorldGenerator::GetArticulatedActors() const
+{
+	TArray<AActor*> Out;
+	if (UWorld* World = GetWorld())
+	{
+		const FName Tag = ArticulatedTag();
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (It->ActorHasTag(Tag))
+			{
+				Out.Add(*It);
+			}
+		}
+	}
+	return Out;
+}
+
+// Palette meshes with an articulated stand-in (a SimReady fridge imported from its MJCF as a URLab
+// articulation) are generated as instances like any other prop, so every placement rule applies to them; here
+// each such instance is replaced by the actor, at the instance's transform. PCG puts its instances on this actor
+// or on partition actors inside the site, as for the glass.
+int32 ARammsWorldGenerator::SpawnArticulated()
+{
+	UWorld*				World = GetWorld();
+	URammsWorldPalette* Palette = Params.Palette.LoadSynchronous();
+	if (!World || !Palette)
+	{
+		return 0;
+	}
+	struct FStandIn
+	{
+		UClass*	   Class = nullptr;
+		FTransform InMesh;
+		FName	   Slot;
+	};
+	TMap<const UStaticMesh*, FStandIn> StandIns;
+	for (const TPair<FName, FRammsPaletteSlot>& Pair : Palette->Slots)
+	{
+		for (const FRammsPaletteMesh& M : Pair.Value.Meshes)
+		{
+			if (M.ArticulatedClass.IsNull() || M.Mesh.IsNull())
+			{
+				continue;
+			}
+			UClass*		 Class = M.ArticulatedClass.LoadSynchronous();
+			UStaticMesh* Mesh = M.Mesh.LoadSynchronous();
+			if (Class && Mesh)
+			{
+				StandIns.Add(Mesh, { Class, M.ArticulatedTransform, Pair.Key });
+			}
+		}
+	}
+	if (StandIns.Num() == 0)
+	{
+		return 0;
+	}
+
+	TArray<AActor*> Owners = { this };
+	if (SiteBounds)
+	{
+		const FBox Site = SiteBounds->Bounds.GetBox().ExpandBy(500.0);
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			if (*It != this && It->GetClass()->GetName().Contains(TEXT("PCGPartitionActor")) && Site.IsInside(It->GetActorLocation()))
+			{
+				Owners.Add(*It);
+			}
+		}
+	}
+	const FName Tag = ArticulatedTag();
+	int32		Spawned = 0;
+	for (AActor* InstanceOwner : Owners)
+	{
+		TArray<UInstancedStaticMeshComponent*> Components;
+		InstanceOwner->GetComponents<UInstancedStaticMeshComponent>(Components);
+		for (UInstancedStaticMeshComponent* ISM : Components)
+		{
+			const FStandIn* StandIn = ISM ? StandIns.Find(ISM->GetStaticMesh()) : nullptr;
+			if (!StandIn || ISM->GetInstanceCount() == 0)
+			{
+				continue;
+			}
+			TArray<int32> Replaced;
+			for (int32 i = 0; i < ISM->GetInstanceCount(); ++i)
+			{
+				FTransform Instance;
+				ISM->GetInstanceTransform(i, Instance, /*bWorldSpace=*/true);
+				if (!Instance.GetScale3D().Equals(FVector::OneVector, 0.02))
+				{
+					continue; // an articulation does not scale: keep the mesh
+				}
+				Instance.SetScale3D(FVector::OneVector);
+				FActorSpawnParameters SP;
+				SP.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				AActor* Actor = World->SpawnActor<AActor>(StandIn->Class, StandIn->InMesh * Instance, SP);
+				if (!Actor)
+				{
+					continue;
+				}
+				Actor->Tags.Add(Tag);
+				Actor->Tags.Add(FName(*FString::Printf(TEXT("RammsGen:%s"), *GetName())));
+				Actor->Tags.Add(FName(*FString::Printf(TEXT("RammsSlot:%s"), *StandIn->Slot.ToString())));
+				Replaced.Add(i);
+				++Spawned;
+			}
+			if (Replaced.Num() > 0)
+			{
+				ISM->RemoveInstances(Replaced);
+			}
+		}
+	}
+	if (Spawned > 0)
+	{
+		UE_LOG(LogRammsWorldGen, Log, TEXT("%s: %d articulated asset(s) in place of their meshes"), *GetName(), Spawned);
+	}
+	return Spawned;
 }
 
 // The manifest node emits one attribute set whose "Json" attribute is a serialized

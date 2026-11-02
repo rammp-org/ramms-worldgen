@@ -124,6 +124,10 @@ namespace
 								MeshSlot.FindOrAdd(PackageOf(Part.Mesh.ToString()), Name);
 							}
 						}
+						if (!M.ArticulatedClass.IsNull())
+						{
+							ActorSlot.FindOrAdd(PackageOf(M.ArticulatedClass.ToString()), Name);
+						}
 					}
 					if (!Slot.ActorClass.IsNull())
 					{

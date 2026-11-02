@@ -34,6 +34,9 @@ Mapping:
 - Drives with damping become joint damping (PhysX angular drives are per degree),
   drives with stiffness a spring (stiffness, springref); joints without a drive
   get --hinge-damping / --slide-damping.
+- A joint's two bodies (each with the bodies welded to it) never collide, as in
+  USD: a <contact><exclude> per pair, since MuJoCo's parent filter does not
+  apply to a parent welded to the world (the root, unless --free).
 - PhysicsMassAPI mass, centre of mass, diagonal inertia and principal axes
   become <inertial>; mass on the colliders (NVIDIA) is summed per body.
 - Collider Cube/Sphere/Capsule/Cylinder become MJCF primitives; collider meshes
@@ -776,6 +779,7 @@ class Converter:
             b = self.body_of(c) or self.root
             cols.setdefault(b.GetPath(), []).append(c)
         geom_names = set()
+        jointed = set()
         report = {"source": self.path, "variants": self.variants, "bodies": [], "joints": []}
 
         def body_xml(b, depth):
@@ -800,6 +804,7 @@ class Converter:
                 if jl:
                     lines.append(ind + "  " + jl[0])
                     report["joints"].append(jl[1])
+                    jointed.add(P)
             m, com, I, Rp = self.body_mass(b)
             if m:
                 if I is None:
@@ -855,6 +860,8 @@ class Converter:
             return lines
 
         body_lines = body_xml(self.root, 2)
+        excludes = self.excludes(jointed, bname)
+        report["excludes"] = excludes
         # Keyframes: "closed" is the authored pose; "open" puts each limited joint at
         # 90% of the way to the limit farther from it (URLab's ResetToKeyframe).
         closed, opened = [], []
@@ -901,7 +908,9 @@ class Converter:
                '  </default>',
                '  <asset>'] + ["    " + a for a in self.assets] + [
                '  </asset>',
-               '  <worldbody>'] + body_lines + ['  </worldbody>'] + keys + ['</mujoco>']
+               '  <worldbody>'] + body_lines + ['  </worldbody>'] + (
+                   ['  <contact>'] + ['    <exclude body1="%s" body2="%s"/>' % e for e in excludes] + ['  </contact>']
+                   if excludes else []) + keys + ['</mujoco>']
         path = os.path.join(self.out, self.name + ".xml")
         with open(path, "w") as f:
             f.write("\n".join(xml) + "\n")
@@ -912,6 +921,32 @@ class Converter:
         for w in self.warn:
             print("warning:", w)
         return path, report
+
+    def excludes(self, jointed, bname):
+        """[(parent body, child body)] pairs that must not collide: each joint's two bodies, each
+        taken with the bodies welded to it (nested without a joint).
+
+        A USD joint keeps its two bodies from colliding (physics:collisionEnabled defaults to off),
+        and so does MuJoCo's parent filter -- but not when the parent is welded to the world, as
+        the root is unless --free: a lid hinged to a fixed bin, or a door to a fixed cabinet, then
+        rests in contact with it and cannot move. Chaos (URammsChaosArticulationComponent) never
+        collides a joint's two bodies, so the explicit pairs also keep the engines alike.
+        """
+        def group(P):
+            while P not in jointed and self.parent[P] is not None:
+                P = self.parent[P][0].GetPath()
+            out, todo = [], [P]
+            while todo:
+                Q = todo.pop()
+                out.append(Q)
+                todo += [c.GetPath() for c in self.children.get(Q, []) if c.GetPath() not in jointed]
+            return out
+        pairs = []
+        for C in sorted(jointed, key=str):
+            for a in group(self.parent[C][0].GetPath()):
+                for b in group(C):
+                    pairs.append((bname[a], bname[b]))
+        return pairs
 
     def joint_xml(self, jprim, parent, child, rev, frames):
         """Joint living in `child`. rev: the USD joint's body0 is the child."""
