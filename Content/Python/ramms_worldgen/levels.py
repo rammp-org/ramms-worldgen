@@ -154,7 +154,8 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     else:
         H.warn("game mode %s not found; the level keeps the project default" % GAME_MODE)
 
-    unreal.EditorLoadingAndSavingUtils.save_current_level()
+    if not unreal.EditorLoadingAndSavingUtils.save_current_level():
+        H.warn("level %s: the first save failed; generating anyway" % path)
     gen.regenerate()
     if watch:
         _pending[path] = True
@@ -195,8 +196,13 @@ def _watch(path):
             if gen.is_generating() and state["ticks"] < 3000:
                 return
             finished = True
+            if gen.is_generating():
+                H.warn("level %s: still generating after %d ticks; not saved" % (path, state["ticks"]))
+                return
             finish_level(gen)
-            unreal.EditorLoadingAndSavingUtils.save_current_level()
+            if not unreal.EditorLoadingAndSavingUtils.save_current_level():
+                H.warn("level %s: generated, but saving it failed" % path)
+                return
             m = H.manifest_to_dict(gen)
             H.log("level %s generated: %d features, %d routes, saved." % (path, len(m.get("features", [])), len(m.get("routes", []))))
         except Exception as exc:  # the editor must keep ticking whatever happens here
