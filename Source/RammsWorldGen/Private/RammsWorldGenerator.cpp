@@ -19,6 +19,8 @@
 #include "PhysicsEngine/BodyInstance.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PCGComponent.h"
+#include "PCGManagedResource.h"
+#include "Grid/PCGPartitionActor.h"
 #include "PCGData.h"
 #include "PCGGraph.h"
 #include "PCGParamData.h"
@@ -315,7 +317,7 @@ void ARammsWorldGenerator::HandleGenerated(UPCGComponent* Component)
 	ApplyGlassVariation();
 	if (bSpawnArticulated)
 	{
-		SpawnArticulated();
+		ReplaceWithArticulated(); // labelled with the rest below
 	}
 	URammsSegmentationLabels::LabelGeneratorOutput(this);
 	UE_LOG(LogRammsWorldGen, Log, TEXT("%s: generated seed=%d features=%d routes=%d issues=%d"), *GetName(), Seed, Manifest.Features.Num(), Manifest.Routes.Num(), Manifest.CountIssues());
@@ -355,9 +357,53 @@ int32 ARammsWorldGenerator::ApplyGlassVariation()
 	return N;
 }
 
+void ARammsWorldGenerator::PostInitProperties()
+{
+	Super::PostInitProperties();
+	// A new generator; a loaded one gets its saved id after this (PostLoad covers one saved without).
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject | RF_NeedLoad) && !GeneratorId.IsValid())
+	{
+		GeneratorId = FGuid::NewGuid();
+	}
+}
+
+void ARammsWorldGenerator::PostLoad()
+{
+	Super::PostLoad();
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) && !GeneratorId.IsValid())
+	{
+		GeneratorId = FGuid::NewGuid();
+	}
+}
+
+void ARammsWorldGenerator::PostDuplicate(bool bDuplicateForPIE)
+{
+	Super::PostDuplicate(bDuplicateForPIE);
+	if (!bDuplicateForPIE)
+	{
+		GeneratorId = FGuid::NewGuid(); // a duplicate's articulations are its own
+	}
+}
+
+#if WITH_EDITOR
+void ARammsWorldGenerator::PostEditImport()
+{
+	Super::PostEditImport();
+	GeneratorId = FGuid::NewGuid(); // pasted: not the original's articulations
+}
+#endif
+
 FName ARammsWorldGenerator::ArticulatedTag() const
 {
-	return FName(*FString::Printf(TEXT("RammsArticulated:%s"), *GetName()));
+	return FName(*FString::Printf(TEXT("RammsArticulated:%s"), *GeneratorId.ToString(EGuidFormats::Digits)));
+}
+
+bool ARammsWorldGenerator::IsArticulatedOfThis(const AActor* Actor) const
+{
+	// The id is unique across levels; the level check also keeps a pre-id tag (the generator's name, which
+	// two loaded levels can share) to this generator's level.
+	return Actor && Actor->GetLevel() == GetLevel()
+		&& (Actor->ActorHasTag(ArticulatedTag()) || Actor->ActorHasTag(FName(*FString::Printf(TEXT("RammsArticulated:%s"), *GetName()))));
 }
 
 void ARammsWorldGenerator::ClearArticulated()
@@ -368,11 +414,10 @@ void ARammsWorldGenerator::ClearArticulated()
 		return;
 	}
 	// By tag rather than a remembered list, so actors saved with a generated level are found too.
-	const FName	   Tag = ArticulatedTag();
 	TArray<AActor*> Old;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
-		if (It->ActorHasTag(Tag))
+		if (IsArticulatedOfThis(*It))
 		{
 			Old.Add(*It);
 		}
@@ -388,10 +433,9 @@ TArray<AActor*> ARammsWorldGenerator::GetArticulatedActors() const
 	TArray<AActor*> Out;
 	if (UWorld* World = GetWorld())
 	{
-		const FName Tag = ArticulatedTag();
 		for (TActorIterator<AActor> It(World); It; ++It)
 		{
-			if (It->ActorHasTag(Tag))
+			if (IsArticulatedOfThis(*It))
 			{
 				Out.Add(*It);
 			}
@@ -400,11 +444,22 @@ TArray<AActor*> ARammsWorldGenerator::GetArticulatedActors() const
 	return Out;
 }
 
+int32 ARammsWorldGenerator::SpawnArticulated()
+{
+	const int32 Spawned = ReplaceWithArticulated();
+	if (Spawned > 0)
+	{
+		URammsSegmentationLabels::LabelGeneratorOutput(this); // the new actors take their slot's label
+	}
+	return Spawned;
+}
+
 // Palette meshes with an articulated stand-in (a SimReady fridge imported from its MJCF as a URLab
 // articulation) are generated as instances like any other prop, so every placement rule applies to them; here
-// each such instance is replaced by the actor, at the instance's transform. PCG puts its instances on this actor
-// or on partition actors inside the site, as for the glass.
-int32 ARammsWorldGenerator::SpawnArticulated()
+// each such instance is replaced by the actor, at the instance's transform. Only the instanced meshes this
+// generator's PCG component manages are touched: its own and those of its local components on partition
+// actors (a partition actor can hold several generators' output).
+int32 ARammsWorldGenerator::ReplaceWithArticulated()
 {
 	UWorld*				World = GetWorld();
 	URammsWorldPalette* Palette = Params.Palette.LoadSynchronous();
@@ -440,27 +495,38 @@ int32 ARammsWorldGenerator::SpawnArticulated()
 		return 0;
 	}
 
-	TArray<AActor*> Owners = { this };
-	if (SiteBounds)
+	if (!PCGComponent)
 	{
-		const FBox Site = SiteBounds->Bounds.GetBox().ExpandBy(500.0);
-		for (TActorIterator<AActor> It(World); It; ++It)
+		return 0;
+	}
+	TArray<UPCGComponent*> Generators = { PCGComponent };
+	for (TActorIterator<APCGPartitionActor> It(World); It; ++It)
+	{
+		if (UPCGComponent* Local = It->GetLocalComponent(PCGComponent))
 		{
-			if (*It != this && It->GetClass()->GetName().Contains(TEXT("PCGPartitionActor")) && Site.IsInside(It->GetActorLocation()))
-			{
-				Owners.Add(*It);
-			}
+			Generators.Add(Local);
 		}
+	}
+	TArray<TPair<UPCGManagedISMComponent*, UInstancedStaticMeshComponent*>> Managed;
+	for (UPCGComponent* Gen : Generators)
+	{
+		Gen->ForEachManagedResource([&Managed](UPCGManagedResource* Resource) {
+			if (UPCGManagedISMComponent* MISM = Cast<UPCGManagedISMComponent>(Resource))
+			{
+				if (UInstancedStaticMeshComponent* ISM = MISM->GetComponent())
+				{
+					Managed.Emplace(MISM, ISM);
+				}
+			}
+		});
 	}
 	const FName Tag = ArticulatedTag();
 	int32		Spawned = 0;
-	for (AActor* InstanceOwner : Owners)
+	for (const TPair<UPCGManagedISMComponent*, UInstancedStaticMeshComponent*>& Pair : Managed)
 	{
-		TArray<UInstancedStaticMeshComponent*> Components;
-		InstanceOwner->GetComponents<UInstancedStaticMeshComponent>(Components);
-		for (UInstancedStaticMeshComponent* ISM : Components)
 		{
-			const FStandIn* StandIn = ISM ? StandIns.Find(ISM->GetStaticMesh()) : nullptr;
+			UInstancedStaticMeshComponent* ISM = Pair.Value;
+			const FStandIn*				   StandIn = StandIns.Find(ISM->GetStaticMesh());
 			if (!StandIn || ISM->GetInstanceCount() == 0)
 			{
 				continue;
@@ -477,6 +543,7 @@ int32 ARammsWorldGenerator::SpawnArticulated()
 				Instance.SetScale3D(FVector::OneVector);
 				FActorSpawnParameters SP;
 				SP.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+				SP.OverrideLevel = GetLevel(); // saved and unloaded with the generator's level
 				AActor* Actor = World->SpawnActor<AActor>(StandIn->Class, StandIn->InMesh * Instance, SP);
 				if (!Actor)
 				{
@@ -491,6 +558,11 @@ int32 ARammsWorldGenerator::SpawnArticulated()
 			if (Replaced.Num() > 0)
 			{
 				ISM->RemoveInstances(Replaced);
+				// The resource no longer holds what its CRCs say, so a regeneration with the same inputs must
+				// rebuild it rather than reuse it as is (Regenerate clears the actors that replaced them).
+				Pair.Key->SetCrc(FPCGCrc());
+				Pair.Key->SetSettingsCrc(FPCGCrc());
+				Pair.Key->SetDataCrc(FPCGCrc());
 			}
 		}
 	}

@@ -642,9 +642,12 @@ A palette entry can name an articulated stand-in for its mesh: `FRammsPaletteMes
 `AMjArticulation` Blueprint, such as one `SR.import_mjcf` made) and `ArticulatedTransform` (the articulation's
 transform in the mesh's frame). After generation the generator replaces every unit-scale instance of such a mesh
 with a spawned articulation at `ArticulatedTransform * instance` (`bSpawnArticulated`, default on;
-`SpawnArticulated()` redoes it and `GetArticulatedActors()` lists them). The actors are tagged `RammsArticulated:<generator>`,
-`RammsGen` and `RammsSlot:<slot>`, are saved with the level, are cleared on `Regenerate` / `Cleanup`, and keep
-their slot's segmentation label. Instances that are scaled stay rigid meshes.
+`SpawnArticulated()` redoes it and `GetArticulatedActors()` lists them). Only the instanced meshes the generator's
+own PCG component manages are replaced (a partition actor can hold several generators' output). The actors are
+spawned into the generator's level, tagged `RammsArticulated:<GeneratorId>` (a GUID per generator, so two loaded
+levels' generators never share one), `RammsGen:<generator>` and `RammsSlot:<slot>`, are saved with the level, are
+cleared on `Regenerate` / `Cleanup`, and keep their slot's segmentation label. Instances that are scaled stay rigid
+meshes.
 
 ```python
 import ramms_worldgen.simready as SR
