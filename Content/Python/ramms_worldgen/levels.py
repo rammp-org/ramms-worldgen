@@ -1,5 +1,5 @@
 """Assemble the example levels: lights, a ground slab, a generator with a
-preset and seed, the Mebot game mode, and a PlayerStart on the first route.
+preset and seed, the RAMMP Gen1 game mode, and a PlayerStart on the first route.
 
 Generation is asynchronous, so the level is saved from a tick callback once
 the generator reports it is done.
@@ -10,7 +10,7 @@ import unreal
 from . import _helpers as H
 from . import presets as PR
 
-GAME_MODE = "/Game/BP_MebotGameMode.BP_MebotGameMode_C"
+GAME_MODE = "/Game/BP_RammpGen1GameMode.BP_RammpGen1GameMode_C"
 
 EXAMPLES = {
     "downtown": ("Map_Gen_Downtown", "PRE_Downtown", 7),

@@ -276,7 +276,7 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double DoorClearWidth = 81.3;
 	/** Scales the gentle mounds laid in yards (0 = flat lawns). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain") double TerrainVariation = 1.0;
-	/** Narrowest door the generator makes, even a deliberately non-compliant one: the MeBot is ~72 cm wide, so 80 cm still lets it through. */
+	/** Narrowest door the generator makes, even a deliberately non-compliant one: the RAMMP Gen1 is ~72 cm wide, so 80 cm still lets it through. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double MinPassableDoorWidth = 80.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double DoorThresholdMax = 1.27;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double VerticalChangeMax = 0.64;
