@@ -45,7 +45,7 @@ FACING_FIX = {
     "LGElectronics/simready-assets/refrigerator_lrfs28xbs": 180.0, "LGElectronics/simready-assets/refrigerator_lf31s6360s": 180.0,
     "LGElectronics/simready-assets/refrigerator_lf24z6330s": 180.0, "nvidia/simready-assets/appliance_refrigerator_a01": 180.0,
     "ForgeCAD/simready-assets/front_load_washer": 180.0, "ForgeCAD/simready-assets/chest_of_drawers": 180.0,
-    "ForgeCAD/simready-assets/range_oven": -90.0,
+    "ForgeCAD/simready-assets/range_oven": -90.0, "ForgeCAD/simready-assets/kitchen_base_cabinet": -90.0,
     "nvidia/simready-assets/facilityFurniture_lockerUnit_multiDoor_a01": 180.0, "nvidia/simready-assets/cabinet_file_b04": 180.0,
     "nvidia/simready-assets/cabinet_file_a01": 180.0, "nvidia/simready-assets/table_bedside_b01": 180.0,
     "nvidia/simready-assets/computer_monitor_office_a01": 180.0,
@@ -243,9 +243,11 @@ def source_id(item):
     return "simready:%s@%s|%s" % (item.get("uid", ""), str(item.get("revision", ""))[:12], item.get("category", ""))
 
 
-def build(cache_dir, mode="replace", slots=None, path=PALETTE, base=None, facing="geometry"):
+def build(cache_dir, mode="replace", slots=None, path=PALETTE, base=None, facing="geometry", articulated=True):
     """Import the selection and build the SimReady palette from `base` (PAL_Default by default). mode: "replace"
-    (SimReady only in the slots it fills) or "mix" (added to the base palette's variants). Returns (palette, report)."""
+    (SimReady only in the slots it fills) or "mix" (added to the base palette's variants). articulated: give each
+    entry whose asset has been imported as a URLab articulation (import_mjcf) that articulation as its stand-in,
+    which the generator places instead of the mesh (see articulate). Returns (palette, report)."""
     P._COLLISION_DONE.clear()
     imported = import_selection(cache_dir, slots)
     for pairs in imported.values():
@@ -271,6 +273,8 @@ def build(cache_dir, mode="replace", slots=None, path=PALETTE, base=None, facing
         for mesh, it in pairs:
             e = P._mesh_entry(mesh, slot, yaw=_yaw(mesh, it, slot, facing), normalise=False)
             e.set_editor_property("source_id", source_id(it))
+            if articulated:
+                _set_articulated(e, mesh, it.get("uid", ""))
             entries.append(e)
         s = slots_map.get(unreal.Name(slot)) if slots_map else None
         if s is None:
@@ -288,6 +292,99 @@ def build(cache_dir, mode="replace", slots=None, path=PALETTE, base=None, facing
 # --------------------------------------------------------------- articulated assets (MuJoCo)
 
 MJ_DEST = DEST + "/MuJoCo"
+
+
+def articulated_name(uid):
+    """The MJCF / Blueprint name Tools/simready_mjcf.py gives a package: sr_<nv|fc|lg>_<asset>."""
+    parts = uid.split("/")
+    if len(parts) < 3:
+        return None
+    tag = _DATASET_TAG.get(parts[0])
+    return ("sr_%s_%s" % (tag.lower(), parts[-1])) if tag else None
+
+
+def _visible_bounds(actor):
+    lo = [1e18] * 3
+    hi = [-1e18] * 3
+    n = 0
+    for c in actor.get_components_by_class(unreal.StaticMeshComponent):
+        if not c.is_visible() or c.get_editor_property("static_mesh") is None:
+            continue
+        o, e, _r = unreal.SystemLibrary.get_component_bounds(c)
+        lo = [min(lo[0], o.x - e.x), min(lo[1], o.y - e.y), min(lo[2], o.z - e.z)]
+        hi = [max(hi[0], o.x + e.x), max(hi[1], o.y + e.y), max(hi[2], o.z + e.z)]
+        n += 1
+    return (lo, hi) if n else None
+
+
+def articulated_transform(mesh, cls):
+    """The articulation's transform in the merged mesh's frame. The two come from the same USD and keep its axes,
+    but the flattener puts the mesh's origin at its bottom centre and the MJCF keeps the package's: compare the
+    two at the same spot and take the offset between the bounds' bottom centres."""
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    at = unreal.Vector(0.0, 0.0, 60000.0)
+    sm = eas.spawn_actor_from_class(unreal.StaticMeshActor, at, unreal.Rotator())
+    art = eas.spawn_actor_from_class(cls, at, unreal.Rotator())
+    try:
+        sm.static_mesh_component.set_static_mesh(mesh)
+        a, b = _visible_bounds(sm), _visible_bounds(art)
+        if not a or not b:
+            return None
+        mesh_bc = [(a[0][0] + a[1][0]) / 2, (a[0][1] + a[1][1]) / 2, a[0][2]]
+        art_bc = [(b[0][0] + b[1][0]) / 2, (b[0][1] + b[1][1]) / 2, b[0][2]]
+        size_a = [a[1][i] - a[0][i] for i in range(3)]
+        size_b = [b[1][i] - b[0][i] for i in range(3)]
+        if any(abs(size_a[i] - size_b[i]) > max(5.0, 0.1 * size_a[i]) for i in range(3)):
+            H.warn("articulated stand-in %s does not match %s's size (%s vs %s); not used" % (cls.get_name(), mesh.get_name(),
+                   [round(x) for x in size_b], [round(x) for x in size_a]))
+            return None
+        off = unreal.Vector(mesh_bc[0] - art_bc[0], mesh_bc[1] - art_bc[1], mesh_bc[2] - art_bc[2])
+        return unreal.Transform(off, unreal.Rotator(), unreal.Vector(1.0, 1.0, 1.0))
+    finally:
+        eas.destroy_actor(sm)
+        eas.destroy_actor(art)
+
+
+def _set_articulated(entry, mesh, uid, dest=MJ_DEST):
+    name = articulated_name(uid)
+    path = "%s/%s" % (dest, name) if name else None
+    if not path or not unreal.EditorAssetLibrary.does_asset_exist(path):
+        return False
+    cls = unreal.EditorAssetLibrary.load_blueprint_class(path)
+    xf = articulated_transform(mesh, cls) if cls else None
+    if xf is None:
+        return False
+    entry.set_editor_property("articulated_class", cls)
+    entry.set_editor_property("articulated_transform", xf)
+    return True
+
+
+def articulate(path=PALETTE, dest=MJ_DEST):
+    """Give the SimReady palette's entries their articulated stand-ins in place (after import_mjcf), without
+    importing anything again. Returns {slot: [Blueprint names]}."""
+    pal = unreal.load_asset(path)
+    if pal is None:
+        raise RuntimeError("simready: palette %s did not load" % path)
+    report = {}
+    for slot, s in list(pal.get_editor_property("slots").items()):
+        meshes = list(s.get_editor_property("meshes"))
+        changed = False
+        for e in meshes:
+            sid = str(e.get_editor_property("source_id"))
+            mesh = e.get_editor_property("mesh")
+            if not sid.startswith("simready:") or mesh is None:
+                continue
+            uid = sid[len("simready:"):].split("@")[0]
+            mesh = mesh.load_synchronous() if hasattr(mesh, "load_synchronous") else mesh
+            if _set_articulated(e, mesh, uid, dest):
+                report.setdefault(str(slot), []).append(articulated_name(uid))
+                changed = True
+        if changed:
+            s.set_editor_property("meshes", meshes)
+            pal.set_slot(slot, s)
+    H.save(pal)
+    H.log("simready articulated stand-ins in %s: %s" % (path, report))
+    return report
 
 
 def import_mjcf(xml_paths, dest=MJ_DEST):

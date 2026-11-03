@@ -95,6 +95,16 @@ struct RAMMSWORLDGEN_API FRammsPaletteMesh
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	TArray<FRammsPalettePart> Parts;
 
+	/** An articulated stand-in for Mesh (a URLab articulation imported from the asset's MJCF, e.g. a SimReady
+	 *  fridge): after generation each placed instance of Mesh is replaced by this actor, whose doors and drawers
+	 *  then move on MuJoCo or Chaos (ramms-mujoco-support's ARammsPhysicsSettings picks which). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TSoftClassPtr<AActor> ArticulatedClass;
+
+	/** The articulated actor's transform in Mesh's frame (the two are imported with different pivots). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	FTransform ArticulatedTransform;
+
 	bool IsComposite() const { return Parts.Num() > 0; }
 };
 

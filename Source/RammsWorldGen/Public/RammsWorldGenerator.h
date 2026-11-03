@@ -56,6 +56,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator|Play")
 	bool bPlacePlayersOnGenerate = true;
 
+	/** Replace the placed instances of palette meshes that have an ArticulatedClass with that actor after
+	 *  each generation (FRammsPaletteMesh::ArticulatedClass). Off: every asset stays a static mesh. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator")
+	bool bSpawnArticulated = true;
+
+	/** This generator's identity across levels and saves (its articulated actors carry it in a tag). A copy
+	 *  or a duplicate gets a new one; a PIE copy keeps it. */
+	UPROPERTY(VisibleAnywhere, AdvancedDisplay, Category = "World Generator")
+	FGuid GeneratorId;
+
 	/** Height added to the suggested start for placed pawns (cm). The start is already 8 cm above the route. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Generator|Play", meta = (EditCondition = "bPlacePlayersOnGenerate"))
 	double PlayerPlacementLift = 2.0;
@@ -142,10 +152,25 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "World Generator")
 	int32 ApplyGlassVariation();
 
+	/** Swap the generated instances of articulated palette meshes for their actors (done after every
+	 *  generation when bSpawnArticulated). Returns the number of actors spawned. */
+	UFUNCTION(BlueprintCallable, Category = "World Generator")
+	int32 SpawnArticulated();
+
+	/** The articulated actors the last generation spawned. */
+	UFUNCTION(BlueprintPure, Category = "World Generator")
+	TArray<AActor*> GetArticulatedActors() const;
+
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void PostInitializeComponents() override;
+	virtual void PostInitProperties() override;
+	virtual void PostLoad() override;
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+#if WITH_EDITOR
+	virtual void PostEditImport() override;
+#endif
 
 private:
 	void EnsureBound();
@@ -155,6 +180,10 @@ private:
 	void CollectProcPieces();
 	void HoldPlayers();
 	void ReleasePlayers();
+	void ClearArticulated();
+	FName ArticulatedTag() const;
+	bool IsArticulatedOfThis(const AActor* Actor) const;
+	int32 ReplaceWithArticulated();
 	bool bBoundDelegate = false;
 
 	/** A simulated body of a held pawn and its transform relative to the pawn, for re-placing it. Skeletal

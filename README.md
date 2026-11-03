@@ -64,6 +64,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 - [UrbanVerse assets](#urbanverse-assets)
 - [SimReady assets](#simready-assets)
   - [Articulated SimReady assets in MuJoCo](#articulated-simready-assets-in-mujoco)
+  - [Articulated SimReady assets in generated levels](#articulated-simready-assets-in-generated-levels)
 - [Design notes and limits](#design-notes-and-limits)
 - [First-compile checklist](#first-compile-checklist)
 
@@ -564,8 +565,8 @@ PalatialSim's numbered scans are left out. It takes two steps:
      `simready:<namespace>/<dataset>/<asset>@<commit>|<category>`, which the manifest carries as the
      feature's `source`.
    - Articulated assets (bins with lids, fridges, office chairs) come in as one rigid mesh in their authored
-     pose; one LG refrigerator is authored with a door ajar. To open their doors and drawers, use them through
-     MuJoCo (below).
+     pose; one LG refrigerator is authored with a door ajar. To open their doors and drawers, convert them to
+     articulations (below); a generated level then places the articulation in the mesh's stead.
 
 Use it like `PAL_UrbanVerse`: a preset's or generator's `Palette`, `SetPalette`, or
 `ramms-worldgen generate --palette PAL_SimReady`. Packaged builds cook `/Game/SimReady` through ramms-sim's
@@ -603,6 +604,10 @@ as an `AMjArticulation`, where the Gen3 + 2F-85 can open it (see ramms-sim's `mu
    - Visual meshes, one per body and material, with UVs and normals, as OBJ for MuJoCo and as GLB beside it, which
      URLab imports instead (its OBJ path goes through the FBX importer, which reads metres as centimetres and drops
      small parts as degenerate). Materials and base-colour textures come from the `UsdPreviewSurface`.
+   - A joint's two bodies, each with the bodies welded to it, never collide (`<contact><exclude>`), as in USD.
+     MuJoCo's own parent filter does not apply to a parent welded to the world, which the root is unless `--free`:
+     without the pairs a bin's lid or a washer's door rests in contact with its base and cannot move. Chaos never
+     collides a joint's two bodies, so the pairs also keep the two engines alike.
    - Keyframes `closed` (the authored pose) and `open` (each limited joint 90% of the way to its far limit), for
      URLab's `ResetToKeyframe`.
    - The model is named `sr_<nv|fc|lg>_<asset>`, and its default classes are namespaced, so it composes with the
@@ -619,13 +624,48 @@ as an `AMjArticulation`, where the Gen3 + 2F-85 can open it (see ramms-sim's `mu
    import again to refresh it.
 
 Checked so far: the ForgeCAD `refrigerator` (two doors, freezer drawer, two crispers) and `microwave_oven` (door,
-turntable, release button) convert, load, swing within their limits and import through URLab with their textures.
+turntable, release button) convert, load, swing within their limits and import through URLab with their textures,
+and so do `chest_of_drawers`, `front_load_washer`, `kitchen_base_cabinet`, `kitchen_wall_cabinet`,
+`pedal_trash_can`, `range_oven`, `vanity_sink_faucet` and `wheelie_bin`. Each one's doors, drawers and lids open
+and close under the same controller on MuJoCo and on Chaos (ramms-sim's
+`Scripts/pie_tests/chaos_articulation/simready_open.py`).
 The Gen3 + 2F-85 opens and closes the fridge's left door (by its bar handle), its freezer drawer (by its
 handle) and the microwave door (its free edge straddled by the half-closed fingers), in MuJoCo and in Unreal PIE
 through `RammsMjEndEffectorController` (ramms-sim's `mujoco/articulation_test.py` and
 `Scripts/pie_tests/simready_door/`). NVIDIA's `refrigerator_f01` (15 joints)
 and LG's `cooking_mser1130b` (with `--decompose`) convert and load; their visual meshes are dense (265 MB of
 OBJ/GLB for the NVIDIA fridge).
+
+### Articulated SimReady assets in generated levels
+
+A palette entry can name an articulated stand-in for its mesh: `FRammsPaletteMesh::ArticulatedClass` (an
+`AMjArticulation` Blueprint, such as one `SR.import_mjcf` made) and `ArticulatedTransform` (the articulation's
+transform in the mesh's frame). After generation the generator replaces every unit-scale instance of such a mesh
+with a spawned articulation at `ArticulatedTransform * instance` (`bSpawnArticulated`, default on;
+`SpawnArticulated()` redoes it and `GetArticulatedActors()` lists them). Only the instanced meshes the generator's
+own PCG component manages are replaced (a partition actor can hold several generators' output). The actors are
+spawned into the generator's level, tagged `RammsArticulated:<GeneratorId>` (a GUID per generator, so two loaded
+levels' generators never share one), `RammsGen:<generator>` and `RammsSlot:<slot>`, are saved with the level, are
+cleared on `Regenerate` / `Cleanup`, and keep their slot's segmentation label. Instances that are scaled stay rigid
+meshes.
+
+```python
+import ramms_worldgen.simready as SR
+SR.import_mjcf(r"D:/simready/mjcf")   # the articulations (above)
+SR.articulate()                        # PAL_SimReady entries whose package has one get it as their stand-in
+```
+
+`SR.build(..., articulated=True)` (the default) does the same while it builds the palette. `articulate` pairs a mesh
+with `/Game/SimReady/MuJoCo/sr_<nv|fc|lg>_<asset>` and measures the offset between the two (the flattened mesh's
+origin is its bottom centre, the MJCF's the package's). With the ten ForgeCAD conversions above, `PAL_SimReady`'s
+TrashBin, Cupboard, Sink, Appliance, KitchenLow, KitchenStove and Clutter slots get wheelie bins, chests of drawers,
+vanities, washers, base cabinets, ranges and pedal bins.
+
+The articulations run on MuJoCo or Chaos, whichever the level chooses with RammsMujocoSupport's
+`ARammsPhysicsSettings` (or `-RammsPhysics=` / `ramms.Physics.Engine` for one run), with the same assets either way.
+ramms-sim's `Scripts/worldgen/simready_level.py` generates such a level (a furnished home on `PAL_SimReady` with a
+settings actor), and `Scripts/pie_tests/chaos_articulation/simready_showroom.py` builds a showroom of the
+articulated assets for side-by-side runs.
 
 ## Streets and yards
 
