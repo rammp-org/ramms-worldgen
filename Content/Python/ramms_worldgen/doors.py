@@ -40,7 +40,7 @@ LEAF_GAP = 0.8          # cm under the leaf
 # The leaf's collision box stops 3 cm above the floor and 1 cm short of each jamb and the head: Chaos's contact
 # margins would otherwise drag it on the floor and the wall.
 # bumped when the model changes: an imported Blueprint is kept, and a replace-import of one asserts
-MODEL_REV = 8
+MODEL_REV = 9
 JAMB_GAP = 0.5          # cm between the leaf and each jamb
 
 
@@ -48,17 +48,26 @@ def _mjcf_dir(mjcf_dir=None):
     return mjcf_dir or os.environ.get("RAMMS_SIMREADY_MJCF") or DEFAULT_MJCF
 
 
-def door_stem(mesh_path, width, height):
+def door_stem(mesh_path, width, height, swing=100.0):
+    """The model's name: mesh, leaf size, swing (degrees) and MODEL_REV, all of which the MJCF depends on."""
     name = mesh_path.rsplit("/", 1)[-1].replace("SM_", "").lower()
     name = name if name.startswith("door") else "door_" + name
-    return "sr_%s_w%d_h%d_r%d" % (name, int(round(width)), int(round(height)), MODEL_REV)
+    return "sr_%s_w%d_h%d_s%d_r%d" % (name, int(round(width)), int(round(height)), int(round(swing)), MODEL_REV)
 
 
-def _leaf_geometry(mesh):
-    """Vertices (cm, mesh space), UVs and triangles of LOD 0, all sections."""
+def _leaf_geometry(mesh, slots=None):
+    """Vertices (cm, mesh space), normals, UVs and triangles of LOD 0, all sections; with a list `slots`, each
+    triangle's material slot is appended to it."""
     P, N, UV, F = [], [], [], []
+    sms = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
     for s in range(mesh.get_num_sections(0)):
         v, t, n, uv, _tan = unreal.ProceduralMeshLibrary.get_section_from_static_mesh(mesh, 0, s)
+        if slots is not None:
+            try:
+                slot = sms.get_lod_material_slot(mesh, 0, s)
+            except Exception:  # noqa: BLE001
+                slot = s
+            slots += [slot] * (len(t) // 3)
         base = len(P)
         P += [(p.x, p.y, p.z) for p in v]
         N += [(q.x, q.y, q.z) for q in n] if len(n) == len(v) else [(0.0, 0.0, 1.0)] * len(v)
@@ -67,31 +76,39 @@ def _leaf_geometry(mesh):
     return P, N, UV, F
 
 
-def _write_glb(path, P, N, UV, F, name):
-    """A minimal binary glTF (one mesh, one primitive) of Z-up metres, which URLab imports in place of the OBJ
-    beside it (Interchange reads glTF in metres; its OBJ path reads centimetres): (x, y, z) -> (x, z, -y), UVs
-    already top-left."""
+def _write_glb(path, P, N, UV, F, name, slots=None):
+    """A minimal binary glTF of Z-up metres, which URLab imports in place of the OBJ beside it (Interchange reads
+    glTF in metres; its OBJ path reads centimetres): (x, y, z) -> (x, z, -y), UVs already top-left. One primitive,
+    and one material named slot_<k>, per source material slot k (`slots`: each triangle's slot), so a door of
+    several materials keeps them."""
+    slots = slots if slots and len(slots) == len(F) else [0] * len(F)
+    keys = sorted(set(slots))
     pos = [(p[0], p[2], -p[1]) for p in P]
     nrm = [(n[0], n[2], -n[1]) for n in N]
     b_pos = struct.pack("<%df" % (3 * len(pos)), *[c for p in pos for c in p])
     b_nrm = struct.pack("<%df" % (3 * len(nrm)), *[c for n in nrm for c in n])
     b_uv = struct.pack("<%df" % (2 * len(UV)), *[c for u in UV for c in u])
-    b_idx = struct.pack("<%dI" % (3 * len(F)), *[i for f in F for i in f])
-    chunks = [b_pos, b_nrm, b_uv, b_idx]
+    chunks = [b_pos, b_nrm, b_uv]
     acc = [{"bufferView": 0, "componentType": 5126, "count": len(pos), "type": "VEC3",
             "min": [min(p[k] for p in pos) for k in range(3)], "max": [max(p[k] for p in pos) for k in range(3)]},
            {"bufferView": 1, "componentType": 5126, "count": len(nrm), "type": "VEC3"},
-           {"bufferView": 2, "componentType": 5126, "count": len(UV), "type": "VEC2"},
-           {"bufferView": 3, "componentType": 5125, "count": 3 * len(F), "type": "SCALAR"}]
+           {"bufferView": 2, "componentType": 5126, "count": len(UV), "type": "VEC2"}]
+    prims = []
+    for m, k in enumerate(keys):
+        idx = [i for f, sl in zip(F, slots) if sl == k for i in f]
+        chunks.append(struct.pack("<%dI" % len(idx), *idx))
+        acc.append({"bufferView": len(chunks) - 1, "componentType": 5125, "count": len(idx), "type": "SCALAR"})
+        prims.append({"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": len(acc) - 1, "material": m})
     views, blob, off = [], b"", 0
     for i, c in enumerate(chunks):
-        views.append({"buffer": 0, "byteOffset": off, "byteLength": len(c), "target": 34963 if i == 3 else 34962})
+        views.append({"buffer": 0, "byteOffset": off, "byteLength": len(c), "target": 34963 if i >= 3 else 34962})
         pad = (-len(c)) % 4
         blob += c + b"\0" * pad
         off += len(c) + pad
     gltf = {"asset": {"version": "2.0", "generator": "ramms_worldgen.doors"}, "scene": 0, "scenes": [{"nodes": [0]}],
             "nodes": [{"name": name, "mesh": 0}],
-            "meshes": [{"name": name, "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": 3}]}],
+            "materials": [{"name": "slot_%d" % k} for k in keys],
+            "meshes": [{"name": name, "primitives": prims}],
             "accessors": acc, "bufferViews": views, "buffers": [{"byteLength": len(blob)}]}
     js = json.dumps(gltf, separators=(",", ":")).encode()
     js += b" " * ((-len(js)) % 4)
@@ -104,7 +121,8 @@ def _write_glb(path, P, N, UV, F, name):
 def _write_door(mesh, width, height, swing, stem, out_dir, mass=12.0):
     """Write <out_dir>/<stem>/<stem>.xml and meshes/vis_Leaf.obj for a leaf `width` x `height` cm (the opening
     less its gaps). Returns the XML path."""
-    P, N, UV, F = _leaf_geometry(mesh)
+    slots = []
+    P, N, UV, F = _leaf_geometry(mesh, slots)
     if not F:
         raise RuntimeError("doors: %s has no triangles at LOD 0" % mesh.get_path_name())
     xs, ys, zs = [p[0] for p in P], [p[1] for p in P], [p[2] for p in P]
@@ -158,7 +176,7 @@ def _write_door(mesh, width, height, swing, stem, out_dir, mass=12.0):
             if flip:
                 b, c = c, b
             f.write("f %d/%d %d/%d %d/%d\n" % (a + 1, a + 1, b + 1, b + 1, c + 1, c + 1))
-    _write_glb(os.path.join(d, "meshes", "vis_Leaf.glb"), Q, QN, UV, [(a, c, b) if flip else (a, b, c) for a, b, c in F], "vis_Leaf")
+    _write_glb(os.path.join(d, "meshes", "vis_Leaf.glb"), Q, QN, UV, [(a, c, b) if flip else (a, b, c) for a, b, c in F], "vis_Leaf", slots)
     W, T, Hh = width / 100.0, thick / 100.0, height / 100.0
     zc = LEAF_GAP / 100.0 + Hh * 0.5
     ixx, iyy, izz = mass * (T * T + Hh * Hh) / 12.0, mass * (W * W + Hh * Hh) / 12.0, mass * (W * W + T * T) / 12.0
@@ -222,7 +240,7 @@ def build_door(mesh_path=DOOR_INTERIOR, opening_width=90.0, opening_height=210.0
     the leaf's Unreal material) if it does not exist yet. Returns the Blueprint path, or None."""
     width = opening_width - 2.0 * JAMB_GAP
     height = opening_height - LEAF_GAP - 1.0
-    stem = door_stem(mesh_path, width, height)
+    stem = door_stem(mesh_path, width, height, swing)
     bp = "%s/%s" % (dest, stem)
     if unreal.EditorAssetLibrary.does_asset_exist(bp):
         return bp
@@ -234,13 +252,16 @@ def build_door(mesh_path=DOOR_INTERIOR, opening_width=90.0, opening_height=210.0
     out = SR.import_mjcf(xml, dest).get(stem)
     if not out:
         return None
-    # the leaf keeps the source mesh's material
+    # the leaf keeps the source mesh's materials: each imported slot is named slot_<k> after the source slot k
     vis = [p for p in unreal.EditorAssetLibrary.list_assets("/Game/MuJoCoImports/%s_Assets" % stem, True, False) if p.split(".")[0].endswith("/vis_Leaf")]
     sm = unreal.load_asset(vis[0].split(".")[0]) if vis else None
     if sm is not None:
-        for i, m in enumerate(mesh.static_materials):
-            if i < len(sm.static_materials):
-                sm.set_material(i, m.material_interface)
+        src = mesh.static_materials
+        for i, m in enumerate(sm.static_materials):
+            name = str(m.material_slot_name)
+            k = int(name.rsplit("_", 1)[-1]) if name.startswith("slot_") and name.rsplit("_", 1)[-1].isdigit() else i
+            if k < len(src):
+                sm.set_material(i, src[k].material_interface)
         unreal.EditorAssetLibrary.save_loaded_asset(sm, only_if_is_dirty=False)
     return out
 
@@ -315,32 +336,52 @@ def _generator(generator=None):
     return gens[0] if gens else None
 
 
+def _params(gen):
+    """The generator's resolved parameters (preset, profile and its own overrides), else its preset's."""
+    try:
+        return gen.get_editor_property("params")
+    except Exception:  # noqa: BLE001
+        return gen.get_editor_property("preset").get_editor_property("params")
+
+
 def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thickness=None, folder="Doors"):
     """In a generated indoor level: replace each door leaf the generator stood open beside its opening (an
     instance of a Door.Interior / Door.Exterior palette mesh) with a closed, hinged door of the same mesh in the
-    opening, opening into the room the leaf stood in. The opening's width comes from the manifest's Door / Entrance
-    feature at that leaf; which side of the leaf the opening is on, from a trace across the wall. The leaf
-    instances are removed (Regenerate brings them back; run this again after it: the doors an earlier run placed,
-    tagged RammsDoors:<generator>, are replaced). Returns the door actors placed."""
+    opening, opening into the room the leaf stood in. The opening's width is the leaf's plus 1 cm (PCGRammsIndoor
+    fits the leaf to it), its height 210 cm above the room's floor less any raised threshold the leaf stands on;
+    which side of the leaf the opening is on comes from a trace across the wall. The leaf instances are removed.
+
+    Doors are tagged RammsDoors:<generator> and RammsDoorsSeed:<generator>:<seed>. A run replaces the doors at the
+    openings it converts and those of another seed (a Regenerate with a new seed), and keeps the rest, so a run that
+    skipped an opening can be repeated without losing the doors it made. Returns the door actors placed."""
     gen = _generator(generator)
     if gen is None:
         H.log("doors: no RammsWorldGenerator in the level")
         return []
-    params = gen.get_editor_property("preset").get_editor_property("params")
-    T = wall_thickness or params.get_editor_property("wall_thickness")
-    feats = [f for f in H.manifest_to_dict(gen).get("features", []) if str(f.get("kind")) in ("Door", "Entrance")]
-    by_asset = {}
-    for f in feats:
-        by_asset.setdefault(str(f.get("asset", "")).split(".")[0], []).append(f)
+    params = _params(gen)
+    # PCGRammsIndoor clamps the wall thickness to 5..60 cm
+    T = wall_thickness or min(max(params.get_editor_property("wall_thickness"), 5.0), 60.0)
+    manifest = H.manifest_to_dict(gen)
+    door_assets = {str(f.get("asset", "")).split(".")[0] for f in manifest.get("features", []) if str(f.get("kind")) in ("Door", "Entrance")}
+    rooms = [f for f in manifest.get("features", []) if str(f.get("kind")) == "Room"]
     world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     tag = "RammsDoors:%s" % gen.get_name()
+    seed_tag = "RammsDoorsSeed:%s:%d" % (gen.get_name(), gen.get_editor_property("seed"))
+    mine = [a for a in eas.get_all_level_actors() if tag in [str(t) for t in a.tags]]
+    for a in [a for a in mine if seed_tag not in [str(t) for t in a.tags]]:
+        eas.destroy_actor(a)          # from another seed's layout
+        mine.remove(a)
     isms = [c for c in gen.get_components_by_class(unreal.InstancedStaticMeshComponent)
-            if c.static_mesh and c.static_mesh.get_path_name().split(".")[0] in by_asset and c.get_instance_count() > 0]
+            if c.static_mesh and c.static_mesh.get_path_name().split(".")[0] in door_assets and c.get_instance_count() > 0]
     if not isms:
-        eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
         H.log("doors: no standing door leaves (already articulated, or no doors); kept the doors there are")
-        return [a for a in eas.get_all_level_actors() if tag in [str(t) for t in a.tags]]
-    _clear(tag)
+        return mine
+
+    def floor_at(x, y):
+        inside = [r for r in rooms if abs(x - r["location"]["x"]) <= r["size"]["x"] * 0.5 + T and abs(y - r["location"]["y"]) <= r["size"]["y"] * 0.5 + T]
+        return min(r["location"]["z"] for r in (inside or rooms)) if rooms else 0.0
+
     placed = []
     for ism in isms:
         mesh = ism.static_mesh
@@ -368,8 +409,8 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
             ux, uy = -vy, vx
             # the wall's centre line, T/2 + 2.5 cm behind the leaf's hinge end (PCGRammsIndoor stands it there)
             cx, cy = ph.x - vx * (T * 0.5 + 2.5), ph.y - vy * (T * 0.5 + 2.5)
-            f = min(by_asset[path], key=lambda f: (f["location"]["x"] - (ph.x + pf.x) * 0.5) ** 2 + (f["location"]["y"] - (ph.y + pf.y) * 0.5) ** 2)
-            opening = float(f.get("measure") or (leaf_w + 1.0))
+            # the leaf is the opening less 1 cm (the manifest's measure is a raised threshold's rise for those)
+            opening = leaf_w + 1.0
             # the opening is on the side of the leaf where a trace across the wall meets nothing
             z = ph.z + 100.0
             clear = []
@@ -384,16 +425,26 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
             sgn = 1.0 if clear[0] else -1.0
             ux, uy = ux * sgn, uy * sgn
             jamb = (cx + ux * 3.0, cy + uy * 3.0, ph.z)
-            # PCGRammsIndoor cuts door openings 210 cm high; widths round down to 2 cm (and 1 cm more of slack, for
-            # the leaf's pose read back from its instance) so a few Blueprints serve
-            bp = build_door(path, math.floor((opening - 1.0) / 2.0) * 2.0, 210.0, swing, mjcf_dir)
-            if bp:
-                placed.append(place_door(bp, jamb, (ux, uy), (vx, vy), T, folder=folder, tag=tag))
-                remove.append(i)
+            # the head is 210 cm above the floor; a raised threshold lifts the leaf, not the head
+            rise = max(ph.z - floor_at(cx, cy), 0.0)
+            # widths round down to 2 cm (and 1 cm more of slack, for the leaf's pose read back from its instance)
+            # so a few Blueprints serve
+            bp = build_door(path, math.floor((opening - 1.0) / 2.0) * 2.0, 210.0 - rise, swing, mjcf_dir)
+            if not bp:
+                continue
+            # the door an earlier run put in this opening, if any, is replaced
+            ox, oy = cx + ux * (3.0 + opening * 0.5), cy + uy * (3.0 + opening * 0.5)
+            for old in [d for d in mine if math.hypot(d.get_actor_location().x - ox, d.get_actor_location().y - oy) < opening * 0.5 + 20.0]:
+                eas.destroy_actor(old)
+                mine.remove(old)
+            d = place_door(bp, jamb, (ux, uy), (vx, vy), T, folder=folder, tag=tag)
+            d.tags = list(d.tags) + [unreal.Name(seed_tag)]
+            placed.append(d)
+            remove.append(i)
         for i in sorted(remove, reverse=True):
             ism.remove_instance(i)
-    H.log("doors: %d articulated doors" % len(placed))
-    return placed
+    H.log("doors: %d articulated doors (%d kept from an earlier run)" % (len(placed), len(mine)))
+    return placed + mine
 
 
 def add_ceiling(generator=None, material="Mat.Wall.Interior", palette=None, lights=True, spacing=350.0, folder="Ceiling"):

@@ -673,7 +673,8 @@ articulated assets for side-by-side runs.
 `ramms_worldgen.doors` closes up an indoor level for a robot's sensors. It turns a door-leaf mesh (the palette's
 `Door.Interior` / `Door.Exterior` meshes) into a URLab articulation: the leaf's triangles, UVs and material in an MJCF of
 a frame welded to the world and the leaf on a hinge (`door`, 0 to 100 degrees, a box collider for the panel and one
-for the handle), imported with `SR.import_mjcf` as `/Game/SimReady/MuJoCo/sr_<mesh>_w<width>_h<height>_r<rev>`.
+for the handle), imported with `SR.import_mjcf` as `/Game/SimReady/MuJoCo/sr_<mesh>_w<width>_h<height>_s<swing>_r<rev>`.
+Each of the mesh's material slots stays a slot of its own.
 
 It runs on MuJoCo or Chaos as the level's `ARammsPhysicsSettings` says. A robot can push the door, and
 `simready_open.py` can drive it.
@@ -689,12 +690,16 @@ DR.place_door(bp, jamb=(415, -5, 0), along=(0, 1), into=(1, 0), wall_thickness=1
 `articulate_level_doors` works from the generator's output:
 
 - It reads each leaf's pose back from its instance.
-- It takes the opening's width from the manifest's `Door` / `Entrance` feature.
+- The opening is the leaf's width plus 1 cm, and 210 cm high above the room's floor, less any raised threshold
+  the leaf stands on.
 - It finds which side of the leaf the opening is on with a trace across the wall.
+- It uses the generator's resolved `WallThickness`.
 - It removes the leaf instances.
 
-Both functions tag what they place (`RammsDoors:<generator>`, `RammsCeiling:<generator>`). Run them again after a
-**Regenerate** to replace them; a second run without regenerating keeps them.
+The doors are tagged `RammsDoors:<generator>` and `RammsDoorsSeed:<generator>:<seed>`. A run replaces the doors at
+the openings it converts and any from another seed (a Regenerate with a new seed), and keeps the rest. So a run
+that skipped an opening can be repeated without losing the doors it made. `add_ceiling` (tagged
+`RammsCeiling:<generator>`) is replaced on every run.
 
 The leaf turns about its corner on the face it opens toward, so it never swings into the jamb. Its collider stops
 3 cm short of the floor and 1 cm short of the jambs and head, so Chaos's contact margins do not drag it. The
