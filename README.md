@@ -690,9 +690,12 @@ DR.place_door(bp, jamb=(415, -5, 0), along=(0, 1), into=(1, 0), wall_thickness=1
 `articulate_level_doors` works from the generator's output:
 
 - It reads each leaf's pose back from its instance.
-- The opening is the leaf's width plus 1 cm, and 210 cm high above the room's floor, less any raised threshold
-  the leaf stands on.
-- It finds which side of the leaf the opening is on with a trace across the wall.
+- The opening is the leaf's width plus 1 cm, and 210 cm high above the room's floor (at most the wall height),
+  less any raised threshold the leaf stands on.
+- The door takes the leaf's segmentation class (`seg:` tag), which the labeller can't give it because the door is not
+  generator output.
+- It finds which side of the leaf the opening is on with a trace across the wall, ignoring doors an earlier run
+  left in the openings.
 - It uses the generator's resolved `WallThickness`.
 - It removes the leaf instances.
 

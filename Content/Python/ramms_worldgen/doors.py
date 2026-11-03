@@ -40,7 +40,7 @@ LEAF_GAP = 0.8          # cm under the leaf
 # The leaf's collision box stops 3 cm above the floor and 1 cm short of each jamb and the head: Chaos's contact
 # margins would otherwise drag it on the floor and the wall.
 # bumped when the model changes: an imported Blueprint is kept, and a replace-import of one asserts
-MODEL_REV = 9
+MODEL_REV = 10
 JAMB_GAP = 0.5          # cm between the leaf and each jamb
 
 
@@ -118,6 +118,43 @@ def _write_glb(path, P, N, UV, F, name, slots=None):
         f.write(struct.pack("<II", len(blob), 0x004E4942) + blob)
 
 
+def _classify(P, F):
+    """Split a leaf mesh into its panel and the hardware proud of it. Returns a dict: wa / ta (the width and
+    thickness axes, 0 = X, 1 = Y), wmin / wmax, zmin / zmax, tlo / thi (the panel's two faces), proud (vertices
+    more than 1 cm off the panel), handle (the proud vertices on the latch half) and hinge_at_min. The faces are
+    where the bulk of the surface area lies (the 3rd and 97th area percentiles of the triangles' thickness), so a
+    plain panel has no hardware, and a handle, however many vertices it has, does not move them."""
+    xs, ys, zs = [p[0] for p in P], [p[1] for p in P], [p[2] for p in P]
+    # the width runs along the mesh's longer horizontal axis, the thickness along the other
+    wa = 1 if (max(ys) - min(ys)) >= (max(xs) - min(xs)) else 0
+    ta = 1 - wa
+    tri = []
+    for a, b, c in F:
+        pa, pb, pc = P[a], P[b], P[c]
+        ux, uy, uz = pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]
+        vx, vy, vz = pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]
+        area = 0.5 * math.sqrt((uy * vz - uz * vy) ** 2 + (uz * vx - ux * vz) ** 2 + (ux * vy - uy * vx) ** 2)
+        tri.append(((pa[ta] + pb[ta] + pc[ta]) / 3.0, area))
+    tri.sort()
+    total = sum(t[1] for t in tri) or 1.0
+    acc, tlo, thi = 0.0, tri[0][0], tri[-1][0]
+    for t, ar in tri:
+        acc += ar
+        if acc < 0.03 * total:
+            tlo = t
+        if acc <= 0.97 * total:
+            thi = t
+    tlo = min(tlo, thi)
+    proud = [p for p in P if p[ta] < tlo - 1.0 or p[ta] > thi + 1.0]
+    wmin, wmax = min(p[wa] for p in P), max(p[wa] for p in P)
+    mid = (wmin + wmax) * 0.5
+    # the handles stand proud on the latch half (hinge knuckles may too, on the other half): the hinge goes on
+    # the edge away from the half with more proud vertices, and only those make the handle's collision box
+    hi_side = sum(1 for p in proud if p[wa] > mid) >= sum(1 for p in proud if p[wa] <= mid)
+    return {"wa": wa, "ta": ta, "wmin": wmin, "wmax": wmax, "zmin": min(zs), "zmax": max(zs), "tlo": tlo, "thi": thi,
+            "proud": proud, "handle": [p for p in proud if (p[wa] > mid) == hi_side], "hinge_at_min": hi_side if proud else True}
+
+
 def _write_door(mesh, width, height, swing, stem, out_dir, mass=12.0):
     """Write <out_dir>/<stem>/<stem>.xml and meshes/vis_Leaf.obj for a leaf `width` x `height` cm (the opening
     less its gaps). Returns the XML path."""
@@ -125,25 +162,10 @@ def _write_door(mesh, width, height, swing, stem, out_dir, mass=12.0):
     P, N, UV, F = _leaf_geometry(mesh, slots)
     if not F:
         raise RuntimeError("doors: %s has no triangles at LOD 0" % mesh.get_path_name())
-    xs, ys, zs = [p[0] for p in P], [p[1] for p in P], [p[2] for p in P]
-    # the width runs along the mesh's longer horizontal axis, the thickness along the other
-    wa = 1 if (max(ys) - min(ys)) >= (max(xs) - min(xs)) else 0
-    ta = 1 - wa
-    wmin, wmax = min(p[wa] for p in P), max(p[wa] for p in P)
-    zmin, zmax = min(zs), max(zs)
-    # the panel is the thickness most vertices share; handles stand out of it
-    tv = sorted(p[ta] for p in P)
-    tmid = tv[len(tv) // 2]
-    panel = [p for p in P if abs(p[ta] - tmid) < 3.0]
-    proud = [p for p in P if abs(p[ta] - tmid) >= 3.0]
-    tlo, thi = min(p[ta] for p in panel), max(p[ta] for p in panel)
+    k = _classify(P, F)
+    wa, ta, wmin, wmax, zmin, zmax = k["wa"], k["ta"], k["wmin"], k["wmax"], k["zmin"], k["zmax"]
+    tlo, thi, handle, hinge_at_min = k["tlo"], k["thi"], k["handle"], k["hinge_at_min"]
     thick = max(thi - tlo, 2.0)
-    # the handles stand proud on the latch half (hinge knuckles may too, on the other half): the hinge goes on
-    # the edge away from the half with more proud vertices, and only those make the handle's collision box
-    mid = (wmin + wmax) * 0.5
-    hi_side = sum(1 for p in proud if p[wa] > mid) >= sum(1 for p in proud if p[wa] <= mid)
-    handle = [p for p in proud if (p[wa] > mid) == hi_side]
-    hinge_at_min = hi_side if proud else True
     sw = width / (wmax - wmin)
     sz = height / (zmax - zmin)
 
@@ -157,8 +179,11 @@ def _write_door(mesh, width, height, swing, stem, out_dir, mass=12.0):
     Q = [to_mj(p) for p in P]
 
     def nrm_mj(n):
-        u = n[wa] * (1.0 if hinge_at_min else -1.0)
-        return (u, n[ta], n[2])
+        # normals take the inverse of the (non-uniform) scale, then unit length
+        u = n[wa] * (1.0 if hinge_at_min else -1.0) / sw
+        v, w = n[ta], n[2] / sz
+        ln = math.sqrt(u * u + v * v + w * w) or 1.0
+        return (u / ln, v / ln, w / ln)
     QN = [nrm_mj(n) for n in N]
     # winding: Unreal's triangles face out under a reflection; flip them when the map to MuJoCo has none
     sx = 1.0 if hinge_at_min else -1.0
@@ -266,7 +291,7 @@ def build_door(mesh_path=DOOR_INTERIOR, opening_width=90.0, opening_height=210.0
     return out
 
 
-def place_door(bp, jamb, along, into, wall_thickness=12.0, folder=None, label=None, tag=None):
+def place_door(bp, jamb, along, into, wall_thickness=12.0, folder=None, label=None, tag=None, seg=("seg:Door",)):
     """Spawn the door Blueprint `bp` closed in an opening. `jamb` is the opening's edge (x, y, floor z) the hinge
     goes on, `along` the unit direction across the opening from it, `into` the unit direction (perpendicular,
     horizontal) of the room the door opens into. Returns the actor."""
@@ -289,6 +314,9 @@ def place_door(bp, jamb, along, into, wall_thickness=12.0, folder=None, label=No
         a.set_actor_label(label)
     if tag:
         a.tags = list(a.tags) + [unreal.Name(tag)]
+    # its segmentation class, on every primitive component as the labeller tags them
+    for c in a.get_components_by_class(unreal.PrimitiveComponent):
+        c.component_tags = [t for t in c.component_tags if not str(t).startswith("seg:")] + [unreal.Name(t) for t in seg]
     return a
 
 
@@ -312,20 +340,13 @@ def _bp_width(bp):
 
 
 def _leaf_frame(mesh):
-    """(width axis 0/1, hinge at the low end?, local bounds min, max) of a door-leaf mesh."""
-    P, _N, _UV, _F = _leaf_geometry(mesh)
-    xs, ys = [p[0] for p in P], [p[1] for p in P]
-    wa = 1 if (max(ys) - min(ys)) >= (max(xs) - min(xs)) else 0
-    ta = 1 - wa
-    tv = sorted(p[ta] for p in P)
-    tmid = tv[len(tv) // 2]
-    wmin, wmax = min(p[wa] for p in P), max(p[wa] for p in P)
-    mid = (wmin + wmax) * 0.5
-    proud = [p for p in P if abs(p[ta] - tmid) >= 3.0]
-    hi_side = sum(1 for p in proud if p[wa] > mid) >= sum(1 for p in proud if p[wa] <= mid)
-    lo = [min(p[k] for p in P) for k in range(3)]
-    hi = [max(p[k] for p in P) for k in range(3)]
-    return wa, (hi_side if proud else True), lo, hi, tmid
+    """(width axis 0/1, hinge at the low end?, local bounds min, max) of a door-leaf mesh, classified as _write_door
+    does."""
+    P, _N, _UV, F = _leaf_geometry(mesh)
+    k = _classify(P, F)
+    lo = [min(p[i] for p in P) for i in range(3)]
+    hi = [max(p[i] for p in P) for i in range(3)]
+    return k["wa"], k["hinge_at_min"], lo, hi
 
 
 def _generator(generator=None):
@@ -361,6 +382,7 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
     params = _params(gen)
     # PCGRammsIndoor clamps the wall thickness to 5..60 cm
     T = wall_thickness or min(max(params.get_editor_property("wall_thickness"), 5.0), 60.0)
+    wall_h = params.get_editor_property("wall_height")
     manifest = H.manifest_to_dict(gen)
     door_assets = {str(f.get("asset", "")).split(".")[0] for f in manifest.get("features", []) if str(f.get("kind")) in ("Door", "Entrance")}
     rooms = [f for f in manifest.get("features", []) if str(f.get("kind")) == "Room"]
@@ -386,8 +408,10 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
     for ism in isms:
         mesh = ism.static_mesh
         path = mesh.get_path_name().split(".")[0]
-        wa, hinge_at_min, lo, hi, tmid = _leaf_frame(mesh)
+        wa, hinge_at_min, lo, hi = _leaf_frame(mesh)
         ta = 1 - wa
+        # the leaf's segmentation class goes with it (the labeller only tags generator-owned output)
+        seg = [str(t) for t in ism.component_tags if str(t).startswith("seg:")] or ["seg:Door"]
         remove = []
         for i in range(ism.get_instance_count()):
             xf = ism.get_instance_transform(i, True)
@@ -416,8 +440,9 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
             clear = []
             for sgn in (1.0, -1.0):
                 qx, qy = cx + sgn * ux * (3.0 + opening * 0.5), cy + sgn * uy * (3.0 + opening * 0.5)
+                # (doors an earlier run left in the openings would block the trace: they are ignored)
                 r = unreal.SystemLibrary.line_trace_single(world, unreal.Vector(qx - vx * T, qy - vy * T, z), unreal.Vector(qx + vx * T, qy + vy * T, z),
-                                                           unreal.TraceTypeQuery.TRACE_TYPE_QUERY1, True, [], unreal.DrawDebugTrace.NONE, True)
+                                                           unreal.TraceTypeQuery.TRACE_TYPE_QUERY1, True, mine + placed, unreal.DrawDebugTrace.NONE, True)
                 clear.append(not (r[0] if isinstance(r, tuple) else r is not None))
             if clear[0] == clear[1]:
                 H.log("doors: cannot tell which side of the leaf at (%.0f, %.0f) the opening is on; left as it is" % (ph.x, ph.y))
@@ -425,11 +450,13 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
             sgn = 1.0 if clear[0] else -1.0
             ux, uy = ux * sgn, uy * sgn
             jamb = (cx + ux * 3.0, cy + uy * 3.0, ph.z)
-            # the head is 210 cm above the floor; a raised threshold lifts the leaf, not the head
+            # the head is 210 cm above the floor (ARammsProcPiece clamps it to the wall height); a raised threshold
+            # lifts the leaf, not the head
             rise = max(ph.z - floor_at(cx, cy), 0.0)
+            head = min(210.0, wall_h)
             # widths round down to 2 cm (and 1 cm more of slack, for the leaf's pose read back from its instance)
             # so a few Blueprints serve
-            bp = build_door(path, math.floor((opening - 1.0) / 2.0) * 2.0, 210.0 - rise, swing, mjcf_dir)
+            bp = build_door(path, math.floor((opening - 1.0) / 2.0) * 2.0, head - rise, swing, mjcf_dir)
             if not bp:
                 continue
             # the door an earlier run put in this opening, if any, is replaced
@@ -437,7 +464,7 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
             for old in [d for d in mine if math.hypot(d.get_actor_location().x - ox, d.get_actor_location().y - oy) < opening * 0.5 + 20.0]:
                 eas.destroy_actor(old)
                 mine.remove(old)
-            d = place_door(bp, jamb, (ux, uy), (vx, vy), T, folder=folder, tag=tag)
+            d = place_door(bp, jamb, (ux, uy), (vx, vy), T, folder=folder, tag=tag, seg=seg)
             d.tags = list(d.tags) + [unreal.Name(seed_tag)]
             placed.append(d)
             remove.append(i)
