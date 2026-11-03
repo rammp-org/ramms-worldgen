@@ -138,7 +138,7 @@ Live Coding — same rule as the rest of the project.
    Creates `/Game/Maps/Gen/Map_Gen_Downtown`, `Map_Gen_Suburban`,
    `Map_Gen_Park`, `Map_Gen_Indoor`, `Map_Gen_Office`, `Map_Gen_MainStreet` and
    `Map_Gen_Store`, each with lights, a
-   ground slab, a `WorldGenerator`, the `BP_MebotGameMode`, and a PlayerStart
+   ground slab, a `WorldGenerator`, the `BP_RammpGen1GameMode`, and a PlayerStart
    on the widest compliant route. Generation is asynchronous: the level is
    saved when the log says `level ... generated`.
 
@@ -256,7 +256,7 @@ the poll.
 
 **The robot during a play-time regeneration.** With `bPlacePlayersOnGenerate`
 (on by default), regenerating in PIE or a game holds the player pawns still
-while the world is rebuilt. Their Unreal-simulated bodies (the Mebot's
+while the world is rebuilt. Their Unreal-simulated bodies (the RAMMP Gen1's
 vehicle, arm and gripper skeletal meshes) go kinematic, so the robot neither
 falls through the old floor nor gets shoved by geometry spawning into it.
 When the new world is in, the pawns are teleported to
@@ -699,7 +699,7 @@ walls and, in a deep room, a back-to-back bench down the middle, each desk
 with a chair, a monitor and a keyboard.
 
 Every door, including the deliberately narrow (non-compliant) ones, is at
-least `MinPassableDoorWidth` wide (80 cm: the MeBot is about 72 cm across),
+least `MinPassableDoorWidth` wide (80 cm: the RAMMP Gen1 is about 72 cm across),
 and the open leaf stands outside the opening so it does not eat the clear
 width.
 

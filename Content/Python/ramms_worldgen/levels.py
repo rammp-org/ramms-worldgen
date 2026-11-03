@@ -1,5 +1,5 @@
 """Assemble the example levels: lights, a ground slab, a generator with a
-preset and seed, the Mebot game mode, and a PlayerStart on the first route.
+preset and seed, the RAMMP Gen1 game mode, and a PlayerStart on the first route.
 
 Generation is asynchronous, so the level is saved from a tick callback once
 the generator reports it is done.
@@ -10,7 +10,7 @@ import unreal
 from . import _helpers as H
 from . import presets as PR
 
-GAME_MODE = "/Game/BP_MebotGameMode.BP_MebotGameMode_C"
+GAME_MODE = "/Game/BP_RammpGen1GameMode.BP_RammpGen1GameMode_C"
 
 EXAMPLES = {
     "downtown": ("Map_Gen_Downtown", "PRE_Downtown", 7),
@@ -154,7 +154,8 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     else:
         H.warn("game mode %s not found; the level keeps the project default" % GAME_MODE)
 
-    unreal.EditorLoadingAndSavingUtils.save_current_level()
+    if not unreal.EditorLoadingAndSavingUtils.save_current_level():
+        H.warn("level %s: the first save failed; generating anyway" % path)
     gen.regenerate()
     if watch:
         _pending[path] = True
@@ -195,8 +196,13 @@ def _watch(path):
             if gen.is_generating() and state["ticks"] < 3000:
                 return
             finished = True
+            if gen.is_generating():
+                H.warn("level %s: still generating after %d ticks; not saved" % (path, state["ticks"]))
+                return
             finish_level(gen)
-            unreal.EditorLoadingAndSavingUtils.save_current_level()
+            if not unreal.EditorLoadingAndSavingUtils.save_current_level():
+                H.warn("level %s: generated, but saving it failed" % path)
+                return
             m = H.manifest_to_dict(gen)
             H.log("level %s generated: %d features, %d routes, saved." % (path, len(m.get("features", [])), len(m.get("routes", []))))
         except Exception as exc:  # the editor must keep ticking whatever happens here
