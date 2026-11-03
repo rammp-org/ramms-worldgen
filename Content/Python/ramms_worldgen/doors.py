@@ -320,6 +320,31 @@ def place_door(bp, jamb, along, into, wall_thickness=12.0, folder=None, label=No
     return a
 
 
+def _bp_width(bp):
+    """The leaf width (cm) a door Blueprint was made for, from its name (sr_<mesh>_w<width>_...)."""
+    stem = bp.rsplit("/", 1)[-1]
+    for part in stem.split("_"):
+        if part.startswith("w") and part[1:].isdigit():
+            return float(part[1:])
+    return 89.0
+
+
+def _into_level(actors, gen):
+    """Move actors spawned into the editor's current level into the generator's level (a loaded sublevel need not
+    be the current one), so they save, unload and are found with it. Returns the actors where they now are."""
+    level = gen.get_outer()
+    stray = [a for a in actors if a is not None and a.get_outer() != level]
+    if stray:
+        unreal.EditorLevelUtils.move_actors_to_level(stray, level, False, False)
+    return stray
+
+
+def _tagged(tag):
+    """Every actor carrying `tag`, in any loaded level."""
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    return [a for a in eas.get_all_level_actors() if tag in [str(t) for t in a.tags]]
+
+
 def _leaf_frame(mesh):
     """(width axis 0/1, hinge at the low end?, local bounds min, max) of a door-leaf mesh, classified as _write_door
     does."""
@@ -513,6 +538,8 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
             remove.append(i)
         for i in sorted(remove, reverse=True):
             ism.remove_instance(i)
+    if _into_level([a for a in _tagged(seed_tag)], gen):
+        placed = [a for a in _owned(seed_tag, gen) if a not in mine]
     H.log("doors: %d articulated doors (%d kept from an earlier run)" % (len(placed), len(mine)))
     return placed + mine
 
@@ -537,6 +564,8 @@ def add_ceiling(generator=None, material="Mat.Wall.Interior", palette=None, ligh
         c, sz = f["location"], f["size"]
         slabs.append(ceiling_slab(c["x"] - sz["x"] * 0.5, c["x"] + sz["x"] * 0.5, c["y"] - sz["y"] * 0.5, c["y"] + sz["y"] * 0.5,
                                   c["z"] + sz["z"], mat, lights=lights, spacing=spacing, folder=folder, tag=tag))
+    if _into_level(_tagged(tag), gen):
+        slabs = [a for a in _owned(tag, gen) if isinstance(a, unreal.RammsProcPiece)]
     H.log("doors: ceiling over %d rooms" % len(slabs))
     return slabs
 
