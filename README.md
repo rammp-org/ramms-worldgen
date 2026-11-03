@@ -699,10 +699,13 @@ DR.place_door(bp, jamb=(415, -5, 0), along=(0, 1), into=(1, 0), wall_thickness=1
 - It uses the generator's resolved `WallThickness`.
 - It removes the leaf instances.
 
-The doors are tagged `RammsDoors:<generator>` and `RammsDoorsSeed:<generator>:<seed>`. A run replaces the doors at
+The doors are tagged `RammsDoors:<generator id>` and `RammsDoorsSeed:<generator id>:<seed>`, with the
+generator's `GeneratorId`, which is unique across loaded levels, as its articulated stand-ins are. A run replaces the doors at
 the openings it converts and any from another seed (a Regenerate with a new seed), and keeps the rest. So a run
 that skipped an opening can be repeated without losing the doors it made. `add_ceiling` (tagged
-`RammsCeiling:<generator>`) is replaced on every run.
+`RammsCeiling:<generator id>`, each slab `seg:Ceiling`) is replaced on every run. The hinge end of each leaf comes
+from the generation palette's `HandleSide` and `RotationOffset`, the way the generator turned the leaf. Leaves in
+PCG partition actors are converted when the partition actor holds only this generator's output.
 
 The leaf turns about its corner on the face it opens toward, so it never swings into the jamb. Its collider stops
 3 cm short of the floor and 1 cm short of the jambs and head, so Chaos's contact margins do not drag it. The

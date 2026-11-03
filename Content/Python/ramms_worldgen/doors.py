@@ -320,25 +320,6 @@ def place_door(bp, jamb, along, into, wall_thickness=12.0, folder=None, label=No
     return a
 
 
-def _clear(tag):
-    """Destroy the actors an earlier run tagged `tag` (doors, ceiling), so running again after Regenerate does not
-    stack them."""
-    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    old = [a for a in eas.get_all_level_actors() if tag in [str(t) for t in a.tags]]
-    for a in old:
-        eas.destroy_actor(a)
-    return len(old)
-
-
-def _bp_width(bp):
-    """The leaf width (cm) a door Blueprint was made for, from its name."""
-    stem = bp.rsplit("/", 1)[-1]
-    for part in stem.split("_"):
-        if part.startswith("w") and part[1:].isdigit():
-            return float(part[1:])
-    return 89.0
-
-
 def _leaf_frame(mesh):
     """(width axis 0/1, hinge at the low end?, local bounds min, max) of a door-leaf mesh, classified as _write_door
     does."""
@@ -365,6 +346,58 @@ def _params(gen):
         return gen.get_editor_property("preset").get_editor_property("params")
 
 
+def _owner_tag(prefix, gen):
+    """prefix:<the generator's id>: unique across loaded levels, as ARammsWorldGenerator::ArticulatedTag()."""
+    try:
+        gid = unreal.GuidLibrary.conv_guid_to_string(gen.get_editor_property("generator_id"))
+    except Exception:  # noqa: BLE001
+        gid = gen.get_name()
+    return "%s:%s" % (prefix, gid)
+
+
+def _owned(tag, gen):
+    """The actors in the generator's level carrying `tag`."""
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    return [a for a in eas.get_all_level_actors() if a.get_outer() == gen.get_outer() and tag in [str(t) for t in a.tags]]
+
+
+def _generator_isms(gen):
+    """The instanced meshes of the generator's output: its own, and those of PCG partition actors that hold only
+    this generator's local component (a partition actor holding several generators' output is skipped)."""
+    out = list(gen.get_components_by_class(unreal.InstancedStaticMeshComponent))
+    pcg = gen.get_component_by_class(unreal.PCGComponent)
+    if pcg is None or not hasattr(unreal, "PCGPartitionActor"):
+        return out
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    gens = [g.get_component_by_class(unreal.PCGComponent) for g in eas.get_all_level_actors() if isinstance(g, unreal.RammsWorldGenerator)]
+    for pa in [a for a in eas.get_all_level_actors() if isinstance(a, unreal.PCGPartitionActor)]:
+        try:
+            locals_ = [g for g in gens if g is not None and pa.get_local_component(g)]
+        except Exception:  # noqa: BLE001
+            continue
+        if locals_ == [pcg]:
+            out += list(pa.get_components_by_class(unreal.InstancedStaticMeshComponent))
+        elif pcg in locals_:
+            H.log("doors: %s holds several generators' output; its door leaves are left as they are" % pa.get_name())
+    return out
+
+
+def _palette_handles(palette_path):
+    """{door-leaf mesh path: (rotation offset yaw, HandleSide)} from the palette the level was generated with."""
+    pal = unreal.load_asset(str(palette_path).split(".")[0]) if palette_path else None
+    out = {}
+    if pal is None:
+        return out
+    for _slot, s in pal.get_editor_property("slots").items():
+        for e in s.get_editor_property("meshes"):
+            m = e.get_editor_property("mesh")
+            path = m.get_path_name() if hasattr(m, "get_path_name") else str(m)
+            hs = e.get_editor_property("handle_side")
+            if path and hs:
+                out[path.split(".")[0]] = (e.get_editor_property("rotation_offset").yaw, hs)
+    return out
+
+
 def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thickness=None, folder="Doors"):
     """In a generated indoor level: replace each door leaf the generator stood open beside its opening (an
     instance of a Door.Interior / Door.Exterior palette mesh) with a closed, hinged door of the same mesh in the
@@ -372,7 +405,7 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
     fits the leaf to it), its height 210 cm above the room's floor less any raised threshold the leaf stands on;
     which side of the leaf the opening is on comes from a trace across the wall. The leaf instances are removed.
 
-    Doors are tagged RammsDoors:<generator> and RammsDoorsSeed:<generator>:<seed>. A run replaces the doors at the
+    Doors are tagged RammsDoors:<generator id> and RammsDoorsSeed:<generator id>:<seed>. A run replaces the doors at the
     openings it converts and those of another seed (a Regenerate with a new seed), and keeps the rest, so a run that
     skipped an opening can be repeated without losing the doors it made. Returns the door actors placed."""
     gen = _generator(generator)
@@ -388,14 +421,15 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
     rooms = [f for f in manifest.get("features", []) if str(f.get("kind")) == "Room"]
     world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
     eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    tag = "RammsDoors:%s" % gen.get_name()
-    seed_tag = "RammsDoorsSeed:%s:%d" % (gen.get_name(), gen.get_editor_property("seed"))
-    mine = [a for a in eas.get_all_level_actors() if tag in [str(t) for t in a.tags]]
+    tag = _owner_tag("RammsDoors", gen)
+    seed_tag = "%s:%d" % (_owner_tag("RammsDoorsSeed", gen), gen.get_editor_property("seed"))
+    mine = _owned(tag, gen)
     for a in [a for a in mine if seed_tag not in [str(t) for t in a.tags]]:
         eas.destroy_actor(a)          # from another seed's layout
         mine.remove(a)
-    isms = [c for c in gen.get_components_by_class(unreal.InstancedStaticMeshComponent)
+    isms = [c for c in _generator_isms(gen)
             if c.static_mesh and c.static_mesh.get_path_name().split(".")[0] in door_assets and c.get_instance_count() > 0]
+    handle_side = _palette_handles(manifest.get("palette"))
     if not isms:
         H.log("doors: no standing door leaves (already articulated, or no doors); kept the doors there are")
         return mine
@@ -410,6 +444,7 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
         path = mesh.get_path_name().split(".")[0]
         wa, hinge_at_min, lo, hi = _leaf_frame(mesh)
         ta = 1 - wa
+        pal_leaf = handle_side.get(path)
         # the leaf's segmentation class goes with it (the labeller only tags generator-owned output)
         seg = [str(t) for t in ism.component_tags if str(t).startswith("seg:")] or ["seg:Door"]
         remove = []
@@ -425,6 +460,14 @@ def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thic
             a[ta] = b[ta] = (lo[ta] + hi[ta]) * 0.5
             a[wa], b[wa] = (lo[wa], hi[wa]) if hinge_at_min else (hi[wa], lo[wa])
             ph, pf = to_world(a), to_world(b)
+            if pal_leaf:
+                # the palette says which way the generator turned the leaf: its facing frame's +Y points away from
+                # the wall, or toward it when HandleSide < 0; the hinge end is the one nearer the wall
+                yaw = math.radians(xf.rotation.rotator().yaw - pal_leaf[0])
+                fy = (-math.sin(yaw), math.cos(yaw))
+                sign = 1.0 if pal_leaf[1] >= 0.0 else -1.0
+                if (pf.x - ph.x) * fy[0] * sign + (pf.y - ph.y) * fy[1] * sign < 0.0:
+                    ph, pf = pf, ph
             vx, vy = pf.x - ph.x, pf.y - ph.y
             leaf_w = math.hypot(vx, vy)
             if leaf_w < 40.0:
@@ -483,8 +526,10 @@ def add_ceiling(generator=None, material="Mat.Wall.Interior", palette=None, ligh
         return []
     pal = unreal.load_asset(palette or "/RammsWorldGen/Palettes/PAL_Default")
     mat = pal.material_path(material) if pal else ""
-    tag = "RammsCeiling:%s" % gen.get_name()
-    _clear(tag)
+    tag = _owner_tag("RammsCeiling", gen)
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    for a in _owned(tag, gen):
+        eas.destroy_actor(a)
     slabs = []
     for f in H.manifest_to_dict(gen).get("features", []):
         if str(f.get("kind")) != "Room":
@@ -507,6 +552,9 @@ def ceiling_slab(x0, x1, y0, y1, z, material, thickness=12.0, lights=True, spaci
     s.set_folder_path(folder)
     if tag:
         s.tags = [unreal.Name(tag)]
+    # its segmentation class (the labeller only classifies generator output)
+    for c in s.get_components_by_class(unreal.PrimitiveComponent):
+        c.component_tags = [t for t in c.component_tags if not str(t).startswith("seg:")] + [unreal.Name("seg:Ceiling")]
     if lights:
         lamp = lamp or "/Game/HousePropsFurniture/Meshes/Meshes_props/Lamps/SM_Lamp_ceiling_A"
         lm = unreal.load_asset(lamp) if unreal.EditorAssetLibrary.does_asset_exist(lamp) else None
