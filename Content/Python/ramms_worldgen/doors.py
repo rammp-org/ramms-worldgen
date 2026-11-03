@@ -388,22 +388,26 @@ def _owned(tag, gen):
 
 def _generator_isms(gen):
     """The instanced meshes of the generator's output: its own, and those of PCG partition actors that hold only
-    this generator's local component (a partition actor holding several generators' output is skipped)."""
+    this generator's local component (a partition actor that also holds output of any other PCG component in the
+    level, generator or not, is skipped)."""
     out = list(gen.get_components_by_class(unreal.InstancedStaticMeshComponent))
     pcg = gen.get_component_by_class(unreal.PCGComponent)
     if pcg is None or not hasattr(unreal, "PCGPartitionActor"):
         return out
     eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-    gens = [g.get_component_by_class(unreal.PCGComponent) for g in eas.get_all_level_actors() if isinstance(g, unreal.RammsWorldGenerator)]
-    for pa in [a for a in eas.get_all_level_actors() if isinstance(a, unreal.PCGPartitionActor)]:
+    actors = eas.get_all_level_actors()
+    parts = [a for a in actors if isinstance(a, unreal.PCGPartitionActor)]
+    owners = [c for a in actors if not isinstance(a, unreal.PCGPartitionActor)
+              for c in a.get_components_by_class(unreal.PCGComponent)]
+    for pa in parts:
         try:
-            locals_ = [g for g in gens if g is not None and pa.get_local_component(g)]
+            locals_ = [c for c in owners if pa.get_local_component(c)]
         except Exception:  # noqa: BLE001
             continue
         if locals_ == [pcg]:
             out += list(pa.get_components_by_class(unreal.InstancedStaticMeshComponent))
         elif pcg in locals_:
-            H.log("doors: %s holds several generators' output; its door leaves are left as they are" % pa.get_name())
+            H.log("doors: %s also holds other PCG components' output; its door leaves are left as they are" % pa.get_name())
     return out
 
 
