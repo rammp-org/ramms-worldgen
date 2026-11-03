@@ -65,6 +65,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 - [SimReady assets](#simready-assets)
   - [Articulated SimReady assets in MuJoCo](#articulated-simready-assets-in-mujoco)
   - [Articulated SimReady assets in generated levels](#articulated-simready-assets-in-generated-levels)
+  - [Hinged doors and ceilings](#hinged-doors-and-ceilings)
 - [Design notes and limits](#design-notes-and-limits)
 - [First-compile checklist](#first-compile-checklist)
 
@@ -666,6 +667,46 @@ The articulations run on MuJoCo or Chaos, whichever the level chooses with Ramms
 ramms-sim's `Scripts/worldgen/simready_level.py` generates such a level (a furnished home on `PAL_SimReady` with a
 settings actor), and `Scripts/pie_tests/chaos_articulation/simready_showroom.py` builds a showroom of the
 articulated assets for side-by-side runs.
+
+### Hinged doors and ceilings
+
+`ramms_worldgen.doors` closes up an indoor level for a robot's sensors. It turns a door-leaf mesh (the palette's
+`Door.Interior` / `Door.Exterior` meshes) into a URLab articulation: the leaf's triangles, UVs and material in an MJCF of
+a frame welded to the world and the leaf on a hinge (`door`, 0 to 100 degrees, a box collider for the panel and one
+for the handle), imported with `SR.import_mjcf` as `/Game/SimReady/MuJoCo/sr_<mesh>_w<width>_h<height>_r<rev>`.
+
+It runs on MuJoCo or Chaos as the level's `ARammsPhysicsSettings` says. A robot can push the door, and
+`simready_open.py` can drive it.
+
+```python
+import ramms_worldgen.doors as DR
+DR.articulate_level_doors()   # after generation: each leaf standing open beside its opening -> a closed, hinged door
+DR.add_ceiling()              # a ceiling slab over each room of the manifest, with ceiling lights
+bp = DR.build_door(DR.DOOR_INTERIOR, 90.0)                                  # or one door by hand:
+DR.place_door(bp, jamb=(415, -5, 0), along=(0, 1), into=(1, 0), wall_thickness=12)
+```
+
+`articulate_level_doors` works from the generator's output:
+
+- It reads each leaf's pose back from its instance.
+- It takes the opening's width from the manifest's `Door` / `Entrance` feature.
+- It finds which side of the leaf the opening is on with a trace across the wall.
+- It removes the leaf instances.
+
+Both functions tag what they place (`RammsDoors:<generator>`, `RammsCeiling:<generator>`). Run them again after a
+**Regenerate** to replace them; a second run without regenerating keeps them.
+
+The leaf turns about its corner on the face it opens toward, so it never swings into the jamb. Its collider stops
+3 cm short of the floor and 1 cm short of the jambs and head, so Chaos's contact margins do not drag it. The
+handle's collider covers only the handle: a proud porthole frame or a hinge knuckle stopped a door at 17 degrees
+before that.
+
+The MJCFs go to `RAMMS_SIMREADY_MJCF` (or `C:/Users/waemf/data/simready/mjcf`), beside the SimReady
+conversions. The Blueprints, like those conversions, are not committed. `MODEL_REV` is in the names because
+URLab cannot replace-import a Blueprint.
+
+`Scripts/worldgen/simready_level.py` exposes both as `SL_DOORS` and `SL_CEILING`. The showcase level
+(`simready_showcase.py`, `SC_ENCLOSED`) uses `build_door` / `place_door` and `ceiling_slab`.
 
 ## Streets and yards
 

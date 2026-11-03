@@ -1,0 +1,462 @@
+"""Hinged doors as URLab articulations, and closing up an indoor level (doors that open and close, a ceiling).
+
+A door is made from a door-leaf static mesh (the palette's Door.Interior / Door.Exterior meshes): its geometry is
+written as an OBJ into an MJCF model of a fixed frame and a leaf on a hinge, which URLab imports as an
+AMjArticulation Blueprint like the SimReady conversions (simready.import_mjcf), so it runs on MuJoCo or Chaos as
+the level's ARammsPhysicsSettings says, a robot can push it, and simready_open.py can drive it.
+
+    import ramms_worldgen.doors as DR
+    bp = DR.build_door("/Game/SuburbNeighborhoodHousePack/Meshes/Meshes_construction/SM_Door_interior", 89.0)
+    DR.place_door(bp, jamb=(415.0, -5.0, 0.0), along=(0.0, 1.0), into=(1.0, 0.0), wall_thickness=12.0)
+
+    DR.articulate_level_doors()      # in a generated level: swap each standing-open leaf for a closed, hinged door
+    DR.add_ceiling()                 # in a generated indoor level: a ceiling over each room, with lights
+
+The model (metres, MuJoCo frame): the leaf spans x 0..width from the hinge and y -thickness..0, so it turns about
+its corner on the +Y face (the side it opens to) and never swings into the jamb; the joint "door" opens 0..swing
+degrees toward +Y, and its lower limit is the closed door against its frame. The frame carries a strip of the
+hinge-side jamb (behind the hinge, clear of the leaf), since Chaos builds the welded root from its collision. URLab mirrors Y on import, so in Unreal (actor yaw 0) the leaf runs along +X and opens toward -Y;
+place_door turns and mirrors that to the opening it is given. The leaf mesh keeps its Unreal material.
+
+The MJCF goes to <mjcf_dir>/<stem>/<stem>.xml, where simready_open.py reads joints: mjcf_dir is the argument, else
+the RAMMS_SIMREADY_MJCF environment variable, else C:/Users/waemf/data/simready/mjcf. The Blueprints are made under
+/Game/SimReady/MuJoCo (not committed: they hold the door meshes of uncommitted packs). An existing Blueprint is
+kept, as simready.import_mjcf does.
+"""
+import json
+import math
+import os
+import struct
+
+import unreal
+
+from . import _helpers as H
+from . import simready as SR
+
+DEFAULT_MJCF = "C:/Users/waemf/data/simready/mjcf"
+DOOR_INTERIOR = "/Game/SuburbNeighborhoodHousePack/Meshes/Meshes_construction/SM_Door_interior"
+DOOR_EXTERIOR = "/Game/SuburbNeighborhoodHousePack/Meshes/Meshes_construction/SM_Door_exterior_windowed"
+LEAF_GAP = 0.8          # cm under the leaf
+# The leaf's collision box stops 3 cm above the floor and 1 cm short of each jamb and the head: Chaos's contact
+# margins would otherwise drag it on the floor and the wall.
+# bumped when the model changes: an imported Blueprint is kept, and a replace-import of one asserts
+MODEL_REV = 8
+JAMB_GAP = 0.5          # cm between the leaf and each jamb
+
+
+def _mjcf_dir(mjcf_dir=None):
+    return mjcf_dir or os.environ.get("RAMMS_SIMREADY_MJCF") or DEFAULT_MJCF
+
+
+def door_stem(mesh_path, width, height):
+    name = mesh_path.rsplit("/", 1)[-1].replace("SM_", "").lower()
+    name = name if name.startswith("door") else "door_" + name
+    return "sr_%s_w%d_h%d_r%d" % (name, int(round(width)), int(round(height)), MODEL_REV)
+
+
+def _leaf_geometry(mesh):
+    """Vertices (cm, mesh space), UVs and triangles of LOD 0, all sections."""
+    P, N, UV, F = [], [], [], []
+    for s in range(mesh.get_num_sections(0)):
+        v, t, n, uv, _tan = unreal.ProceduralMeshLibrary.get_section_from_static_mesh(mesh, 0, s)
+        base = len(P)
+        P += [(p.x, p.y, p.z) for p in v]
+        N += [(q.x, q.y, q.z) for q in n] if len(n) == len(v) else [(0.0, 0.0, 1.0)] * len(v)
+        UV += [(u.x, u.y) for u in uv] if len(uv) == len(v) else [(0.0, 0.0)] * len(v)
+        F += [(base + t[i], base + t[i + 1], base + t[i + 2]) for i in range(0, len(t) - 2, 3)]
+    return P, N, UV, F
+
+
+def _write_glb(path, P, N, UV, F, name):
+    """A minimal binary glTF (one mesh, one primitive) of Z-up metres, which URLab imports in place of the OBJ
+    beside it (Interchange reads glTF in metres; its OBJ path reads centimetres): (x, y, z) -> (x, z, -y), UVs
+    already top-left."""
+    pos = [(p[0], p[2], -p[1]) for p in P]
+    nrm = [(n[0], n[2], -n[1]) for n in N]
+    b_pos = struct.pack("<%df" % (3 * len(pos)), *[c for p in pos for c in p])
+    b_nrm = struct.pack("<%df" % (3 * len(nrm)), *[c for n in nrm for c in n])
+    b_uv = struct.pack("<%df" % (2 * len(UV)), *[c for u in UV for c in u])
+    b_idx = struct.pack("<%dI" % (3 * len(F)), *[i for f in F for i in f])
+    chunks = [b_pos, b_nrm, b_uv, b_idx]
+    acc = [{"bufferView": 0, "componentType": 5126, "count": len(pos), "type": "VEC3",
+            "min": [min(p[k] for p in pos) for k in range(3)], "max": [max(p[k] for p in pos) for k in range(3)]},
+           {"bufferView": 1, "componentType": 5126, "count": len(nrm), "type": "VEC3"},
+           {"bufferView": 2, "componentType": 5126, "count": len(UV), "type": "VEC2"},
+           {"bufferView": 3, "componentType": 5125, "count": 3 * len(F), "type": "SCALAR"}]
+    views, blob, off = [], b"", 0
+    for i, c in enumerate(chunks):
+        views.append({"buffer": 0, "byteOffset": off, "byteLength": len(c), "target": 34963 if i == 3 else 34962})
+        pad = (-len(c)) % 4
+        blob += c + b"\0" * pad
+        off += len(c) + pad
+    gltf = {"asset": {"version": "2.0", "generator": "ramms_worldgen.doors"}, "scene": 0, "scenes": [{"nodes": [0]}],
+            "nodes": [{"name": name, "mesh": 0}],
+            "meshes": [{"name": name, "primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": 3}]}],
+            "accessors": acc, "bufferViews": views, "buffers": [{"byteLength": len(blob)}]}
+    js = json.dumps(gltf, separators=(",", ":")).encode()
+    js += b" " * ((-len(js)) % 4)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(blob)))
+        f.write(struct.pack("<II", len(js), 0x4E4F534A) + js)
+        f.write(struct.pack("<II", len(blob), 0x004E4942) + blob)
+
+
+def _write_door(mesh, width, height, swing, stem, out_dir, mass=12.0):
+    """Write <out_dir>/<stem>/<stem>.xml and meshes/vis_Leaf.obj for a leaf `width` x `height` cm (the opening
+    less its gaps). Returns the XML path."""
+    P, N, UV, F = _leaf_geometry(mesh)
+    if not F:
+        raise RuntimeError("doors: %s has no triangles at LOD 0" % mesh.get_path_name())
+    xs, ys, zs = [p[0] for p in P], [p[1] for p in P], [p[2] for p in P]
+    # the width runs along the mesh's longer horizontal axis, the thickness along the other
+    wa = 1 if (max(ys) - min(ys)) >= (max(xs) - min(xs)) else 0
+    ta = 1 - wa
+    wmin, wmax = min(p[wa] for p in P), max(p[wa] for p in P)
+    zmin, zmax = min(zs), max(zs)
+    # the panel is the thickness most vertices share; handles stand out of it
+    tv = sorted(p[ta] for p in P)
+    tmid = tv[len(tv) // 2]
+    panel = [p for p in P if abs(p[ta] - tmid) < 3.0]
+    proud = [p for p in P if abs(p[ta] - tmid) >= 3.0]
+    tlo, thi = min(p[ta] for p in panel), max(p[ta] for p in panel)
+    thick = max(thi - tlo, 2.0)
+    # the handles stand proud on the latch half (hinge knuckles may too, on the other half): the hinge goes on
+    # the edge away from the half with more proud vertices, and only those make the handle's collision box
+    mid = (wmin + wmax) * 0.5
+    hi_side = sum(1 for p in proud if p[wa] > mid) >= sum(1 for p in proud if p[wa] <= mid)
+    handle = [p for p in proud if (p[wa] > mid) == hi_side]
+    hinge_at_min = hi_side if proud else True
+    sw = width / (wmax - wmin)
+    sz = height / (zmax - zmin)
+
+    def to_mj(p):
+        u = (p[wa] - wmin) if hinge_at_min else (wmax - p[wa])
+        x = u * sw
+        y = (p[ta] - thi)                 # the panel's +Y face on y = 0, the panel at -thick..0
+        z = (p[2] - zmin) * sz + LEAF_GAP
+        return (x / 100.0, y / 100.0, z / 100.0)
+
+    Q = [to_mj(p) for p in P]
+
+    def nrm_mj(n):
+        u = n[wa] * (1.0 if hinge_at_min else -1.0)
+        return (u, n[ta], n[2])
+    QN = [nrm_mj(n) for n in N]
+    # winding: Unreal's triangles face out under a reflection; flip them when the map to MuJoCo has none
+    sx = 1.0 if hinge_at_min else -1.0
+    det = -sx if wa == 1 else sx               # taking the width from Y and the thickness from X is a reflection
+    flip = det > 0.0
+    d = os.path.join(out_dir, stem)
+    os.makedirs(os.path.join(d, "meshes"), exist_ok=True)
+    with open(os.path.join(d, "meshes", "vis_Leaf.obj"), "w") as f:
+        f.write("# %s, %s\n" % (stem, mesh.get_path_name()))
+        for q in Q:
+            f.write("v %.6f %.6f %.6f\n" % q)
+        for u in UV:
+            f.write("vt %.6f %.6f\n" % (u[0], 1.0 - u[1]))
+        for a, b, c in F:
+            if flip:
+                b, c = c, b
+            f.write("f %d/%d %d/%d %d/%d\n" % (a + 1, a + 1, b + 1, b + 1, c + 1, c + 1))
+    _write_glb(os.path.join(d, "meshes", "vis_Leaf.glb"), Q, QN, UV, [(a, c, b) if flip else (a, b, c) for a, b, c in F], "vis_Leaf")
+    W, T, Hh = width / 100.0, thick / 100.0, height / 100.0
+    zc = LEAF_GAP / 100.0 + Hh * 0.5
+    ixx, iyy, izz = mass * (T * T + Hh * Hh) / 12.0, mass * (W * W + Hh * Hh) / 12.0, mass * (W * W + T * T) / 12.0
+    hb = ""
+    if handle:
+        # the handle itself: the proud vertices within 15 cm of their median height, at most 6 cm off each face
+        # (a porthole frame or a kick plate on the latch half is not a handle)
+        zs_h = sorted(p[2] for p in handle)
+        zmed = zs_h[len(zs_h) // 2]
+        hq = [to_mj(p) for p in handle if abs(p[2] - zmed) <= 15.0]
+        lo = [min(q[k] for q in hq) for k in range(3)]
+        hi = [max(q[k] for q in hq) for k in range(3)]
+        lo[1], hi[1] = max(lo[1], -T - 0.06), min(hi[1], 0.06)
+        hb = ('        <geom name="col_handle" class="%s_collision" type="box" size="%.4f %.4f %.4f" pos="%.4f %.4f %.4f" friction="0.6 0.005 0.0001"/>\n'
+              % (stem, max((hi[0] - lo[0]) * 0.5, 0.005), max((hi[1] - lo[1]) * 0.5, 0.005), max((hi[2] - lo[2]) * 0.5, 0.005),
+                 (hi[0] + lo[0]) * 0.5, (hi[1] + lo[1]) * 0.5, (hi[2] + lo[2]) * 0.5))
+    xml = '''<mujoco model="{s}">
+  <!-- A hinged door from {m} by ramms_worldgen.doors: {w:.1f} x {h:.1f} cm, opens 0..{sw:.0f} degrees toward +Y -->
+  <compiler angle="degree" autolimits="true"/>
+  <default>
+    <default class="{s}_visual">
+      <geom type="mesh" contype="0" conaffinity="0" group="2" mass="0"/>
+    </default>
+    <default class="{s}_collision">
+      <geom group="3" rgba="0.6 0.3 0.3 0.5" condim="4" solref="0.004 1"/>
+    </default>
+  </default>
+  <asset>
+    <material name="mat_Leaf" rgba="0.92 0.91 0.88 1" roughness="0.6"/>
+    <material name="mat_Pin" rgba="0.55 0.55 0.53 1" metallic="1" roughness="0.4"/>
+    <mesh name="vis_Leaf" file="meshes/vis_Leaf.obj"/>
+  </asset>
+  <worldbody>
+    <body name="Frame" pos="0 0 0">
+      <inertial mass="5" pos="{w2:.4f} 0 {zc:.4f}" diaginertia="0.5 0.5 0.5"/>
+      <geom name="vis_Pin" class="{s}_visual" type="cylinder" size="0.006 {h2:.4f}" pos="0 0 {zc:.4f}" material="mat_Pin"/>
+      <geom name="col_jamb" class="{s}_collision" type="box" size="0.015 {th:.4f} {h2:.4f}" pos="-0.02 {t2:.4f} {zc:.4f}" friction="0.6 0.005 0.0001"/>
+      <body name="Leaf" pos="0 0 0">
+        <joint name="door" type="hinge" pos="0 0 0" axis="0 0 1" range="0 {sw:.1f}" damping="1.5" armature="0.005" frictionloss="0"/>
+        <inertial mass="{ms:.3f}" pos="{w2:.4f} {t2:.4f} {zc:.4f}" diaginertia="{ixx:.5f} {iyy:.5f} {izz:.5f}"/>
+        <geom name="vis_Leaf" class="{s}_visual" mesh="vis_Leaf" material="mat_Leaf"/>
+        <geom name="col_leaf" class="{s}_collision" type="box" size="{cw2:.4f} {th:.4f} {ch2:.4f}" pos="{w2:.4f} {t2:.4f} {czc:.4f}" friction="0.6 0.005 0.0001"/>
+{hb}      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- the frame is welded to the world, so MuJoCo would not skip its contacts with the leaf -->
+    <exclude body1="Frame" body2="Leaf"/>
+  </contact>
+</mujoco>
+'''.format(s=stem, m=mesh.get_path_name(), w=width, h=height, sw=swing, w2=W * 0.5, h2=Hh * 0.5, zc=zc, th=T * 0.5, t2=-T * 0.5,
+           cw2=W * 0.5 - 0.01, ch2=(Hh - 0.04) * 0.5, czc=zc + 0.01, ms=mass, ixx=ixx, iyy=iyy, izz=izz, hb=hb)
+    path = os.path.join(d, stem + ".xml")
+    with open(path, "w") as f:
+        f.write(xml)
+    return path
+
+
+def build_door(mesh_path=DOOR_INTERIOR, opening_width=90.0, opening_height=210.0, swing=100.0, mjcf_dir=None, dest=SR.MJ_DEST):
+    """The Blueprint of a hinged door for an opening `opening_width` x `opening_height` cm, made (MJCF, import,
+    the leaf's Unreal material) if it does not exist yet. Returns the Blueprint path, or None."""
+    width = opening_width - 2.0 * JAMB_GAP
+    height = opening_height - LEAF_GAP - 1.0
+    stem = door_stem(mesh_path, width, height)
+    bp = "%s/%s" % (dest, stem)
+    if unreal.EditorAssetLibrary.does_asset_exist(bp):
+        return bp
+    mesh = unreal.load_asset(mesh_path)
+    if not isinstance(mesh, unreal.StaticMesh):
+        H.log("doors: %s is not a static mesh in this project" % mesh_path)
+        return None
+    xml = _write_door(mesh, width, height, swing, stem, _mjcf_dir(mjcf_dir))
+    out = SR.import_mjcf(xml, dest).get(stem)
+    if not out:
+        return None
+    # the leaf keeps the source mesh's material
+    vis = [p for p in unreal.EditorAssetLibrary.list_assets("/Game/MuJoCoImports/%s_Assets" % stem, True, False) if p.split(".")[0].endswith("/vis_Leaf")]
+    sm = unreal.load_asset(vis[0].split(".")[0]) if vis else None
+    if sm is not None:
+        for i, m in enumerate(mesh.static_materials):
+            if i < len(sm.static_materials):
+                sm.set_material(i, m.material_interface)
+        unreal.EditorAssetLibrary.save_loaded_asset(sm, only_if_is_dirty=False)
+    return out
+
+
+def place_door(bp, jamb, along, into, wall_thickness=12.0, folder=None, label=None, tag=None):
+    """Spawn the door Blueprint `bp` closed in an opening. `jamb` is the opening's edge (x, y, floor z) the hinge
+    goes on, `along` the unit direction across the opening from it, `into` the unit direction (perpendicular,
+    horizontal) of the room the door opens into. Returns the actor."""
+    ux, uy = along
+    vx, vy = into
+    # the leaf runs along the actor's +X and opens toward its -Y: with `into` on the left of `along`, hinge at
+    # the other jamb and run the other way
+    if ux * vy - uy * vx > 0.0:
+        w = _bp_width(bp)
+        jamb = (jamb[0] + ux * (w + 2.0 * JAMB_GAP), jamb[1] + uy * (w + 2.0 * JAMB_GAP), jamb[2])
+        ux, uy = -ux, -uy
+    hx = jamb[0] + ux * JAMB_GAP + vx * wall_thickness * 0.5
+    hy = jamb[1] + uy * JAMB_GAP + vy * wall_thickness * 0.5
+    yaw = math.degrees(math.atan2(uy, ux))
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    a = eas.spawn_actor_from_class(unreal.EditorAssetLibrary.load_blueprint_class(bp), unreal.Vector(hx, hy, jamb[2]), unreal.Rotator(yaw=yaw))
+    if folder:
+        a.set_folder_path(folder)
+    if label:
+        a.set_actor_label(label)
+    if tag:
+        a.tags = list(a.tags) + [unreal.Name(tag)]
+    return a
+
+
+def _clear(tag):
+    """Destroy the actors an earlier run tagged `tag` (doors, ceiling), so running again after Regenerate does not
+    stack them."""
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    old = [a for a in eas.get_all_level_actors() if tag in [str(t) for t in a.tags]]
+    for a in old:
+        eas.destroy_actor(a)
+    return len(old)
+
+
+def _bp_width(bp):
+    """The leaf width (cm) a door Blueprint was made for, from its name."""
+    stem = bp.rsplit("/", 1)[-1]
+    for part in stem.split("_"):
+        if part.startswith("w") and part[1:].isdigit():
+            return float(part[1:])
+    return 89.0
+
+
+def _leaf_frame(mesh):
+    """(width axis 0/1, hinge at the low end?, local bounds min, max) of a door-leaf mesh."""
+    P, _N, _UV, _F = _leaf_geometry(mesh)
+    xs, ys = [p[0] for p in P], [p[1] for p in P]
+    wa = 1 if (max(ys) - min(ys)) >= (max(xs) - min(xs)) else 0
+    ta = 1 - wa
+    tv = sorted(p[ta] for p in P)
+    tmid = tv[len(tv) // 2]
+    wmin, wmax = min(p[wa] for p in P), max(p[wa] for p in P)
+    mid = (wmin + wmax) * 0.5
+    proud = [p for p in P if abs(p[ta] - tmid) >= 3.0]
+    hi_side = sum(1 for p in proud if p[wa] > mid) >= sum(1 for p in proud if p[wa] <= mid)
+    lo = [min(p[k] for p in P) for k in range(3)]
+    hi = [max(p[k] for p in P) for k in range(3)]
+    return wa, (hi_side if proud else True), lo, hi, tmid
+
+
+def _generator(generator=None):
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    if generator is not None:
+        return generator
+    gens = [a for a in eas.get_all_level_actors() if isinstance(a, unreal.RammsWorldGenerator)]
+    return gens[0] if gens else None
+
+
+def articulate_level_doors(generator=None, swing=100.0, mjcf_dir=None, wall_thickness=None, folder="Doors"):
+    """In a generated indoor level: replace each door leaf the generator stood open beside its opening (an
+    instance of a Door.Interior / Door.Exterior palette mesh) with a closed, hinged door of the same mesh in the
+    opening, opening into the room the leaf stood in. The opening's width comes from the manifest's Door / Entrance
+    feature at that leaf; which side of the leaf the opening is on, from a trace across the wall. The leaf
+    instances are removed (Regenerate brings them back; run this again after it: the doors an earlier run placed,
+    tagged RammsDoors:<generator>, are replaced). Returns the door actors placed."""
+    gen = _generator(generator)
+    if gen is None:
+        H.log("doors: no RammsWorldGenerator in the level")
+        return []
+    params = gen.get_editor_property("preset").get_editor_property("params")
+    T = wall_thickness or params.get_editor_property("wall_thickness")
+    feats = [f for f in H.manifest_to_dict(gen).get("features", []) if str(f.get("kind")) in ("Door", "Entrance")]
+    by_asset = {}
+    for f in feats:
+        by_asset.setdefault(str(f.get("asset", "")).split(".")[0], []).append(f)
+    world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+    tag = "RammsDoors:%s" % gen.get_name()
+    isms = [c for c in gen.get_components_by_class(unreal.InstancedStaticMeshComponent)
+            if c.static_mesh and c.static_mesh.get_path_name().split(".")[0] in by_asset and c.get_instance_count() > 0]
+    if not isms:
+        eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        H.log("doors: no standing door leaves (already articulated, or no doors); kept the doors there are")
+        return [a for a in eas.get_all_level_actors() if tag in [str(t) for t in a.tags]]
+    _clear(tag)
+    placed = []
+    for ism in isms:
+        mesh = ism.static_mesh
+        path = mesh.get_path_name().split(".")[0]
+        wa, hinge_at_min, lo, hi, tmid = _leaf_frame(mesh)
+        ta = 1 - wa
+        remove = []
+        for i in range(ism.get_instance_count()):
+            xf = ism.get_instance_transform(i, True)
+            xf = xf[-1] if isinstance(xf, tuple) else xf
+
+            def to_world(pt):
+                return xf.transform_location(unreal.Vector(*pt))
+            a = [0.0, 0.0, lo[2]]
+            b = [0.0, 0.0, lo[2]]
+            # PCGRammsIndoor centres the leaf's bounds (handles included) on its line beside the jamb
+            a[ta] = b[ta] = (lo[ta] + hi[ta]) * 0.5
+            a[wa], b[wa] = (lo[wa], hi[wa]) if hinge_at_min else (hi[wa], lo[wa])
+            ph, pf = to_world(a), to_world(b)
+            vx, vy = pf.x - ph.x, pf.y - ph.y
+            leaf_w = math.hypot(vx, vy)
+            if leaf_w < 40.0:
+                continue
+            vx, vy = vx / leaf_w, vy / leaf_w
+            ux, uy = -vy, vx
+            # the wall's centre line, T/2 + 2.5 cm behind the leaf's hinge end (PCGRammsIndoor stands it there)
+            cx, cy = ph.x - vx * (T * 0.5 + 2.5), ph.y - vy * (T * 0.5 + 2.5)
+            f = min(by_asset[path], key=lambda f: (f["location"]["x"] - (ph.x + pf.x) * 0.5) ** 2 + (f["location"]["y"] - (ph.y + pf.y) * 0.5) ** 2)
+            opening = float(f.get("measure") or (leaf_w + 1.0))
+            # the opening is on the side of the leaf where a trace across the wall meets nothing
+            z = ph.z + 100.0
+            clear = []
+            for sgn in (1.0, -1.0):
+                qx, qy = cx + sgn * ux * (3.0 + opening * 0.5), cy + sgn * uy * (3.0 + opening * 0.5)
+                r = unreal.SystemLibrary.line_trace_single(world, unreal.Vector(qx - vx * T, qy - vy * T, z), unreal.Vector(qx + vx * T, qy + vy * T, z),
+                                                           unreal.TraceTypeQuery.TRACE_TYPE_QUERY1, True, [], unreal.DrawDebugTrace.NONE, True)
+                clear.append(not (r[0] if isinstance(r, tuple) else r is not None))
+            if clear[0] == clear[1]:
+                H.log("doors: cannot tell which side of the leaf at (%.0f, %.0f) the opening is on; left as it is" % (ph.x, ph.y))
+                continue
+            sgn = 1.0 if clear[0] else -1.0
+            ux, uy = ux * sgn, uy * sgn
+            jamb = (cx + ux * 3.0, cy + uy * 3.0, ph.z)
+            # PCGRammsIndoor cuts door openings 210 cm high; widths round down to 2 cm (and 1 cm more of slack, for
+            # the leaf's pose read back from its instance) so a few Blueprints serve
+            bp = build_door(path, math.floor((opening - 1.0) / 2.0) * 2.0, 210.0, swing, mjcf_dir)
+            if bp:
+                placed.append(place_door(bp, jamb, (ux, uy), (vx, vy), T, folder=folder, tag=tag))
+                remove.append(i)
+        for i in sorted(remove, reverse=True):
+            ism.remove_instance(i)
+    H.log("doors: %d articulated doors" % len(placed))
+    return placed
+
+
+def add_ceiling(generator=None, material="Mat.Wall.Interior", palette=None, lights=True, spacing=350.0, folder="Ceiling"):
+    """In a generated indoor level: a ceiling slab over each room of the manifest, its underside at the top of the
+    walls, with ceiling lights (one per room, more every `spacing` cm in large rooms). Returns the slabs."""
+    gen = _generator(generator)
+    if gen is None:
+        H.log("doors: no RammsWorldGenerator in the level, no ceiling")
+        return []
+    pal = unreal.load_asset(palette or "/RammsWorldGen/Palettes/PAL_Default")
+    mat = pal.material_path(material) if pal else ""
+    tag = "RammsCeiling:%s" % gen.get_name()
+    _clear(tag)
+    slabs = []
+    for f in H.manifest_to_dict(gen).get("features", []):
+        if str(f.get("kind")) != "Room":
+            continue
+        c, sz = f["location"], f["size"]
+        slabs.append(ceiling_slab(c["x"] - sz["x"] * 0.5, c["x"] + sz["x"] * 0.5, c["y"] - sz["y"] * 0.5, c["y"] + sz["y"] * 0.5,
+                                  c["z"] + sz["z"], mat, lights=lights, spacing=spacing, folder=folder, tag=tag))
+    H.log("doors: ceiling over %d rooms" % len(slabs))
+    return slabs
+
+
+def ceiling_slab(x0, x1, y0, y1, z, material, thickness=12.0, lights=True, spacing=350.0, folder="Ceiling", lamp=None, candela=60.0, tag=None):
+    """A ceiling slab whose underside is at z over x0..x1, y0..y1, and ceiling lights under it. Returns the slab."""
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    s = eas.spawn_actor_from_class(unreal.RammsProcPiece, unreal.Vector(x0, (y0 + y1) * 0.5, z + thickness), unreal.Rotator())
+    for k, v in (("kind", unreal.RammsProcPieceKind.SLAB), ("size_x", x1 - x0), ("size_y", y1 - y0), ("size_z", thickness),
+                 ("material_path", material), ("uv_scale", 200.0)):
+        s.set_editor_property(k, v)
+    s.rebuild()
+    s.set_folder_path(folder)
+    if tag:
+        s.tags = [unreal.Name(tag)]
+    if lights:
+        lamp = lamp or "/Game/HousePropsFurniture/Meshes/Meshes_props/Lamps/SM_Lamp_ceiling_A"
+        lm = unreal.load_asset(lamp) if unreal.EditorAssetLibrary.does_asset_exist(lamp) else None
+        nx, ny = max(1, int(round((x1 - x0) / spacing))), max(1, int(round((y1 - y0) / spacing)))
+        for i in range(nx):
+            for j in range(ny):
+                x, y = x0 + (i + 0.5) * (x1 - x0) / nx, y0 + (j + 0.5) * (y1 - y0) / ny
+                for a in ceiling_light(x, y, z, lm, candela, folder):
+                    if tag:
+                        a.tags = [unreal.Name(tag)]
+    return s
+
+
+def ceiling_light(x, y, z, lamp_mesh=None, candela=60.0, folder="Ceiling", radius=700.0):
+    """A ceiling lamp (static mesh, hung from z) with a warm, shadowed point light under it. Returns the actors."""
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    out = []
+    if lamp_mesh is not None:
+        m = eas.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(x, y, z), unreal.Rotator())
+        m.static_mesh_component.set_static_mesh(lamp_mesh)
+        m.set_folder_path(folder)
+        out.append(m)
+    l = eas.spawn_actor_from_class(unreal.PointLight, unreal.Vector(x, y, z - 30.0), unreal.Rotator())
+    c = l.get_component_by_class(unreal.PointLightComponent)
+    c.set_editor_property("intensity_units", unreal.LightUnits.CANDELAS)
+    c.set_intensity(candela)
+    c.set_attenuation_radius(radius)
+    c.set_cast_shadows(True)
+    c.set_light_color(unreal.LinearColor(1.0, 0.9, 0.78, 1.0))
+    l.set_folder_path(folder)
+    return out + [l]
