@@ -795,16 +795,78 @@ NO_COLLISION_SLOTS = {"GrassClump", "Flowers", "LawnTuft",  # ground cover: whee
                       "Skyline",  # distant towers outside the site: nothing ever reaches them
                       # flat street litter and covers (LitterDensity): spawned as ground cover
                       "Litter.Leaves", "Litter.Gutter", "Litter.Trash", "Cover.Manhole", "Cover.Utility"}
+
+# Collision of pack meshes (Fab packs; UrbanVerse and SimReady imports). The sim needs every palette mesh to
+# collide, so a palette build fixes collision in the project's local copies of those meshes, which are never
+# committed (re-downloading a pack undoes it). A mesh keeps the simple collision it ships with, except a tree's
+# crown hull; a mesh with none gets some. Every change is saved, logged and listed.
+FIX_PACK_COLLISION = True     # False: change nothing; list what lacks usable collision in MISSING_COLLISION instead
+MODIFIED_PACK_ASSETS = []     # {"path", "slot", "change", "pack"}: every mesh the current build changed and saved
+MISSING_COLLISION = []        # {"path", "slot", "need"}: meshes the current build left without usable collision
+TRUNK_BOX = 50.0              # side of the box around a tree's trunk (cm, mesh space)
+CROWN_WIDTH = 3.0 * TRUNK_BOX  # a tree's simple collision wider than this is a crown hull, not its trunk's ...
+CROWN_RISE = 1.25             # ... and so is collision reaching higher than this times the trunk box's height
+TRUNK_SPREAD = 60.0           # a trunk is measured reliably when 90% of its lowest 60 cm lie this close to the centroid
+TRUNK_SECTORS = 16            # ... and surround it: of this many directions around the centroid,
+TRUNK_SECTORS_MIN = 12        # ... at least this many hold vertices (several stems or one-sided foliage do not)
 _COLLISION_DONE = set()
+_NUM = r"([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)"
+_CONVEX_BOX = _re.compile(r"ElemBox=\(Min=\(X=%s,Y=%s,Z=%s\),Max=\(X=%s,Y=%s,Z=%s\)" % ((_NUM,) * 6))
+
+
+def reset_collision_log():
+    """Start of a palette build: every mesh is checked again (an asset may have been re-imported since), and the
+    lists of meshes changed or left without collision start empty."""
+    _COLLISION_DONE.clear()
+    del MODIFIED_PACK_ASSETS[:]
+    del MISSING_COLLISION[:]
+
+
+def collision_report():
+    """The current build's collision record, for its report. Python cannot refresh the physics of instances that
+    are already placed (the static-mesh editing calls that do refresh them run before the trunk box exists), so
+    when meshes changed this warns that open levels must be regenerated before crowd.build_crowd."""
+    if MODIFIED_PACK_ASSETS:
+        H.warn("collision changed on %d meshes (palettes.MODIFIED_PACK_ASSETS): instances in levels open now keep the "
+               "old collision until the level is regenerated or reloaded; regenerate it (levels.build_level does) "
+               "before crowd.build_crowd" % len(MODIFIED_PACK_ASSETS))
+    return {"modified_pack_assets": [dict(e) for e in MODIFIED_PACK_ASSETS],
+            "missing_collision": [dict(e) for e in MISSING_COLLISION]}
+
+
+def _record_change(mesh, slot, change):
+    path = mesh.get_path_name()
+    pack = not path.startswith(H.ROOT + "/")
+    MODIFIED_PACK_ASSETS.append({"path": path, "slot": slot, "change": change, "pack": pack})
+    H.log("collision: %s (%s): %s%s" % (path, slot, change, "" if pack else " -- plugin content: commit or revert it"))
+
+
+def _record_missing(mesh, slot, need):
+    MISSING_COLLISION.append({"path": mesh.get_path_name(), "slot": slot, "need": need})
+    H.warn("collision: %s (%s): %s" % (mesh.get_path_name(), slot, need))
+
+
+def _save_collision(mesh, slot, change):
+    try:
+        mesh.modify()
+    except Exception:  # noqa: BLE001
+        pass
+    unreal.EditorAssetLibrary.save_loaded_asset(mesh, False)
+    _record_change(mesh, slot, change)
+
+
+def _complex_as_simple(bs):
+    return str(bs.get_editor_property("collision_trace_flag")).find("COMPLEX_AS_SIMPLE") >= 0
 
 
 def _ensure_collision(mesh, slot=""):
-    """Make a palette mesh solid. The PCG spawners use BlockAll, but a mesh with no simple collision has no
-    physics shape at all (pack props often ship that way): trees get a box around the trunk (so canopies
-    do not block), everything else collides against its own triangles (complex as simple). A tree's own
-    simple collision is replaced too: imports (UrbanVerse GLBs) can arrive with a hull around the whole crown,
-    which blocks a sidewalk edge to edge. A mesh is edited (and saved) only when it lacks what it should have:
-    once per build at most, never again once it has it. Ground cover is left alone."""
+    """Give a palette mesh usable collision. The PCG spawners use BlockAll, but a mesh with no simple collision
+    has no physics shape at all (pack props often ship that way). A mesh keeps the simple collision it ships with
+    (a tree: see _ensure_tree_collision); one with no box, sphere or capsule collides against its own triangles
+    (complex as simple; convex hulls, which get_simple_collision_count leaves out, stay in the asset, unused);
+    ground cover gets none. Each change is saved, logged and listed in MODIFIED_PACK_ASSETS; with
+    FIX_PACK_COLLISION False nothing changes and what lacks collision is listed in MISSING_COLLISION. Once per
+    build per mesh; a mesh that has what it should is not edited or saved again."""
     if mesh is None or slot in NO_COLLISION_SLOTS:
         return
     path = mesh.get_path_name()
@@ -812,42 +874,155 @@ def _ensure_collision(mesh, slot=""):
         return
     _COLLISION_DONE.add(path)
     try:
-        tree = slot in TREE_SLOTS
-        if tree:
-            # Measured before anything is removed: a tree whose trunk cannot be found keeps what it has.
-            t = _trunk_xy(mesh)
-            bs = mesh.get_editor_property("body_setup")
-            if t is None or bs is None:
-                return
-            b = mesh.get_bounds()
-            zmin = b.origin.z - b.box_extent.z
-            h = min(400.0, b.box_extent.z * 2.0 * 0.45)
-            box = (t[0], t[1], zmin + h * 0.5, h)
-            if _has_only_box(bs, box):
-                return
-            # Unconditionally: get_simple_collision_count does not count convex hulls, which is what a crown
-            # hull is.
-            unreal.EditorStaticMeshLibrary.remove_collisions(mesh)
-            bs = mesh.get_editor_property("body_setup")
-            ag = bs.get_editor_property("agg_geom")
-            ag.import_text("(BoxElems=((Center=(X=%.1f,Y=%.1f,Z=%.1f),Rotation=(Pitch=0,Yaw=0,Roll=0),X=50.0,Y=50.0,Z=%.1f)))" % box)
-            bs.set_editor_property("agg_geom", ag)
-        else:
-            if unreal.EditorStaticMeshLibrary.get_simple_collision_count(mesh) > 0:
-                return
-            bs = mesh.get_editor_property("body_setup")
-            if bs is None:
-                return
-            if str(bs.get_editor_property("collision_trace_flag")).find("COMPLEX_AS_SIMPLE") >= 0:
-                return
-            bs.set_editor_property("collision_trace_flag", unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE)
+        bs = mesh.get_editor_property("body_setup")
+        if bs is None:
+            return
+        if slot in TREE_SLOTS:
+            _ensure_tree_collision(mesh, bs, slot)
+            return
+        if unreal.EditorStaticMeshLibrary.get_simple_collision_count(mesh) > 0 or _complex_as_simple(bs):
+            return
         try:
-            mesh.modify()
+            hulls = len(bs.get_editor_property("agg_geom").get_editor_property("convex_elems"))
         except Exception:  # noqa: BLE001
-            pass
-        unreal.EditorAssetLibrary.save_loaded_asset(mesh, False)
+            hulls = 0
+        if not FIX_PACK_COLLISION:
+            if not hulls:
+                _record_missing(mesh, slot, "no simple collision (a fixing build makes it collide complex-as-simple)")
+            return
+        bs.set_editor_property("collision_trace_flag", unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE)
+        _save_collision(mesh, slot, "trace flag -> complex-as-simple (it had no box, sphere or capsule%s)" % (
+            "; its %d convex hull(s) stay in the asset, unused" % hulls if hulls else ""))
     except Exception as exc:  # noqa: BLE001
         H.warn("collision for %s: %s" % (mesh.get_name(), exc))
+
+
+def _ensure_tree_collision(mesh, bs, slot):
+    """A tree collides on a TRUNK_BOX box around its trunk, so a canopy does not block a sidewalk:
+    - a tree with no simple collision gets the box, on the centroid of its lowest vertices (_trunk_measure);
+    - a tree keeps the simple collision it ships with, unless that is a crown hull -- wider than CROWN_WIDTH, or
+      reaching higher than CROWN_RISE times the box (imports and packs can wrap the whole crown, which blocks a
+      sidewalk edge to edge) -- and its trunk is measured reliably: then the box replaces it. A crown hull on a
+      tree whose trunk cannot be measured reliably is kept, and listed in MISSING_COLLISION;
+    - a tree never collides complex-as-simple (its crown's triangles would block): that trace flag goes back to
+      the default. A tree with the box (or other trunk-sized collision) and the default flag is left alone."""
+    trunk = _trunk_measure(mesh)
+    b = mesh.get_bounds()
+    zmin = b.origin.z - b.box_extent.z
+    h = min(400.0, b.box_extent.z * 2.0 * 0.45)
+    try:
+        shapes, ext = _simple_shapes(bs)
+    except Exception as exc:  # noqa: BLE001
+        H.warn("collision: %s: its simple collision could not be read (%s)" % (mesh.get_path_name(), exc))
+        shapes, ext = _shape_count(mesh), None
+    complex_as_simple = _complex_as_simple(bs)
+    replace = None
+    if shapes == 0:
+        if trunk is None:
+            _record_missing(mesh, slot, "no simple collision, and no trunk to put a box on: left as it is")
+            return
+        replace = "trunk box %.0f x %.0f x %.0f cm (it had no simple collision)" % (TRUNK_BOX, TRUNK_BOX, h)
+    elif ext is None:
+        H.warn("collision: %s (%s): its %d simple shape(s) could not be measured; kept" % (mesh.get_path_name(), slot, shapes))
+    else:
+        width = max(ext[3] - ext[0], ext[4] - ext[1])
+        rise = ext[5] - zmin
+        if width > CROWN_WIDTH or rise > h * CROWN_RISE:
+            what = "%d shape(s) %.0f cm wide reaching %.0f cm up (a crown hull)" % (shapes, width, rise)
+            if trunk is None or not trunk[2]:
+                _record_missing(mesh, slot, what + " kept: the trunk cannot be measured reliably (several stems, foliage or a wide base at the ground)")
+            else:
+                replace = "trunk box %.0f x %.0f x %.0f cm replacing %s" % (TRUNK_BOX, TRUNK_BOX, h, what)
+    if replace is None and not complex_as_simple:
+        return
+    change = "; ".join(c for c in (replace, "trace flag complex-as-simple -> default" if complex_as_simple else None) if c)
+    if not FIX_PACK_COLLISION:
+        _record_missing(mesh, slot, "a fixing build sets: " + change)
+        return
+    if replace is not None:
+        # Everything goes, convex hulls (and their cooked data) included.
+        unreal.EditorStaticMeshLibrary.remove_collisions(mesh)
+        bs = mesh.get_editor_property("body_setup")
+        ag = bs.get_editor_property("agg_geom")
+        ag.import_text("(BoxElems=((Center=(X=%.1f,Y=%.1f,Z=%.1f),Rotation=(Pitch=0,Yaw=0,Roll=0),X=%.1f,Y=%.1f,Z=%.1f)))"
+                       % (trunk[0], trunk[1], zmin + h * 0.5, TRUNK_BOX, TRUNK_BOX, h))
+        bs.set_editor_property("agg_geom", ag)
+    if complex_as_simple:
+        bs.set_editor_property("collision_trace_flag", unreal.CollisionTraceFlag.CTF_USE_DEFAULT)
+    _save_collision(mesh, slot, change)
+
+
+def _shape_count(mesh):
+    """Simple shapes of a mesh, convex hulls included, from the static-mesh library (when _simple_shapes fails)."""
+    n = unreal.EditorStaticMeshLibrary.get_simple_collision_count(mesh)
+    try:
+        return n + unreal.EditorStaticMeshLibrary.get_convex_collision_count(mesh)
+    except Exception:  # noqa: BLE001 - cannot tell: count it as having some, which keeps it
+        return n + 1
+
+
+def _simple_shapes(bs):
+    """(count, extent) of a body's simple collision: its boxes, spheres, capsules and convex hulls (which
+    get_simple_collision_count leaves out), and their mesh-space extent (x0, y0, z0, x1, y1, z1), None when there
+    are none or one cannot be measured. A rotated box or a tilted capsule counts as its bounding sphere. A hull's
+    own box is not exposed to Python: it is read from the body's exported text (its element transform, identity
+    for imported hulls, is not applied); when a hull's box cannot be found there the extent is unknown."""
+    import math
+    ag = bs.get_editor_property("agg_geom")
+    lo, hi = [1e18] * 3, [-1e18] * 3
+
+    def grow(c, e):
+        for i, (cv, ev) in enumerate(((c.x, e[0]), (c.y, e[1]), (c.z, e[2]))):
+            lo[i] = min(lo[i], cv - ev)
+            hi[i] = max(hi[i], cv + ev)
+
+    n = 0
+    known = True
+    for e in ag.get_editor_property("box_elems"):
+        n += 1
+        c, rot = e.get_editor_property("center"), e.get_editor_property("rotation")
+        hx, hy, hz = e.get_editor_property("x") * 0.5, e.get_editor_property("y") * 0.5, e.get_editor_property("z") * 0.5
+        if abs(rot.roll) < 0.5 and abs(rot.pitch) < 0.5:
+            rxy = math.hypot(hx, hy)
+            grow(c, (hx, hy, hz) if abs(rot.yaw) < 0.5 else (rxy, rxy, hz))
+        else:
+            r = math.sqrt(hx * hx + hy * hy + hz * hz)
+            grow(c, (r, r, r))
+    for e in ag.get_editor_property("sphere_elems"):
+        n += 1
+        r = e.get_editor_property("radius")
+        grow(e.get_editor_property("center"), (r, r, r))
+    for name, radii in (("sphyl_elems", ("radius",)), ("tapered_capsule_elems", ("radius0", "radius1"))):
+        try:
+            elems = ag.get_editor_property(name)
+        except Exception:  # noqa: BLE001
+            continue
+        for e in elems:
+            n += 1
+            r = max(e.get_editor_property(k) for k in radii)
+            half = e.get_editor_property("length") * 0.5 + r
+            rot = e.get_editor_property("rotation")
+            grow(e.get_editor_property("center"), (r, r, half) if abs(rot.roll) < 0.5 and abs(rot.pitch) < 0.5 else (half, half, half))
+    hulls = len(ag.get_editor_property("convex_elems"))
+    if hulls:
+        n += hulls
+        boxes = _CONVEX_BOX.findall(ag.export_text())
+        if len(boxes) != hulls:
+            known = False
+        for bx in boxes:
+            v = [float(s) for s in bx]
+            for i in range(3):
+                lo[i] = min(lo[i], v[i])
+                hi[i] = max(hi[i], v[i + 3])
+    for name in ("level_set_elems", "skinned_level_set_elems", "ml_level_set_elems", "skinned_triangle_mesh_elems"):
+        try:
+            k = len(ag.get_editor_property(name))
+        except Exception:  # noqa: BLE001 - not in this engine version
+            continue
+        if k:
+            n += k
+            known = False
+    return n, (tuple(lo) + tuple(hi) if known and n else None)
 TREE_SLOTS = {"Tree", "TreeSmall", "TreeLarge"}
 DOOR_SLOTS = {"Door.Interior", "Door.Exterior"}
 
@@ -879,24 +1054,13 @@ def _is_decal(mat):
         return False
 
 
-def _has_only_box(bs, box):
-    """Is the body's simple collision exactly the trunk box (cx, cy, cz, height) already, 50 x 50 cm?"""
-    try:
-        ag = bs.get_editor_property("agg_geom")
-        boxes = list(ag.get_editor_property("box_elems"))
-        if len(boxes) != 1 or any(len(ag.get_editor_property(k)) for k in ("sphere_elems", "sphyl_elems", "convex_elems")):
-            return False
-        e = boxes[0]
-        c = e.get_editor_property("center")
-        have = (c.x, c.y, c.z, e.get_editor_property("z"))
-        return all(abs(a - w) < 0.5 for a, w in zip(have, box)) and abs(e.get_editor_property("x") - 50.0) < 0.5 and abs(e.get_editor_property("y") - 50.0) < 0.5
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _trunk_xy(mesh):
-    """Mesh-space XY of a tree's trunk: the centroid of the vertices in the lowest 60 cm (the canopy's
-    bounds centre is often a metre or more off the trunk)."""
+def _trunk_measure(mesh):
+    """(x, y, reliable) of a tree's trunk in mesh space: the centroid of the vertices in the lowest 60 cm (the
+    canopy's bounds centre is often a metre or more off the trunk). reliable: those vertices are one trunk around
+    the centroid -- 90% of them within TRUNK_SPREAD of it, in at least TRUNK_SECTORS_MIN of TRUNK_SECTORS
+    directions -- not several stems (the centroid falls between them), foliage down to the ground on one side, or
+    a wide base or ground disc. None when the mesh has no readable vertices."""
+    import math
     verts = _vertex_positions(mesh)
     if not verts:
         return None
@@ -904,7 +1068,19 @@ def _trunk_xy(mesh):
     low = [v for v in verts if v[2] < zmin + 60.0]
     if len(low) < 3:
         return None
-    return (sum(v[0] for v in low) / len(low), sum(v[1] for v in low) / len(low))
+    cx = sum(v[0] for v in low) / len(low)
+    cy = sum(v[1] for v in low) / len(low)
+    d = sorted(math.hypot(v[0] - cx, v[1] - cy) for v in low)
+    spread = d[min(len(d) - 1, int(0.9 * len(d)))]
+    sectors = {int((math.atan2(v[1] - cy, v[0] - cx) + math.pi) / (2.0 * math.pi) * TRUNK_SECTORS) % TRUNK_SECTORS
+               for v in low if math.hypot(v[0] - cx, v[1] - cy) > 1.0}
+    return cx, cy, spread <= TRUNK_SPREAD and len(sectors) >= TRUNK_SECTORS_MIN
+
+
+def _trunk_xy(mesh):
+    """Mesh-space XY of a tree's trunk (see _trunk_measure), or None."""
+    t = _trunk_measure(mesh)
+    return None if t is None else (t[0], t[1])
 
 
 def _handle_side(mesh, yaw):
@@ -1134,8 +1310,10 @@ def set_collection_values(pal, packs):
 
 
 def build_default_palette(path=DEFAULT_PALETTE):
-    """Create or refresh the default palette. Returns (palette, report dict)."""
-    _COLLISION_DONE.clear()   # a new build re-checks every mesh (an asset may have been re-imported since)
+    """Create or refresh the default palette. Returns (palette, report dict); the report lists the pack meshes
+    whose collision the build changed (modified_pack_assets) and those it left without usable collision
+    (missing_collision), see _ensure_collision."""
+    reset_collision_log()     # a new build re-checks every mesh (an asset may have been re-imported since)
     for name, (rgb, rough, metal) in SOLID_MATERIALS.items():
         _ensure_solid_material(name, rgb, rough, metal)
     from . import surfaces
@@ -1244,5 +1422,7 @@ def build_default_palette(path=DEFAULT_PALETTE):
     H.save(pal)
     missing = [str(n) for n in pal.missing_well_known_slots()]
     report["still_empty"] = missing
-    H.log("palette %s: %d mesh slots, %d material slots; empty: %s" % (path, len(report["meshes"]), len(report["materials"]), missing))
+    report.update(collision_report())
+    H.log("palette %s: %d mesh slots, %d material slots; empty: %s; collision changed on %d meshes, missing on %d" % (
+        path, len(report["meshes"]), len(report["materials"]), missing, len(report["modified_pack_assets"]), len(report["missing_collision"])))
     return pal, report

@@ -232,7 +232,7 @@ def build(name, path=None, urbanverse_cache=None):
     path = path or palette_path(name)
     cache = urbanverse_cache or os.environ.get("RAMMS_URBANVERSE_CACHE")
     report = {"recipe": name, "path": path, "packs": PK.installed(), "skipped": [], "layers": [], "surfaces": {}, "cleared": []}
-    P._COLLISION_DONE.clear()
+    P.reset_collision_log()
     collision_before = P.collision_records()
     pal = _base(name, recipe, path, cache, report)
     for slot in recipe.get("clear", []):

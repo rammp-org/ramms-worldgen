@@ -462,15 +462,27 @@ def _mi_params(mi):
     return sc, ve, tx
 
 
-def _floor_cutout_roughness(mi, save=True):
-    """Cut-outs are leaves and grilles: a glossy one (some leaf exports carry roughness 0) turns into a dark
-    mirror in shade, a black canopy. The glTF roughness factor is held at 0.5 or more; it scales the
-    metallic-roughness texture where there is one, so a dark texture can still read glossy. Returns True when
-    it raised the factor."""
-    if float(_mi_params(mi)[0].get("RoughnessFactor", 1.0)) >= 0.5:
+ROUGHNESS_FLOOR = 0.5        # a foliage cut-out's glTF roughness factor is held at this or more
+ROUGHNESS_NEAR_ZERO = 0.05   # ... and any cut-out's at or below this (an export slip, not a material)
+
+
+def _is_foliage(mi, item=None):
+    """Is the material on a plant: a foliage word in its path (the slot folder, its name) or the asset's
+    UrbanVerse category ("potted plant")?"""
+    words = (mi.get_path_name() + " " + str((item or {}).get("category", ""))).lower()
+    return any(w in words for w in FOLIAGE_WORDS)
+
+
+def _floor_cutout_roughness(mi, foliage, save=True):
+    """A glossy leaf (some leaf exports carry roughness 0) turns into a dark mirror in shade, a black canopy.
+    The glTF roughness factor of a foliage cut-out is held at ROUGHNESS_FLOOR or more; other cut-outs (grilles,
+    bike parts, signs) keep theirs unless it is near zero. The factor scales the metallic-roughness texture
+    where there is one, so a dark texture can still read glossy. Returns True when it raised the factor."""
+    f = float(_mi_params(mi)[0].get("RoughnessFactor", 1.0))
+    if f >= ROUGHNESS_FLOOR or not (foliage or f <= ROUGHNESS_NEAR_ZERO):
         return False
     mel = unreal.MaterialEditingLibrary
-    mel.set_material_instance_scalar_parameter_value(mi, "RoughnessFactor", 0.5)
+    mel.set_material_instance_scalar_parameter_value(mi, "RoughnessFactor", ROUGHNESS_FLOOR)
     if save:
         mel.update_material_instance(mi)
         H.EAL.save_loaded_asset(mi, False)
@@ -485,18 +497,28 @@ def _parent_blend(mi):
         return None
 
 
-def _set_blend(mi, blend, alpha_mode):
+def _mask_cutoff(mi, gltf_mask):
+    """Opacity-mask clip value for a material made masked. A glTF MASK material keeps its own alphaCutoff (0 keeps
+    every texel, as glTF says; 0.5, the glTF default, when the importer did not record one). A BLEND material
+    made masked has no cutoff of its own (glTF ignores alphaCutoff outside MASK): 0.5."""
+    if not gltf_mask:
+        return 0.5
+    try:
+        cut = float(_mi_params(mi)[0]["AlphaCutoff"])
+    except (KeyError, TypeError, ValueError):
+        return 0.5
+    return cut if 0.0 <= cut <= 1.0 else 0.5
+
+
+def _set_blend(mi, blend, alpha_mode, cutoff=0.5, foliage=False):
     mel = unreal.MaterialEditingLibrary
     bo = mi.get_editor_property("base_property_overrides")
     bo.set_editor_property("override_blend_mode", True)
     bo.set_editor_property("blend_mode", blend)
     if blend == unreal.BlendMode.BLEND_MASKED:
-        # the asset's own glTF alphaCutoff where it has one (0.5 is the glTF default)
-        sc = _mi_params(mi)[0]
-        cut = sc.get("AlphaCutoff") or 0.0
         bo.set_editor_property("override_opacity_mask_clip_value", True)
-        bo.set_editor_property("opacity_mask_clip_value", float(cut) if 0.0 < cut < 1.0 else 0.5)
-        _floor_cutout_roughness(mi, save=False)
+        bo.set_editor_property("opacity_mask_clip_value", float(cutoff))
+        _floor_cutout_roughness(mi, foliage, save=False)
     mi.set_editor_property("base_property_overrides", bo)
     mel.set_material_instance_scalar_parameter_value(mi, "AlphaMode", float(alpha_mode))
     mel.update_material_instance(mi)
@@ -600,9 +622,10 @@ def fix_materials(mesh, item):
         bo = mi.get_editor_property("base_property_overrides")
         blend = bo.get_editor_property("blend_mode") if bo.get_editor_property("override_blend_mode") else None
         kind = _decide(mi, info, item.get("uid", ""))
+        foliage = _is_foliage(mi, item)
         if blend not in (unreal.BlendMode.BLEND_TRANSLUCENT, unreal.BlendMode.BLEND_TRANSLUCENT_COLORED_TRANSMITTANCE):
             # Masked by an earlier build, or imported onto a masked parent.
-            if (blend if blend is not None else _parent_blend(mi)) == unreal.BlendMode.BLEND_MASKED and _floor_cutout_roughness(mi):
+            if (blend if blend is not None else _parent_blend(mi)) == unreal.BlendMode.BLEND_MASKED and _floor_cutout_roughness(mi, foliage):
                 done["roughness"] = done.get("roughness", 0) + 1
             # Opaque as imported (or made opaque by an earlier build): only an override turns it into glass.
             if not (kind in ("glass", "glass_tex") and any(item.get("uid", "").startswith(p) and mi.get_name() in t
@@ -611,7 +634,8 @@ def fix_materials(mesh, item):
         if kind == "opaque":
             _set_blend(mi, unreal.BlendMode.BLEND_OPAQUE, 0)
         elif kind == "mask":
-            _set_blend(mi, unreal.BlendMode.BLEND_MASKED, 1)
+            gltf_mask = (info.get(_norm(mi.get_name())) or {}).get("alpha_mode") == "MASK"
+            _set_blend(mi, unreal.BlendMode.BLEND_MASKED, 1, _mask_cutoff(mi, gltf_mask), foliage)
         elif kind in ("glass", "glass_tex"):
             mesh.set_material(i, _glass_instance(mi, kind))
             changed_mesh = True
@@ -752,7 +776,7 @@ def source_id(item):
 def build(cache_dir, mode="replace", slots=None, path=PALETTE, facing="geometry"):
     """Import the selection and build the UrbanVerse palette. mode: "replace" (UrbanVerse only in the slots it
     fills) or "mix" (added to the Fab variants). Returns (palette, report)."""
-    P._COLLISION_DONE.clear()
+    P.reset_collision_log()
     imported = import_selection(cache_dir, slots)
     if not H.EAL.does_asset_exist(P.DEFAULT_PALETTE):
         P.build_default_palette()
@@ -782,5 +806,6 @@ def build(cache_dir, mode="replace", slots=None, path=PALETTE, facing="geometry"
         pal.set_slot(unreal.Name(slot), s)
         report["slots"][slot] = [m.get_name() for m, _it in pairs]
     H.save(pal)
+    report.update(P.collision_report())
     H.log("urbanverse palette %s: %s" % (path, {k: len(v) for k, v in report["slots"].items()}))
     return pal, report
