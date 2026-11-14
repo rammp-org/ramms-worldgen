@@ -27,6 +27,9 @@ EXAMPLES = {
 
 _pending = {}
 
+# The ground slab's top (and the hills' base) outside the site.
+GROUND_Z = -45.0
+
 
 def _spawn(cls, loc=(0, 0, 0), rot=(0, 0, 0), label=None):
     """rot is (pitch, yaw, roll) in degrees. unreal.Rotator's positional order is (roll, pitch, yaw),
@@ -58,7 +61,7 @@ def _add_lighting(indoor):
 
 def _add_ground(size, material_path):
     """A wide slab under the site so the robot never falls off the edge of the world."""
-    piece = _spawn(unreal.RammsProcPiece, (-size * 0.5, 0, -45.0), label="Ground")
+    piece = _spawn(unreal.RammsProcPiece, (-size * 0.5, 0, GROUND_Z), label="Ground")   # its top face at GROUND_Z
     if piece:
         piece.set_editor_property("kind", unreal.RammsProcPieceKind.SLAB)
         piece.set_editor_property("size_x", size)
@@ -70,10 +73,12 @@ def _add_ground(size, material_path):
     return piece
 
 
-def _add_skyline(palette, site, ground, seed, count=36):
+def _add_skyline(palette, site, ground, seed, count=36, mounds=()):
     """Distant towers around a downtown site (the palette's Skyline slot: closed low-poly buildings, no collision),
     so a view down a street ends in a city rather than open ground: a ring of them between 35 m beyond the site's
-    edge and the ground slab's, each facing the site. Returns how many were placed (0 without Skyline meshes)."""
+    edge and the ground slab's, each facing the site, at its entry's scale, its base on the lowest ground under its
+    footprint (the slab, or a hill of `mounds`, _add_hills's record) so no side floats. Returns how many were
+    placed (0 without Skyline meshes)."""
     import math
     import random
     slot = palette.get_editor_property("slots").get(unreal.Name("Skyline")) if palette else None
@@ -88,7 +93,7 @@ def _add_skyline(palette, site, ground, seed, count=36):
     n = 0
     for k in range(count):
         e = rng.choice(entries)
-        fp = e.get_editor_property("footprint")
+        fp = e.get_editor_property("footprint")      # (like the offset) at the entry's scale already
         half = max(fp.x, fp.y) * 0.5
         if outer - inner < 2.0 * half:
             continue
@@ -101,12 +106,18 @@ def _add_skyline(palette, site, ground, seed, count=36):
         yaw = round(math.degrees(ang + math.pi) / 90.0) * 90.0
         off = e.get_editor_property("location_offset")
         rot = e.get_editor_property("rotation_offset")
+        scale = e.get_editor_property("scale")
         r_yaw = math.radians(yaw)
-        ox = off.x * math.cos(r_yaw) - off.y * math.sin(r_yaw)
-        oy = off.x * math.sin(r_yaw) + off.y * math.cos(r_yaw)
-        a = _spawn(unreal.StaticMeshActor, (x + ox, y + oy, off.z - 30.0), (0.0, yaw + rot.yaw, 0.0), "Skyline%02d" % k)
+        cs, sn = math.cos(r_yaw), math.sin(r_yaw)
+        ox = off.x * cs - off.y * sn
+        oy = off.x * sn + off.y * cs
+        # the footprint's centre, corners and edge middles (facing frame) on the ground; 20 cm into the lowest
+        ground_z = min(_ground_height(x + u * fp.x * 0.5 * cs - v * fp.y * 0.5 * sn, y + u * fp.x * 0.5 * sn + v * fp.y * 0.5 * cs, mounds)
+                       for u in (-1.0, 0.0, 1.0) for v in (-1.0, 0.0, 1.0))
+        a = _spawn(unreal.StaticMeshActor, (x + ox, y + oy, ground_z - 20.0 + off.z), (0.0, yaw + rot.yaw, 0.0), "Skyline%02d" % k)
         if a is None:
             continue
+        a.set_actor_scale3d(unreal.Vector(scale, scale, scale))
         c = a.static_mesh_component
         c.set_static_mesh(e.get_editor_property("mesh"))
         c.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
@@ -115,9 +126,27 @@ def _add_skyline(palette, site, ground, seed, count=36):
     return n
 
 
-def _add_hills(site, ground, material_path, seed):
+def _ground_height(x, y, mounds=()):
+    """The ground's height at world (x, y) outside the site: the slab's top, or a hill's surface over it. `mounds`
+    [(x, y, yaw, size_x, size_y, rise)] as _add_hills placed them; the height is ARammsProcPiece::BuildMound's
+    cosine bump over the ellipse inscribed in the mound's rectangle."""
+    import math
+    best = 0.0
+    for mx, my, myaw, sx, sy, rise in mounds:
+        r = math.radians(myaw)
+        dx, dy = x - mx, y - my
+        lx = dx * math.cos(r) + dy * math.sin(r)      # into the mound's own frame (rotated by -yaw)
+        ly = -dx * math.sin(r) + dy * math.cos(r)
+        e = math.sqrt((2.0 * lx / sx) ** 2 + (2.0 * ly / sy) ** 2)
+        if e < 1.0:
+            best = max(best, rise * 0.5 * (1.0 + math.cos(math.pi * e)) - 2.0)
+    return GROUND_Z + best
+
+
+def _add_hills(site, ground, material_path, seed, mounds=None):
     """Rolling grassy hills on the ground outside the generated site, so the horizon is not a flat plane.
-    Mound pieces (cosine bumps) between the site edge plus a margin and the ground slab's edge."""
+    Mound pieces (cosine bumps) between the site edge plus a margin and the ground slab's edge. Each placed one is
+    appended to `mounds` (a list) as (x, y, yaw, size_x, size_y, rise), for _ground_height."""
     import math
     import random
     rng = random.Random(9001 + int(seed))
@@ -138,15 +167,19 @@ def _add_hills(site, ground, material_path, seed):
         # Keep inside the square slab.
         if abs(x) + sx * 0.5 > ground * 0.5 - 100.0 or abs(y) + sy * 0.5 > ground * 0.5 - 100.0:
             continue
-        piece = _spawn(unreal.RammsProcPiece, (x, y, -45.0), (0.0, rng.uniform(0.0, 180.0), 0.0), "Hill%02d" % k)
+        yaw = rng.uniform(0.0, 180.0)
+        piece = _spawn(unreal.RammsProcPiece, (x, y, GROUND_Z), (0.0, yaw, 0.0), "Hill%02d" % k)
         if piece:
+            rise = rng.uniform(150.0, 650.0)
             piece.set_editor_property("kind", unreal.RammsProcPieceKind.MOUND)
             piece.set_editor_property("size_x", sx)
             piece.set_editor_property("size_y", sy)
-            piece.set_editor_property("rise", rng.uniform(150.0, 650.0))
+            piece.set_editor_property("rise", rise)
             piece.set_editor_property("material_path", material_path)
             piece.set_editor_property("uv_scale", 400.0)
             piece.rebuild()
+            if mounds is not None:
+                mounds.append((x, y, yaw, sx, sy, rise))
             n += 1
     return n
 
@@ -166,8 +199,6 @@ def build_level(kind, seed=None, open_after=True, watch=True):
         from . import recipes as R
         maps = R.OUT + "/Maps"
         recipe_palette = R.palette_path(recipe)
-        if not H.EAL.does_asset_exist(recipe_palette):
-            R.build(recipe)
     path = maps + "/" + map_name
 
     les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
@@ -186,6 +217,11 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     elif not les.new_level(path):
         raise RuntimeError("could not create level %s" % path)
     world = H.editor_world()
+    if recipe_palette and not H.EAL.does_asset_exist(recipe_palette):
+        # Built once the target level is open: capturing whole buildings spawns (and removes) their blueprints in
+        # the open level. Done in the level the user had open, it would leave that level dirty, and switching
+        # away from it could stop on a save prompt.
+        R.build(recipe)
 
     _add_lighting(indoor)
     params = preset.get_editor_property("params")
@@ -197,10 +233,11 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     # Wide enough that the horizon is ground, not the black below-horizon side of the sky atmosphere.
     ground = max(site * 3.0, 24000.0)
     _add_ground(ground, ground_mat)
+    mounds = []
     if not indoor:
-        _add_hills(site, ground, ground_mat, seed)
+        _add_hills(site, ground, ground_mat, seed, mounds)
     if preset.get_editor_property("scene_kind") == unreal.RammsSceneKind.DOWNTOWN and palette:
-        _add_skyline(palette, site, ground, seed)
+        _add_skyline(palette, site, ground, seed, mounds=mounds)
 
     gen = _spawn(unreal.RammsWorldGenerator, (0, 0, 0), label="WorldGenerator")
     gen.set_editor_property("preset", preset)
@@ -229,7 +266,9 @@ def keep_clear(gen, boxes=None, tag="RammsKeepClear", margin=0.0):
     """Keep areas of a level clear of what the street dressing places (parked cars, street trees, furniture,
     hazards, signals, litter): `boxes` [(x0, y0, x1, y1)] in world cm, plus the XY bounds (grown by `margin`) of
     every actor in the level tagged `tag` -- a test scenario's start, a robot's path marker. Sets the generator's
-    KeepClear override (the preset's own boxes are replaced); Regenerate to apply. Returns the KeepClear text."""
+    KeepClear override (the preset's own boxes are replaced); with no box at all (none given, no tagged actor) it
+    drops the override instead, so the preset's boxes apply again. Regenerate to apply. Returns the KeepClear text
+    ("" when the override was dropped)."""
     boxes = [tuple(b) for b in (boxes or [])]
     if tag:
         eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
@@ -242,7 +281,11 @@ def keep_clear(gen, boxes=None, tag="RammsKeepClear", margin=0.0):
     po.set_editor_property("keep_clear", text)
     gen.set_editor_property("param_overrides", po)
     keys = gen.get_editor_property("override_keys")
-    keys.add(unreal.Name("KeepClear"))
+    key = unreal.Name("KeepClear")
+    if text:
+        keys.add(key)
+    elif key in keys:
+        keys.remove(key)
     gen.set_editor_property("override_keys", keys)
     return text
 

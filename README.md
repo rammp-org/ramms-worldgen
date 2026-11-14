@@ -382,22 +382,26 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   on demand). Paths are relative to the pack's folder (or absolute; a `*` matches a name pattern), so two
   packs that ship a mesh of the same name never get mixed up; a `Ref` can also fix a mesh's facing (`yaw`), its
   size (`scale`, for a pack modelled at another scale) or some of its materials (`materials`: material slot ->
-  pack surface, built into the recipe's folder; the entry becomes a one-part composite). Known today: American City Packs (decals, street
+  pack surface, built into the recipe's folder; the entry becomes a one-part composite, so only in the slots
+  whose node places composites, `recipes.MATERIAL_COMPOSITE_SLOTS`: today `TrafficSignal`; elsewhere it is
+  reported and not applied). Known today: American City Packs (decals, street
   litter, manholes, whole buildings, skyline towers), Downtown West (street trees, furniture, the corner signal
   mast, manhole covers, decals, asphalt and curb, facade kits), Camden Market (facade kits, a pole signal,
   utility covers, dirt decals), the Restaurant Scene (stain decals), Megascans (sidewalk, asphalt, concrete,
   brick, plaster and weathered-concrete walls).
 - **Recipes** (`recipes.py`): a palette is a base (`PAL_Default`'s slots, optionally with UrbanVerse-100K
   furniture, cars and trees on top), slots to clear, pack **layers** that add to or replace the slots they
-  offer (with a weight, in order), and `Mat.*` slots pointed at pack surfaces. `Downtown` is the README's hero
+  offer (in order, with a weight for their mesh entries; material sets have no weights), and `Mat.*` slots
+  pointed at pack surfaces. `Downtown` is the README's hero
   street: UrbanVerse furniture and cars, Downtown West street trees and furniture, decals from every pack,
   Megascans sidewalks, concrete and walls, Downtown West asphalt and curbs, the built-in puddle decal, and
   the Downtown West and Camden Market facade kits (`kits`; `PRE_DenseDowntown`'s `FacadeStyles` lists them).
 - **Building one**: `recipes.build("Downtown")` (or the `worldgen_build_palette` MCP tool) writes
   `/Game/WorldGen/Palettes/PAL_Downtown` and its materials under `/Game/WorldGen/Materials/Downtown`; it needs
   the UrbanVerse cache (`urbanverse_cache=` or `$RAMMS_URBANVERSE_CACHE`) for that layer and skips it
-  otherwise. The report lists the packs found, each layer's additions, the surfaces built and what was
-  skipped. `/Game/WorldGen` holds only what is built from local packs and is not committed.
+  otherwise. The report lists the packs found, each layer's additions, the surfaces built, what was
+  skipped, and the pack meshes whose collision the build changed (`modified_pack_assets`) or found missing
+  (`missing_collision`). `/Game/WorldGen` holds only what is built from local packs and is not committed.
 - **A level**: `levels.build_level("dense_downtown")` builds the recipe if needed and generates
   `/Game/WorldGen/Maps/Map_Gen_DenseDowntown` with `PRE_DenseDowntown` (shorter blocks, narrow lots to the
   sidewalk, cars along the curbs, more furniture and wear, no parks, the street rules and litter on).
@@ -478,7 +482,8 @@ with the same packs, and a pack that is not installed only leaves its slots to t
 - **Whole buildings**: `Building.Downtown`, `Building.CornerNeg` and `Building.CornerPos` hold complete buildings
   as composites (`palettes.packed_building_entry` captures a packed-level-actor blueprint instance by instance:
   its front -- the side its ground-floor modules face -- toward the street, the facade line, not a cornice's
-  overhang, on the lot's front, the entrance at its front door). With `WholeBuildingChance`, Subdivide Lots
+  overhang, on the lot's front, the entrance at its front door; its parts are its only collision, so they are
+  made solid, apart from the decoration a pack lists in `building_decor`). With `WholeBuildingChance`, Subdivide Lots
   cuts a lot to the frontage of a building that fits the row (a row's first lot, a corner, takes a corner
   building whose second street face is on its cross-street side) and Building Massing places it instead of a
   massing: `Building/Commercial` in the manifest. The Downtown recipe fills them from American City Packs'
@@ -849,7 +854,7 @@ URLab cannot replace-import a Blueprint.
   `surfaces.build_signal` (the pack's maps on the heads and sign, paint
   elsewhere; lamps lit from the lens geometry; the pedestrian head's icon
   projected onto its panel) and `build_paint` on the arm. Every signal in a
-  level shows one phase - heads facing along world X green, along Y red
+  level shows one phase - heads facing nearer world X green, nearer Y red
   (`GreenAlongX` flips it) - and each pedestrian head the opposite. Camden
   Market's pole signal cycles on its own timer, so the recipe leaves it out.
 - **Pack look controls** (palette `CollectionValues`): scalars of a pack's
@@ -872,7 +877,8 @@ URLab cannot replace-import a Blueprint.
   world XY boxes on which nothing is placed along the streets - no parked
   car, street tree, furniture, hazard, signal or litter - e.g. a test
   scenario's start or a robot's path. `keep_clear` takes boxes and the bounds
-  of actors tagged `RammsKeepClear` and sets the generator's override.
+  of actors tagged `RammsKeepClear` and sets the generator's override (with
+  no box at all it drops the override, and the preset's boxes apply again).
 
 ## Indoor furnishing and routes
 

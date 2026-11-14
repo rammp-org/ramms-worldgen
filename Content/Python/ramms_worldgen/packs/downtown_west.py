@@ -3,7 +3,10 @@
 Its trees are native UE foliage (masked leaves, wind) and replace other packs' in the tree slots. Its street
 light comes in three dressings: only the plain pole is a street light - `SM_light_streetlight_complete` carries
 traffic signals on a mast arm and is the corner signal (TrafficSignal: heads face +X, the arm runs along +Y), and
-the light posts `light_post_a/b` carry "DOWNTOWN WEST" banners. The pack is modelled ~1.3-1.5x real size (6 m storeys); props here are normalised per slot as usual.
+the light posts `light_post_a/b` carry "DOWNTOWN WEST" banners. The pack is modelled ~1.3-1.5x real size (6 m storeys).
+Its props are sized per slot as usual: the slots with a real-world height (palettes.SLOT_HEIGHTS: bench, hydrant,
+bin, cafe table and chairs) are normalised to it, the slots in palettes.NO_NORMALISE (trees, StreetLight,
+InfoBoard, Flowerbed) keep the pack's size, and a Ref's `scale` fixes it outright (the signal mast, the sewer caps).
 """
 
 from .base import Kit, Pack, Ref

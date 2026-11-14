@@ -15,6 +15,8 @@ import re
 
 import unreal
 
+from .. import _helpers as H
+
 EAL = unreal.EditorAssetLibrary
 
 
@@ -23,12 +25,15 @@ class Ref:
 
     path: relative to the pack's root (or absolute, starting with "/"); a trailing "*" (or any fnmatch pattern
     in the last component) matches every asset of that name pattern in that folder.
-    weight: how often a node picks it relative to the slot's other meshes (palette `Weight`).
+    weight: how often a node picks it relative to the slot's other meshes (palette `Weight`). Mesh slots only:
+      a material set has no weights (a node picks uniformly from FRammsPaletteSlot::Materials).
     normalise: pull the mesh toward the slot's real-world height (palettes.SLOT_HEIGHTS); False keeps its size.
     yaw: the yaw that turns its front to +X when the heuristic gets it wrong (None: measured).
     scale: a fixed scale for a pack modelled at another size (e.g. Downtown West's ~1.4x); overrides normalise.
     materials: {mesh material slot name: pack surface key}: those slots take the surface (built into the recipe's
-      material folder), which makes the palette entry a one-part composite carrying its materials.
+      material folder), which makes the palette entry a one-part composite carrying its materials. Only slots
+      whose node places composites honour it (recipes.MATERIAL_COMPOSITE_SLOTS); elsewhere it is reported and
+      the plain mesh entry is kept.
     """
 
     def __init__(self, path, weight=1.0, normalise=True, yaw=None, scale=None, materials=None):
@@ -102,9 +107,12 @@ class Pack:
     kits: [Kit]: modular facade kits, each one facade style.
     buildings: {"Downtown" | "DowntownCorner": [blueprint paths]}: whole buildings (packed level actors), captured
         part by part (palettes.packed_building_entry); a corner one's hand is measured.
+    building_decor: folders (relative to the root or absolute) of the whole buildings' decorative parts -- trim,
+        ornaments, add-ons on the walls -- which are placed but not given collision: the building's walls,
+        floors and tops already enclose it, so only those are made solid (palettes._ensure_collision).
     surfaces: key -> a `surfaces._build` spec (bc / n / rma texture paths relative to the root or absolute,
         tile size, tint...): world-aligned ground and wall materials, built on demand into a recipe's
-        material folder as M_<Recipe>_<key>.
+        material folder as M_<Recipe>_<Pack>_<key> (the pack's name without underscores).
     collection_values: [(material parameter collection path, scalar parameter, value)]: global look controls the
         pack's materials read, set in the world by the generator for any palette using the pack (e.g. a
         daylight level for lit windows tuned for night).
@@ -112,7 +120,7 @@ class Pack:
     """
 
     def __init__(self, name, roots, meshes=None, material_sets=None, surfaces=None, kits=None, buildings=None, notes="",
-                 collection_values=None):
+                 collection_values=None, building_decor=None):
         self.name = name
         self.roots = list(roots)
         self.meshes = {k: _refs(v) for k, v in (meshes or {}).items()}
@@ -120,6 +128,7 @@ class Pack:
         self.surfaces = dict(surfaces or {})
         self.kits = list(kits or [])
         self.buildings = dict(buildings or {})
+        self.building_decor = [self.abs_path(p).rstrip("/") + "/" for p in (building_decor or [])]
         self.notes = notes
         self.collection_values = [(self.abs_path(c), p, float(v)) for c, p, v in (collection_values or [])]
 
@@ -129,12 +138,22 @@ class Pack:
     def abs_path(self, path):
         return path if path.startswith("/") else "%s/%s" % (self.roots[0], path)
 
-    def resolve(self, ref, classes=("StaticMesh",)):
-        """The assets a ref names (several for a pattern), loaded; [] when none exist."""
+    def resolve(self, ref, classes=("StaticMesh",), skipped=None):
+        """The assets a ref names (several for a pattern), loaded; [] when none exist. An exact path to an asset
+        of another class (a blueprint in a mesh slot, a texture in a material set) is skipped -- noted in
+        `skipped` (a list, e.g. a recipe report's) and warned about -- rather than handed to a builder that
+        would fail on it."""
         path = self.abs_path(ref.path)
         folder, leaf = path.rsplit("/", 1)
         if not any(c in leaf for c in "*?["):
             if not EAL.does_asset_exist(path):
+                return []
+            cls = str(EAL.find_asset_data(path).asset_class_path.asset_name)
+            if cls not in classes:
+                msg = "%s %s: a %s, not %s" % (self.name, path, cls, " / ".join(classes))
+                H.warn(msg)
+                if skipped is not None:
+                    skipped.append(msg)
                 return []
             a = EAL.load_asset(path)
             return [a] if a is not None else []
@@ -147,29 +166,33 @@ class Pack:
                     out.append(a)
         return out
 
-    def slot_meshes(self, slot):
+    def slot_meshes(self, slot, skipped=None):
         """[(mesh, ref)] for a mesh slot."""
         out = []
         for ref in self.meshes.get(slot, []):
-            for m in self.resolve(ref, ("StaticMesh",)):
+            for m in self.resolve(ref, ("StaticMesh",), skipped):
                 out.append((m, ref))
         return out
 
-    def slot_materials(self, slot):
+    def slot_materials(self, slot, skipped=None):
         """[(material, ref)] for a material set."""
         out = []
         for ref in self.material_sets.get(slot, []):
-            for m in self.resolve(ref, ("MaterialInstanceConstant", "Material")):
+            for m in self.resolve(ref, ("MaterialInstanceConstant", "Material"), skipped):
                 out.append((m, ref))
         return out
 
-    def kit_meshes(self, kit, role):
+    def kit_meshes(self, kit, role, skipped=None):
         """[(mesh, part)] of a kit's role."""
         out = []
         for part in kit.roles.get(role, []):
-            for m in self.resolve(Ref(part.path), ("StaticMesh",)):
+            for m in self.resolve(Ref(part.path), ("StaticMesh",), skipped):
                 out.append((m, part))
         return out
+
+    def is_building_decor(self, mesh_path):
+        """Whether a whole building's part is decoration (building_decor), which gets no collision."""
+        return any(mesh_path.startswith(d) for d in self.building_decor)
 
     def surface_spec(self, key):
         """The surface's builder spec with its texture paths made absolute."""
