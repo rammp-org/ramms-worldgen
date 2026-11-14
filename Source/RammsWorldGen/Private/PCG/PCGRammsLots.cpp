@@ -4,6 +4,7 @@
 #include "PCGContext.h"
 #include "PCGPin.h"
 #include "Data/PCGBasePointData.h"
+#include "Engine/StaticMesh.h"
 #include "Metadata/PCGMetadata.h"
 #include "Metadata/PCGMetadataAttribute.h"
 
@@ -68,7 +69,110 @@ namespace
 		const TArray<FRammsPaletteMesh>* Top = nullptr;
 		const TArray<FRammsPaletteMesh>* TopCorner = nullptr;
 		double GFHeight = 0.0, WinHeight = 300.0, TopHeight = 50.0;
+		/** A pack's own kit (any widths, street faces only, its own tops and materials); null: an original kit. */
+		const FRammsFacadeKitInfo* Info = nullptr;
 	};
+
+	// Lot attributes from Subdivide Lots: the lot's side (local -Y / +Y, along the frontage) is on a street too --
+	// the first and last lots of a row face the block's cross streets.
+	const FName StreetSideNeg(TEXT("StreetSideNeg"));
+	const FName StreetSidePos(TEXT("StreetSidePos"));
+	// ... and the lot's back is on a street: a block too shallow for two rows of lots has a street on both sides.
+	const FName StreetBack(TEXT("StreetBack"));
+	// ... and the lot was cut for this whole building (palette slot, entry index): Building Massing places it.
+	const FName WholeSlotAttr(TEXT("WholeSlot"));
+	const FName WholeIndexAttr(TEXT("WholeIndex"));
+
+	// Index of a weighted pick among Num items. With equal weights it is the same pick, from the same single
+	// draw, as the uniform FRand() * Num the original kits use, so their buildings come out as before.
+	int32 PickWeighted(int32 Num, TFunctionRef<double(int32)> WeightOf, const FRandomStream& Rng)
+	{
+		if (Num <= 0) { return INDEX_NONE; }
+		bool bEqual = true;
+		double Total = 0.0;
+		const double W0 = FMath::Max(WeightOf(0), 0.0);
+		for (int32 k = 0; k < Num; ++k)
+		{
+			const double Wk = FMath::Max(WeightOf(k), 0.0);
+			bEqual = bEqual && FMath::IsNearlyEqual(Wk, W0);
+			Total += Wk;
+		}
+		if (bEqual || Total <= 0.0) { return FMath::Clamp(static_cast<int32>(Rng.FRand() * Num), 0, Num - 1); }
+		double R = Rng.FRand() * Total;
+		for (int32 k = 0; k < Num; ++k)
+		{
+			R -= FMath::Max(WeightOf(k), 0.0);
+			if (R < 0.0) { return k; }
+		}
+		return Num - 1;
+	}
+
+	// A pack kit's distinct module lengths (cm, as built: no grid).
+	TArray<double> KitLengths(const TArray<FRammsPaletteMesh>* Meshes)
+	{
+		TArray<double> Lens;
+		if (Meshes)
+		{
+			for (const FRammsPaletteMesh& M : *Meshes)
+			{
+				const double L = M.Footprint.X;
+				if (L >= 20.0 && !M.Mesh.IsNull() && !Lens.ContainsByPredicate([L](double E) { return FMath::Abs(E - L) < 2.0; })) { Lens.Add(L); }
+			}
+		}
+		Lens.Sort();
+		return Lens;
+	}
+
+	// Split Fill (any length) into module lengths (any) whose sum S is as near Fill as they can get within
+	// Fill / (1 + MaxStretch) .. Fill / (1 - MaxStretch); OutScale = Fill / S stretches the run to fit. A
+	// knapsack over whole centimetres, a random length among those that reach each sum. Leading is a length that
+	// must be in the run (a door), put at a random place inside it (OutLeadIdx). False when no combination
+	// comes that near.
+	bool TileRunStretch(double Fill, const TArray<double>& Lens, double MaxStretch, double Leading, const FRandomStream& Rng, TArray<double>& Out, double& OutScale, int32* OutLeadIdx = nullptr)
+	{
+		Out.Reset();
+		OutScale = 1.0;
+		if (OutLeadIdx) { *OutLeadIdx = INDEX_NONE; }
+		if (Lens.Num() == 0 || Fill <= 1.0) { return false; }
+		const double Lo = Fill / (1.0 + MaxStretch), Hi = Fill / FMath::Max(1.0 - MaxStretch, 0.5);
+		const int32 Lead = FMath::Max(0, FMath::RoundToInt(Leading));
+		const int32 Top = FMath::CeilToInt(Hi) - Lead;
+		if (Top < 0) { return false; }
+		TArray<int32> Via;
+		Via.Init(-1, Top + 1);
+		Via[0] = 0;
+		TArray<int32> Ints, Ok;
+		for (double L : Lens) { Ints.AddUnique(FMath::Max(1, FMath::RoundToInt(L))); }
+		for (int32 Sum = 1; Sum <= Top; ++Sum)
+		{
+			Ok.Reset();
+			for (int32 L : Ints) { if (L <= Sum && Via[Sum - L] >= 0) { Ok.Add(L); } }
+			if (Ok.Num() > 0) { Via[Sum] = Ok[FMath::Clamp(static_cast<int32>(Rng.FRand() * Ok.Num()), 0, Ok.Num() - 1)]; }
+		}
+		int32 Best = -1;
+		double BestErr = 1e18;
+		for (int32 Sum = (Lead > 0 ? 0 : 1); Sum <= Top; ++Sum)
+		{
+			const double Total = Sum + Lead;
+			if (Via[Sum] < 0 || Total < Lo || Total > Hi) { continue; }
+			const double Err = FMath::Abs(Total - Fill);
+			if (Err < BestErr - 1e-6) { BestErr = Err; Best = Sum; }
+		}
+		if (Best < 0) { return false; }
+		for (int32 Sum = Best; Sum > 0; Sum -= Via[Sum]) { Out.Add(static_cast<double>(Via[Sum])); }
+		// Shuffled, so a run is not sorted by length.
+		for (int32 k = Out.Num() - 1; k > 0; --k) { Out.Swap(k, FMath::Clamp(static_cast<int32>(Rng.FRand() * (k + 1)), 0, k)); }
+		if (Lead > 0)
+		{
+			const int32 At = Out.Num() > 1 ? 1 + FMath::Clamp(static_cast<int32>(Rng.FRand() * (Out.Num() - 1)), 0, Out.Num() - 2) : 0;
+			Out.Insert(Leading, At);
+			if (OutLeadIdx) { *OutLeadIdx = At; }
+		}
+		double Sum = 0.0;
+		for (double L : Out) { Sum += L; }
+		OutScale = Fill / FMath::Max(Sum, 1.0);
+		return true;
+	}
 
 	TArray<double> ModuleLengths(const TArray<FRammsPaletteMesh>* Meshes)
 	{
@@ -94,7 +198,7 @@ namespace
 			if (FMath::Abs(M.Footprint.X - L) < 6.0 && !M.Mesh.IsNull()) { C.Add(&M); }
 		}
 		if (C.Num() == 0) { return false; }
-		Out = *C[FMath::Clamp(static_cast<int32>(Rng.FRand() * C.Num()), 0, C.Num() - 1)];
+		Out = *C[PickWeighted(C.Num(), [&C](int32 k) { return static_cast<double>(C[k]->Weight); }, Rng)];
 		return true;
 	}
 
@@ -128,7 +232,8 @@ namespace
 		return FMath::RoundToDouble((*Meshes)[0].Height / 50.0) * 50.0;
 	}
 
-	bool BuildKit(const URammsWorldPalette* Palette, const FString& StyleList, const FRandomStream& Rng, FFacadeKit& Kit)
+	// Excluded: styles already found not to fit this building (pack kits that could not tile it).
+	bool BuildKit(const URammsWorldPalette* Palette, const FString& StyleList, const FRandomStream& Rng, FFacadeKit& Kit, const TArray<FString>& Excluded = TArray<FString>())
 	{
 		if (!Palette) { return false; }
 		TArray<FString> Allowed;
@@ -137,8 +242,18 @@ namespace
 		TArray<FString> Styles;
 		for (const FString& St : Palette->FacadeStyles())
 		{
-			if (Allowed.Num() == 0 || Allowed.Contains(St))
+			if ((Allowed.Num() == 0 || Allowed.Contains(St)) && !Excluded.Contains(St))
 			{
+				if (Palette->FacadeKit(St))
+				{
+					// A pack's kit stretches its runs to fit: a ground floor and a window floor are enough.
+					if (KitLengths(Palette->GetMeshes(URammsWorldPalette::FacadeSlot(St, RammsPaletteSlots::FacadePartGF))).Num() > 0
+						&& KitLengths(Palette->GetMeshes(URammsWorldPalette::FacadeSlot(St, RammsPaletteSlots::FacadePartWin))).Num() > 0)
+					{
+						Styles.Add(St);
+					}
+					continue;
+				}
 				// A usable style tiles any 100-multiple >= 300 on the ground floor and the upper floors.
 				const TArray<double> GfL = ModuleLengths(Palette->GetMeshes(URammsWorldPalette::FacadeSlot(St, RammsPaletteSlots::FacadePartGF)));
 				const TArray<double> WinL = ModuleLengths(Palette->GetMeshes(URammsWorldPalette::FacadeSlot(St, RammsPaletteSlots::FacadePartWin)));
@@ -149,8 +264,44 @@ namespace
 			}
 		}
 		if (Styles.Num() == 0) { return false; }
-		Kit.Style = Styles[FMath::Clamp(static_cast<int32>(Rng.FRand() * Styles.Num()), 0, Styles.Num() - 1)];
-		Kit.UpperStyle = (Rng.FRand() < 0.65) ? Kit.Style : Styles[FMath::Clamp(static_cast<int32>(Rng.FRand() * Styles.Num()), 0, Styles.Num() - 1)];
+		auto StyleWeight = [Palette, &Styles](int32 k)
+		{
+			const FRammsFacadeKitInfo* I = Palette->FacadeKit(Styles[k]);
+			return I ? static_cast<double>(I->Weight) : 1.0;
+		};
+		Kit.Style = Styles[PickWeighted(Styles.Num(), StyleWeight, Rng)];
+		Kit.Info = Palette->FacadeKit(Kit.Style);
+		if (Kit.Info)
+		{
+			// The upper floors -- window floors, their top-floor variant and the cornice (Top) -- come from another style
+			// of the same family now and then (UpperMixChance), else from the style itself. The materials are always
+			// the style's own (PickKitMaterials(Kit.Style)).
+			Kit.UpperStyle = Kit.Style;
+			if (Rng.FRand() < Kit.Info->UpperMixChance)
+			{
+				TArray<FString> Family;
+				for (const FString& St : Styles)
+				{
+					const FRammsFacadeKitInfo* I = Palette->FacadeKit(St);
+					if (I && I->Family == Kit.Info->Family) { Family.Add(St); }
+				}
+				Kit.UpperStyle = Family[PickWeighted(Family.Num(), [Palette, &Family](int32 k) { return static_cast<double>(Palette->FacadeKit(Family[k])->Weight); }, Rng)];
+			}
+			Kit.GF = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGF));
+			Kit.GFDoor = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGFDoor));
+			Kit.Win = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.UpperStyle, RammsPaletteSlots::FacadePartWin));
+			Kit.WinTop = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.UpperStyle, RammsPaletteSlots::FacadePartWinTop));
+			Kit.Top = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.UpperStyle, RammsPaletteSlots::FacadePartTop));
+			// Heights as built (a pack's storeys need not be a multiple of anything).
+			Kit.GFHeight = (Kit.GF && Kit.GF->Num() > 0) ? (*Kit.GF)[0].Height : 400.0;
+			Kit.WinHeight = (Kit.Win && Kit.Win->Num() > 0) ? (*Kit.Win)[0].Height : 300.0;
+			Kit.TopHeight = (Kit.Top && Kit.Top->Num() > 0) ? (*Kit.Top)[0].Height : 0.0;
+			return Kit.GF && Kit.Win;
+		}
+		// Upper floors from another original style now and then -- never a pack kit's: its modules need its own
+		// transforms, tiling and materials (with no pack kits in the palette this is the list it always was).
+		const TArray<FString> Original = Styles.FilterByPredicate([Palette](const FString& St) { return Palette->FacadeKit(St) == nullptr; });
+		Kit.UpperStyle = (Rng.FRand() < 0.65) ? Kit.Style : Original[FMath::Clamp(static_cast<int32>(Rng.FRand() * Original.Num()), 0, Original.Num() - 1)];
 		Kit.GF = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGF));
 		Kit.GFDoor = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGFDoor));
 		Kit.GFCorner = Palette->GetMeshes(URammsWorldPalette::FacadeSlot(Kit.Style, RammsPaletteSlots::FacadePartGFCorner));
@@ -166,6 +317,24 @@ namespace
 		Kit.WinHeight = MeshesHeight(Kit.Win, 300.0);
 		Kit.TopHeight = Kit.Top ? MeshesHeight(Kit.Top, 50.0) : 0.0;
 		return Kit.GF && Kit.GFCorner && Kit.Win;
+	}
+
+	// One material pick per category for a whole building, from a pack kit's own "Facade.<style>.Mat.<Category>"
+	// sets; a category without one is left out, so its module slots keep the mesh's own material.
+	TMap<FName, FString> PickKitMaterials(const URammsWorldPalette* Palette, const FString& Style, const FRandomStream& Rng)
+	{
+		TMap<FName, FString> Mats;
+		const FString Prefix = RammsPaletteSlots::FacadePrefix + Style + TEXT(".Mat.");
+		for (const TPair<FName, FRammsPaletteSlot>& Pair : Palette->Slots)
+		{
+			const FString Key = Pair.Key.ToString();
+			if (Key.StartsWith(Prefix))
+			{
+				const FString Path = Palette->PickMaterialPath(Pair.Key, Rng);
+				if (!Path.IsEmpty()) { Mats.Add(FName(*Key.Mid(Prefix.Len())), Path); }
+			}
+		}
+		return Mats;
 	}
 
 	// One material pick per category for a whole building, from the palette's Facade.Mat.* sets.
@@ -191,11 +360,37 @@ namespace
 		return Mats;
 	}
 
-	int32 WriteModule(FRammsPointWriter& W, const FRammsPaletteMesh& M, const FTransform& Xf, const TMap<FName, FString>& Mats, int32 Seed)
+	// A module at Xf (its run's frame: x along the facade, y out of it). The entry's own transform (a pack's
+	// pivot and size brought to the convention) applies first, then Stretch along the run; with neither (the
+	// original kits) the point is Xf itself. bKeepNative: a slot whose category has no pick keeps the mesh's
+	// material (pack kits) rather than taking the bricks (the original kits' fallback).
+	int32 WriteModule(FRammsPointWriter& W, const FRammsPaletteMesh& M, const FTransform& Xf, const TMap<FName, FString>& Mats, int32 Seed, double Stretch = 1.0, bool bKeepNative = false)
 	{
-		const int32 i = W.Add(Xf, FVector(0.0, -M.Footprint.Y, 0.0), FVector(M.Footprint.X, M.Footprint.Y, M.Height), Seed);
+		const FVector Lo(0.0, -M.Footprint.Y, 0.0), Hi(M.Footprint.X * Stretch, M.Footprint.Y, M.Height);
+		int32 i;
+		if (M.RotationOffset.IsNearlyZero() && M.LocationOffset.IsNearlyZero() && FMath::IsNearlyEqual(M.Scale, 1.0f) && FMath::IsNearlyEqual(Stretch, 1.0))
+		{
+			i = W.Add(Xf, Lo, Hi, Seed);
+		}
+		else
+		{
+			const FQuat Offset = M.RotationOffset.Quaternion();
+			// The mesh axis that ends up along the run is the one stretched (the offsets are quarter turns).
+			const FVector RunInMesh = Offset.UnrotateVector(FVector::XAxisVector);
+			FVector Scale3D(M.Scale);
+			(FMath::Abs(RunInMesh.X) >= FMath::Abs(RunInMesh.Y) ? Scale3D.X : Scale3D.Y) *= Stretch;
+			const FTransform Point(Xf.GetRotation() * Offset, Xf.TransformPosition(FVector(M.LocationOffset.X * Stretch, M.LocationOffset.Y, M.LocationOffset.Z)), Scale3D);
+			// The module's box, in the point's (the mesh's) own frame.
+			FBox Box(ForceInit);
+			for (int32 c = 0; c < 8; ++c)
+			{
+				const FVector Corner((c & 1) ? Hi.X : Lo.X, (c & 2) ? Hi.Y : Lo.Y, (c & 4) ? Hi.Z : Lo.Z);
+				Box += Point.InverseTransformPosition(Xf.TransformPosition(Corner));
+			}
+			i = W.Add(Point, Box.Min, Box.Max, Seed);
+		}
 		W.SetPath(i, RammsPCG::Mesh, M.Mesh.ToSoftObjectPath());
-		const FString* Fallback = Mats.Find(FName(TEXT("Default")));
+		const FString* Fallback = bKeepNative ? nullptr : Mats.Find(FName(TEXT("Default")));
 		for (int32 s = 0; s < RammsPCG::NumModuleMaterials; ++s)
 		{
 			const FString* Path = M.MaterialSlots.IsValidIndex(s) ? Mats.Find(M.MaterialSlots[s]) : nullptr;
@@ -203,6 +398,25 @@ namespace
 			W.SetPath(i, RammsPCG::ModuleMaterial(s), Path ? FSoftObjectPath(*Path) : FSoftObjectPath());
 		}
 		return i;
+	}
+
+	// How far a module reaches behind its facade line (the run's frame: exterior toward +y), its mesh's bounds under
+	// the entry's transform: a pack module's recessed window panes. The palette keeps only the larger reach either
+	// side (Footprint.Y, which counts awnings and balconies out front), so the mesh is read here; it is about to be
+	// spawned anyway. 0 when it cannot be loaded.
+	double ModuleInwardDepth(const FRammsPaletteMesh& M)
+	{
+		const UStaticMesh* SM = M.Mesh.LoadSynchronous();
+		if (!SM) { return 0.0; }
+		const FBox B = SM->GetBoundingBox();
+		const FTransform Entry(M.RotationOffset, M.LocationOffset, FVector(M.Scale));
+		double MinY = 0.0;
+		for (int32 c = 0; c < 8; ++c)
+		{
+			const FVector Corner((c & 1) ? B.Max.X : B.Min.X, (c & 2) ? B.Max.Y : B.Min.Y, (c & 4) ? B.Max.Z : B.Min.Z);
+			MinY = FMath::Min(MinY, Entry.TransformPosition(Corner).Y);
+		}
+		return -MinY;
 	}
 }
 
@@ -235,6 +449,8 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 	const int32 Seed = Context->GetSeed();
 	FRammsPointWriter Lots, Parks;
 	int32 LotId = 0;
+	// Only with whole buildings asked for: the palette, for their frontages.
+	const URammsWorldPalette* Palette = S->WholeBuildingChance > 0.0 ? RammsPCG::LoadPalette(S->Palette, Context) : nullptr;
 
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinIn))
 	{
@@ -266,9 +482,36 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 				const double RowY = Centre.Y - Size.Y * 0.5 + RowDepth * (Row + 0.5);
 				double x = Centre.X - Size.X * 0.5;
 				const double xEnd = Centre.X + Size.X * 0.5;
+				TArray<int32> RowLots;
 				while (xEnd - x > S->LotWidthMin * 0.5)
 				{
-					double W = RammsPCG::RandRange(Rng, S->LotWidthMin, S->LotWidthMax);
+					// Now and then a whole building: the lot is cut to its frontage (and what is left of the row must
+					// still make a lot, or be next to nothing). The row's first lot is a corner -- its west side is on
+					// the cross street, the lot's -Y side in row 0 and +Y in row 1 -- so it takes a corner building of
+					// that hand.
+					FName WholeSlot;
+					int32 WholeIdx = INDEX_NONE;
+					if (Palette && Rng.FRand() < S->WholeBuildingChance)
+					{
+						const FName Slot = RowLots.Num() == 0 ? (Row == 0 ? RammsPaletteSlots::BuildingCornerNeg : RammsPaletteSlots::BuildingCornerPos) : RammsPaletteSlots::BuildingDowntown;
+						if (const TArray<FRammsPaletteMesh>* Bs = Palette->GetMeshes(Slot))
+						{
+							TArray<int32> Fit;
+							for (int32 k = 0; k < Bs->Num(); ++k)
+							{
+								const FRammsPaletteMesh& B = (*Bs)[k];
+								// Deep enough for the building behind the least setback the lot can draw, 1.5 m kept at its back.
+								const double Rest = xEnd - x - B.Footprint.Y - 30.0;
+								if (B.IsComposite() && B.Footprint.X <= RowDepth - 150.0 - FMath::Max(S->SetbackMin, 0.0) && Rest > -30.0 && (Rest < 60.0 || Rest >= S->LotWidthMin * 0.6)) { Fit.Add(k); }
+							}
+							if (Fit.Num() > 0)
+							{
+								WholeIdx = Fit[PickWeighted(Fit.Num(), [Bs, &Fit](int32 k) { return static_cast<double>((*Bs)[Fit[k]].Weight); }, Rng)];
+								WholeSlot = Slot;
+							}
+						}
+					}
+					double W = WholeIdx != INDEX_NONE ? FMath::Min((*Palette->GetMeshes(WholeSlot))[WholeIdx].Footprint.Y + 30.0, xEnd - x) : RammsPCG::RandRange(Rng, S->LotWidthMin, S->LotWidthMax);
 					if (xEnd - (x + W) < S->LotWidthMin * 0.6) { W = xEnd - x; }
 					const FVector LotCentre(x + W * 0.5, RowY, Centre.Z);
 					// Local frame: +X toward the street (depth axis), Y along the frontage (width).
@@ -277,11 +520,29 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 					Lots.SetInt(l, RammsPCG::BlockId, BlockId);
 					Lots.Set(l, RammsPCG::Width, W);
 					Lots.Set(l, RammsPCG::Depth, RowDepth);
-					Lots.Set(l, RammsPCG::Setback, RammsPCG::RandRange(Rng, S->SetbackMin, S->SetbackMax));
+					double LotSetback = RammsPCG::RandRange(Rng, S->SetbackMin, S->SetbackMax);
+					// A whole building stands back no further than keeps it 1.5 m inside the lot's back line (Building
+					// Massing puts its front on the setback line).
+					if (WholeIdx != INDEX_NONE) { LotSetback = FMath::Min(LotSetback, RowDepth - 150.0 - (*Palette->GetMeshes(WholeSlot))[WholeIdx].Footprint.X); }
+					Lots.Set(l, RammsPCG::Setback, LotSetback);
 					Lots.SetInt(l, RammsPCG::Side, Row == 0 ? 0 : 2);
 					Lots.Set(l, FName(TEXT("RampCuts")), R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
 					(void)FaceSign;
+					if (!bTwoRows) { Lots.SetBool(l, StreetBack, true); }
+					if (WholeIdx != INDEX_NONE)
+					{
+						Lots.Set(l, WholeSlotAttr, WholeSlot.ToString());
+						Lots.SetInt(l, WholeIndexAttr, WholeIdx);
+					}
+					RowLots.Add(l);
 					x += W;
+				}
+				// The row's west and east lots have a side on the block's cross street: the west end is the lot's
+				// -Y side in row 0 (facing south, +Y points east) and its +Y side in row 1 (facing north).
+				if (RowLots.Num() > 0)
+				{
+					Lots.SetBool(RowLots[0], Row == 0 ? StreetSideNeg : StreetSidePos, true);
+					Lots.SetBool(RowLots.Last(), Row == 0 ? StreetSidePos : StreetSideNeg, true);
 				}
 			}
 		}
@@ -336,6 +597,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 	FRammsPointWriter Primitives, Pieces, Props, Modules, Features, Grass;
 	int32 Counter = 0;
 	auto NextSeed = [&]() { return RammsPCG::SubSeed(Seed, 2000 + (++Counter)); };
+	const TArray<FBox2D> KeepBoxes = RammsPCG::ParseBoxes(S->KeepClear);
 
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinIn))
 	{
@@ -353,23 +615,19 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			const double Yaw = Xf.Rotator().Yaw;
 			auto ToWorld = [&](double lx, double ly, double lz) { return Xf.TransformPosition(FVector(lx, ly, lz - Z0)); };
 			// Curb ramps in front of the lot (from the street network): nothing is planted or paved over them.
-			TArray<FBox2D> RampCuts;
-			{
-				TArray<FString> Parts;
-				R.Get<FString>(i, FName(TEXT("RampCuts")), FString()).ParseIntoArray(Parts, TEXT(";"), true);
-				for (const FString& Part : Parts)
-				{
-					TArray<FString> V;
-					if (Part.ParseIntoArray(V, TEXT(","), true) == 4)
-					{
-						RampCuts.Add(FBox2D(FVector2D(FCString::Atod(*V[0]), FCString::Atod(*V[1])), FVector2D(FCString::Atod(*V[2]), FCString::Atod(*V[3]))));
-					}
-				}
-			}
+			const TArray<FBox2D> RampCuts = RammsPCG::ParseBoxes(R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
 			auto OnRamp = [&](double lx, double ly, double Margin)
 			{
 				const FVector W = ToWorld(lx, ly, Z0);
 				for (const FBox2D& Bx : RampCuts) { if (Bx.ExpandBy(Margin).IsInside(FVector2D(W.X, W.Y))) { return true; } }
+				return false;
+			};
+			// Kept-clear areas (KeepClear): the planting strip's street trees, lights and grass stay off them.
+			auto InKeep = [&](double lx, double ly, double Margin)
+			{
+				if (KeepBoxes.Num() == 0) { return false; }
+				const FVector W = ToWorld(lx, ly, Z0);
+				for (const FBox2D& Bx : KeepBoxes) { if (Bx.ExpandBy(Margin).IsInside(FVector2D(W.X, W.Y))) { return true; } }
 				return false;
 			};
 
@@ -390,7 +648,22 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			// windows and dressing; the entrance pieces (steps, ramp, door record) stay ours.
 			FRammsPaletteMesh HouseMesh;
 			bool bHouseMesh = false;
-			if (bHouse && Palette)
+			// A whole building Subdivide Lots cut this lot for: placed like a pack house, its front on the street.
+			bool bWhole = false;
+			{
+				const FString WholeSlotName = R.Get<FString>(i, WholeSlotAttr, FString());
+				const int32 WholeIdx = static_cast<int32>(R.GetD(i, WholeIndexAttr, -1.0));
+				const TArray<FRammsPaletteMesh>* Bs = (Palette && !WholeSlotName.IsEmpty()) ? Palette->GetMeshes(FName(*WholeSlotName)) : nullptr;
+				if (Bs && Bs->IsValidIndex(WholeIdx))
+				{
+					HouseMesh = (*Bs)[WholeIdx];
+					bHouseMesh = bWhole = true;
+					BW = FMath::Min(HouseMesh.Footprint.Y, Width);
+					BD = HouseMesh.Footprint.X;
+					BackX = FrontX - BD;
+				}
+			}
+			if (bHouse && Palette && !bWhole)
 			{
 				// Every house that fits the lot (allowing a slight scale-down) is a candidate; one is picked at random.
 				if (const TArray<FRammsPaletteMesh>* Houses = Palette->GetMeshes(RammsPaletteSlots::House))
@@ -427,7 +700,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					RammsPCG::WritePickedMesh(Props, HouseMesh, HouseLoc, Yaw, NextSeed());
 				}
 				const int32 h = Features.AddBox(HouseLoc + FVector(0.0, 0.0, HouseMesh.Height * 0.5), Yaw, FVector(HD, HW, HouseMesh.Height), NextSeed());
-				RammsPCG::WriteManifest(Features, h, FName(TEXT("Building")), FName(TEXT("House")), true, ERammsComplianceIssue::None, HW, 0.0);
+				RammsPCG::WriteManifest(Features, h, FName(TEXT("Building")), bWhole ? FName(TEXT("Commercial")) : FName(TEXT("House")), true, ERammsComplianceIssue::None, HW, 0.0);
 				Features.SetInt(h, RammsPCG::LotId, LotId);
 			}
 
@@ -470,9 +743,129 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			// cornice, corner pieces, and one material pick per category for the whole building. The plan
 			// snaps to the kit's 100 cm grid; the cube shell stays inside as the building's body.
 			bool bModules = false, bDoorModule = false;
+			// How far the massing shell stands back from the building line at the front, the back and the lot's -Y and
+			// +Y sides. The original kits dress every face, with modules at most ~30 cm deep. A pack kit dresses its
+			// street faces only: the shell stands back from those by the modules' inward reach (its windows must not be
+			// behind the shell's wall) and stays on the line elsewhere (below).
+			double ShellFront = 30.0, ShellBack = 30.0, ShellNeg = 30.0, ShellPos = 30.0;
 			FString RoofMat;
 			FFacadeKit Kit;
-			if (S->bFacadeModules && !bHouse && !bHouseMesh && Palette && BuildKit(Palette, S->FacadeStyles, Rng, Kit))
+			bool bKit = S->bFacadeModules && !bHouse && !bHouseMesh && Palette && BuildKit(Palette, S->FacadeStyles, Rng, Kit);
+			// A pack kit that cannot tile this building (its widths do not reach the faces' lengths within its
+			// stretch) gives way to another style, a few times, before the cube dressing.
+			TArray<FString> Tried;
+			while (bKit && Kit.Info && !bModules && Tried.Num() < 4)
+			{
+				// A pack's own kit: the street faces only -- the front, on a corner lot the side on the cross street,
+				// in a one-row block the back -- each floor a run of modules stretched (within MaxStretch) to fill the face; the rest of
+				// the building is the massing shell (party walls). The front's ground floor gets one door module.
+				const double Stretch = Kit.Info->MaxStretch;
+				struct FRun { TArray<double> L; double Scale = 1.0; };
+				struct FKitFace { FVector2D Start, Dir; double Len = 0.0, LocalYaw = 0.0; FRun Gf, Win, Top; int32 DoorIdx = INDEX_NONE; };
+				TArray<FKitFace> KFaces;
+				const TArray<double> GfL = KitLengths(Kit.GF), WinL = KitLengths(Kit.Win), TopL = KitLengths(Kit.Top);
+				bool bOk = BW >= 300.0 && BD >= 300.0;
+				FRammsPaletteMesh DoorMesh;
+				const bool bHaveDoor = Kit.GFDoor && Kit.GFDoor->Num() > 0;
+				if (bHaveDoor) { DoorMesh = (*Kit.GFDoor)[PickWeighted(Kit.GFDoor->Num(), [&Kit](int32 k) { return static_cast<double>((*Kit.GFDoor)[k].Weight); }, Rng)]; }
+				if (bOk)
+				{
+					KFaces.Add(FKitFace{ FVector2D(FrontX, BW * 0.5), FVector2D(0.0, -1.0), BW, -90.0 });
+					if (R.Get<bool>(i, StreetSideNeg, false)) { KFaces.Add(FKitFace{ FVector2D(FrontX, -BW * 0.5), FVector2D(-1.0, 0.0), BD, 180.0 }); }
+					if (R.Get<bool>(i, StreetSidePos, false)) { KFaces.Add(FKitFace{ FVector2D(FrontX - BD, BW * 0.5), FVector2D(1.0, 0.0), BD, 0.0 }); }
+					if (R.Get<bool>(i, StreetBack, false)) { KFaces.Add(FKitFace{ FVector2D(FrontX - BD, -BW * 0.5), FVector2D(0.0, 1.0), BW, 90.0 }); }
+					for (int32 f = 0; f < KFaces.Num() && bOk; ++f)
+					{
+						FKitFace& Fc = KFaces[f];
+						const double Lead = (f == 0 && bHaveDoor && !DoorMesh.Mesh.IsNull()) ? DoorMesh.Footprint.X : 0.0;
+						bOk = TileRunStretch(Fc.Len, GfL, Stretch, Lead, Rng, Fc.Gf.L, Fc.Gf.Scale, &Fc.DoorIdx);
+						if (!bOk && Lead > 0.0) { bOk = TileRunStretch(Fc.Len, GfL, Stretch, 0.0, Rng, Fc.Gf.L, Fc.Gf.Scale); }
+						// (A one-storey building has no window floor to tile.)
+						bOk = bOk && (Floors < 2 || TileRunStretch(Fc.Len, WinL, Stretch, 0.0, Rng, Fc.Win.L, Fc.Win.Scale));
+						if (bOk && Kit.Top && !TileRunStretch(Fc.Len, TopL, Stretch, 0.0, Rng, Fc.Top.L, Fc.Top.Scale)) { Fc.Top.L.Reset(); }
+					}
+				}
+				if (bOk)
+				{
+					bModules = true;
+					// The cornice goes on every dressed face or on none (a face without one would show the shell's top
+					// band), and the building is only that much taller when it does.
+					bool bTops = Kit.Top != nullptr;
+					for (const FKitFace& Fc : KFaces) { bTops = bTops && Fc.Top.L.Num() > 0; }
+					if (!bTops) { for (FKitFace& Fc : KFaces) { Fc.Top.L.Reset(); } }
+					const double Rise = EntranceRise;
+					const double Zb = Z0 + Rise;
+					H = Rise + Kit.GFHeight + (Floors - 1) * Kit.WinHeight + (bTops ? Kit.TopHeight : 0.0);
+					const TMap<FName, FString> Mats = PickKitMaterials(Palette, Kit.Style, Rng);
+					RoofMat = RammsPCG::Mat(Palette, RammsPaletteSlots::MatAsphalt);
+					// The deepest any ground-floor or window module placed reaches behind its facade line.
+					double Inward = 0.0;
+					for (const FKitFace& Fc : KFaces)
+					{
+						// A module at Along on this face, stretched to fill its slot (SlotLen) exactly: the runs are tiled in
+						// whole centimetres and a slot takes any module within PickModule's tolerance of its length.
+						auto Put = [&](const FRammsPaletteMesh& Mm, double Along, double Z, double SlotLen, bool bBody)
+						{
+							const FVector2D P = Fc.Start + Fc.Dir * Along;
+							WriteModule(Modules, Mm, FTransform(FRotator(0.0, Yaw + Fc.LocalYaw, 0.0), ToWorld(P.X, P.Y, Z)), Mats, NextSeed(), SlotLen / FMath::Max(Mm.Footprint.X, 1.0), true);
+							if (bBody) { Inward = FMath::Max(Inward, ModuleInwardDepth(Mm)); }
+						};
+						FRammsPaletteMesh M;
+						double a = 0.0;
+						for (int32 g = 0; g < Fc.Gf.L.Num(); ++g)
+						{
+							const double L = Fc.Gf.L[g] * Fc.Gf.Scale;
+							if (g == Fc.DoorIdx)
+							{
+								bDoorModule = true;
+								EntranceY = (Fc.Start + Fc.Dir * (a + L * 0.5)).Y;
+								Put(DoorMesh, a, Zb, L, true);
+							}
+							else if (PickModule(Kit.GF, Fc.Gf.L[g], Rng, M)) { Put(M, a, Zb, L, true); }
+							a += L;
+						}
+						for (int32 Floor = 1; Floor < Floors; ++Floor)
+						{
+							const double Zf = Zb + Kit.GFHeight + (Floor - 1) * Kit.WinHeight;
+							const bool bLast = Floor == Floors - 1;
+							a = 0.0;
+							for (double L : Fc.Win.L)
+							{
+								if ((bLast && PickModule(Kit.WinTop, L, Rng, M)) || PickModule(Kit.Win, L, Rng, M)) { Put(M, a, Zf, L * Fc.Win.Scale, true); }
+								a += L * Fc.Win.Scale;
+							}
+						}
+						if (Fc.Top.L.Num() > 0)
+						{
+							const double Zt = Zb + Kit.GFHeight + (Floors - 1) * Kit.WinHeight;
+							a = 0.0;
+							for (double L : Fc.Top.L)
+							{
+								if (PickModule(Kit.Top, L, Rng, M)) { Put(M, a, Zt, L * Fc.Top.Scale, false); }
+								a += L * Fc.Top.Scale;
+							}
+						}
+					}
+					// The shell stands back from the dressed faces by that reach (a little more, so no pane is behind or
+					// flush with its wall; at most a quarter of the building's width or depth, so it keeps a body) and
+					// stays on the building line on the faces left bare (party walls), so the facade's ends meet it.
+					const double SetBack = FMath::Min(Inward + 3.0, 0.25 * FMath::Min(BW, BD));
+					ShellFront = SetBack;
+					ShellNeg = R.Get<bool>(i, StreetSideNeg, false) ? SetBack : 0.0;
+					ShellPos = R.Get<bool>(i, StreetSidePos, false) ? SetBack : 0.0;
+					ShellBack = R.Get<bool>(i, StreetBack, false) ? SetBack : 0.0;
+					if (Rise > 0.0)
+					{
+						RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + Rise * 0.5), FVector(BD + 70.0, BW + 70.0, Rise), Yaw, MatConcrete, NextSeed());
+					}
+				}
+				if (!bModules)
+				{
+					Tried.Add(Kit.Style);
+					bKit = BuildKit(Palette, S->FacadeStyles, Rng, Kit, Tried);
+				}
+			}
+			if (bKit && !Kit.Info && !bModules)
 			{
 				const double BWm = FMath::FloorToDouble(BW / 100.0) * 100.0;
 				const double BDm = FMath::FloorToDouble(BD / 100.0) * 100.0;
@@ -575,11 +968,13 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				}
 			}
 
-			const FVector ShellCentre = ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H * 0.5);
 			if (!bHouseMesh)
 			{
-				const double Inset = bModules ? 60.0 : 0.0;
-				RammsPCG::WriteCube(Primitives, ShellCentre, FVector(BD - Inset, BW - Inset, H), Yaw, Rng.FRand() < 0.5 ? MatFacade : MatFacadeAlt, NextSeed());
+				// Inset from each face the modules dress (none without modules): centred for the original kits, shifted
+				// toward the faces a pack kit leaves bare.
+				const double InF = bModules ? ShellFront : 0.0, InB = bModules ? ShellBack : 0.0, InN = bModules ? ShellNeg : 0.0, InP = bModules ? ShellPos : 0.0;
+				const FVector ShellCentre = ToWorld((FrontX + BackX) * 0.5 + (InB - InF) * 0.5, (InN - InP) * 0.5, Z0 + H * 0.5);
+				RammsPCG::WriteCube(Primitives, ShellCentre, FVector(BD - (InF + InB), BW - (InN + InP), H), Yaw, Rng.FRand() < 0.5 ? MatFacade : MatFacadeAlt, NextSeed());
 			}
 			if (bHouse && !bHouseMesh)
 			{
@@ -1048,7 +1443,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 						for (int32 k = 0; k < NT; ++k)
 						{
 							const double Ty = -Width * 0.5 + Width * (k + 0.5) / NT + RammsPCG::RandRange(Rng, -60.0, 60.0);
-							if (!ClearOfDrive(Ty, 90.0) || FMath::Abs(Ty) > Width * 0.5 - 80.0 || OnRamp(StripX, Ty, 90.0)) { continue; }
+							if (!ClearOfDrive(Ty, 90.0) || FMath::Abs(Ty) > Width * 0.5 - 80.0 || OnRamp(StripX, Ty, 90.0) || InKeep(StripX, Ty, 90.0)) { continue; }
 							FRammsPaletteMesh Tm;
 							if (bCanopy ? (Palette->PickMesh(RammsPaletteSlots::TreeLarge, Rng, Tm) || Palette->PickMesh(RammsPaletteSlots::Tree, Rng, Tm)) : Palette->PickMesh(RammsPaletteSlots::Tree, Rng, Tm))
 							{
@@ -1061,7 +1456,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					if (S->StreetLightSpacing > 300.0 && (LotId % FMath::Max(1, FMath::RoundToInt(S->StreetLightSpacing / FMath::Max(Width, 100.0)))) == 0)
 					{
 						const double Ly = (LotId % 2 == 0 ? -1.0 : 1.0) * (Width * 0.5 - 70.0);
-						if (ClearOfDrive(Ly, 40.0) && !OnRamp(StripX, Ly, 50.0))
+						if (ClearOfDrive(Ly, 40.0) && !OnRamp(StripX, Ly, 50.0) && !InKeep(StripX, Ly, 50.0))
 						{
 							const int32 l = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::StreetLight, Rng, ToWorld(StripX, Ly, Z0), Yaw + 90.0, NextSeed());
 							RammsPCG::WriteManifest(Props, l, FName(TEXT("Prop")), RammsPaletteSlots::StreetLight, true, ERammsComplianceIssue::None, 0.0, 0.0);
@@ -1075,7 +1470,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 							for (double gx = StripX - FZs * 0.5 + 25.0; gx < StripX + FZs * 0.5 - 20.0; gx += Step)
 							{
 								const double Py = gy + RammsPCG::RandRange(Rng, -Step * 0.4, Step * 0.4);
-								if (!ClearOfDrive(Py, 30.0) || OnRamp(gx, Py, 20.0)) { continue; }
+								if (!ClearOfDrive(Py, 30.0) || OnRamp(gx, Py, 20.0) || InKeep(gx, Py, 20.0 + Step * 0.3)) { continue; }
 								FRammsPaletteMesh G; if (!Palette->PickMesh(RammsPaletteSlots::GrassClump, Rng, G)) { break; }
 								RammsPCG::WritePickedMesh(Grass, G, ToWorld(FMath::Clamp(gx + RammsPCG::RandRange(Rng, -Step * 0.3, Step * 0.3), StripX - FZs * 0.5 + 20.0, StripX + FZs * 0.5 - 20.0), Py, Z0),
 									RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(), RammsPCG::RandRange(Rng, 0.6, 1.0));

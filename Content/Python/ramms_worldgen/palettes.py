@@ -174,7 +174,11 @@ NO_NORMALISE = {"TreeLarge", "GrassClump", "LawnTuft", "Flowers", "FoundationShr
                 "Tree", "TreeSmall", "Shrub", "Hedge", "House", "Car", "Store.Shelf", "Store.Fridge", "Store.ChestFreezer",
                 "Store.Counter", "Store.Register", "Store.Cart", "Store.Display", "Store.Product", "StreetLight", "UtilityPole", "StreetSign", "BusStop",
                 "Stairs", "Curb", "SidewalkCorner", "Railing", "Hazard.Upheaval", "Hazard.Barrier", "RoofUnit",
-                "Flowerbed", "Fence", "TreePit", "Furniture.Picture", "Furniture.Clutter", "Furniture.OfficeProp", "Furniture.Whiteboard", "Furniture.OfficeStorage", "Hazard.Box", "Hazard.AFrame", "InfoBoard", "Bollard"}
+                "Flowerbed", "Fence", "TreePit", "Furniture.Picture", "Furniture.Clutter", "Furniture.OfficeProp", "Furniture.Whiteboard", "Furniture.OfficeStorage", "Hazard.Box", "Hazard.AFrame", "InfoBoard", "Bollard",
+                "TrafficSignal", "Litter.Leaves", "Litter.Gutter", "Litter.Trash", "Litter.Bags", "Cover.Manhole", "Cover.Utility"}
+
+# Slots whose meshes stand on a pole with an arm off it: the pole, not the bounds centre, goes on the point.
+POLE_SLOTS = {"TrafficSignal"}
 
 # Meshes whose "front" the facing heuristic cannot tell (symmetric tops): yaw that turns the front to +X.
 MESH_FACING = {
@@ -251,6 +255,12 @@ MATERIAL_SETS = {
     "Decal.Sidewalk.Crack": ["MI_Cracks_01", "MI_Cracks_02", "MI_Cracks_03", "MI_Cracks_04", "MI_Crack01", "MI_Crack02"],
     "Decal.Stain": ["MI_decal_overlay_grime_01_RM", "Mi_Stain_01a", "MI_Stains"],
     "Decal.Puddle": ["MI_AsphaltPuddle01", "MI_AsphaltPuddle02", "MI_Puddle01", "MI_RoadPuddle01", "MI_RoadPuddle02"],
+}
+
+# Built-in stand-ins (under MATERIALS_DIR) for a material set none of whose MATERIAL_SETS names exists here: the
+# set takes them only then, so a palette built with the packs keeps exactly the packs' choices.
+MATERIAL_SET_FALLBACKS = {
+    "Decal.Puddle": ["M_RammsPuddle"],   # surfaces.build_puddle_decal
 }
 
 ACTOR_SLOTS = {
@@ -381,6 +391,239 @@ def _module_entry(mesh):
         cats.append(FACADE_SLOT_CATEGORIES.get(str(sm.material_slot_name).lower(), "Default"))
     e.set_editor_property("material_slots", cats)
     return e
+
+
+def kit_module_entry(mesh, kit, part):
+    """Palette entry for a module of a pack's kit (packs.base.Kit): the yaw and scale that bring the pack's piece to
+    the facade convention (exterior toward +Y, the run along +X from 0, base on the ground), the run's start
+    measured from the bounds whatever the pivot, and every material slot left to the mesh unless the kit maps
+    its name to a category (then "Facade.<style>.Mat.<category>" overrides it)."""
+    import math
+    import re
+    yaw = kit.yaw if part.yaw is None else part.yaw
+    s = kit.scale
+    box = mesh.get_bounding_box()
+    lo, hi = box.min, box.max
+    r = math.radians(yaw)
+    xs, ys = [], []
+    for x in (lo.x, hi.x):
+        for y in (lo.y, hi.y):
+            xs.append(x * math.cos(r) - y * math.sin(r))
+            ys.append(x * math.sin(r) + y * math.cos(r))
+    e = unreal.RammsPaletteMesh()
+    e.set_editor_property("mesh", mesh)
+    e.set_editor_property("weight", float(part.weight))
+    e.set_editor_property("scale", float(s))
+    e.set_editor_property("footprint", unreal.Vector2D(max((max(xs) - min(xs)) * s, 1.0), max(max(abs(min(ys) + part.dy), abs(max(ys) + part.dy)) * s, 1.0)))
+    e.set_editor_property("height", max(hi.z * s, 1.0))
+    e.set_editor_property("rotation_offset", unreal.Rotator(roll=0.0, pitch=0.0, yaw=yaw))
+    e.set_editor_property("location_offset", unreal.Vector(-min(xs) * s, part.dy * s, 0.0))
+    cats = []
+    for sm in mesh.get_editor_property("static_materials"):
+        name = str(sm.material_slot_name)
+        cats.append(next((c for rx, c in kit.materials if re.match(rx, name, re.I)), "Native"))
+    e.set_editor_property("material_slots", cats)
+    return e
+
+
+# A whole building's ground-floor modules -- the kit patterns' GF / GFDoor, in whatever case the pack spells them
+# (American City Packs has "groundFloor" as well as "GroundFloor") -- face its street fronts. The corner and
+# corner-end pieces (GroundFloorCorner*, GroundFloorCornerEnd*) do not match: they stand at the building's ends
+# whichever way it faces, so they would make any building look as if it wrapped a corner.
+_GF_PARTS = [(part, _re.compile(rx.pattern, _re.I)) for part, rx in FACADE_PATTERNS if part in ("GF", "GFDoor")]
+
+
+def _ground_floor_part(name):
+    """"GF" or "GFDoor" for a whole building's ground-floor module (by mesh name), else None."""
+    for part, rx in _GF_PARTS:
+        if rx.match(name):
+            return part
+    return None
+
+
+def packed_building_entry(cls_path, decor=None, stats=None):
+    """A whole building from a packed-level-actor blueprint (its modules instanced): every instance one part, the
+    front -- the side its ground-floor modules face at yaw 0, +Y in the blueprint -- turned to +X of the facing
+    frame, the facade line (not a cornice's overhang) on the front of the footprint, centred across it, the base
+    on the ground, the entrance at the front door module nearest the middle (its bounds centre). The parts are
+    the building's only collision: each mesh is made solid (_ensure_collision) unless `decor(mesh path)` says it
+    is decoration (packs.base.Pack.building_decor); `stats` (a dict) collects those in "decor_meshes" (a set).
+    Returns (entry, corner): corner "Neg" / "Pos" when its ground floor also wraps the end that ends up on the
+    facing frame's -Y / +Y side (a corner building's cross-street face), else None; (None, None) when the
+    blueprint cannot be spawned or has no front."""
+    import statistics
+    cls = unreal.load_class(None, cls_path)
+    if cls is None:
+        return None, None
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    base = unreal.Vector(0.0, 0.0, 50000.0)
+    actor = eas.spawn_actor_from_class(cls, base)
+    if actor is None:
+        return None, None
+    parts, front_y, doors, yaws = [], [], [], set()
+    lo, hi = [1e9] * 3, [-1e9] * 3
+    try:
+        for c in actor.get_components_by_class(unreal.InstancedStaticMeshComponent):
+            mesh = c.get_editor_property("static_mesh")
+            if mesh is None:
+                continue
+            if decor is not None and decor(mesh.get_path_name()):
+                if stats is not None:
+                    stats.setdefault("decor_meshes", set()).add(mesh.get_path_name())
+            else:
+                _ensure_collision(mesh, "Building")
+            bb = mesh.get_bounding_box()
+            centre = unreal.Vector((bb.min.x + bb.max.x) * 0.5, (bb.min.y + bb.max.y) * 0.5, (bb.min.z + bb.max.z) * 0.5)
+            mats = [c.get_material(k) for k in range(c.get_num_materials())]
+            mats = mats if mats and all(m is not None for m in mats) else []
+            gf = _ground_floor_part(mesh.get_name())
+            for i in range(c.get_instance_count()):
+                t = c.get_instance_transform(i, True)
+                rel = unreal.Transform(t.translation - base, t.rotation.rotator(), t.scale3d)
+                part = unreal.RammsPalettePart()
+                part.set_editor_property("mesh", mesh)
+                part.set_editor_property("relative_transform", rel)
+                part.set_editor_property("materials", mats)
+                parts.append(part)
+                for k in range(8):
+                    w = t.transform_location(unreal.Vector(bb.max.x if k & 1 else bb.min.x, bb.max.y if k & 2 else bb.min.y, bb.max.z if k & 4 else bb.min.z)) - base
+                    for d, v in enumerate((w.x, w.y, w.z)):
+                        lo[d], hi[d] = min(lo[d], v), max(hi[d], v)
+                if gf:
+                    yaw = ((round(t.rotation.rotator().yaw) + 180) % 360) - 180
+                    yaws.add(yaw)
+                    if yaw == 0:
+                        # the module's pivot is on the facade plane (the kits' convention), at the start of its run
+                        front_y.append(t.translation.y - base.y)
+                        if gf == "GFDoor":
+                            # the door is in the middle of its module, not at the pivot
+                            doors.append(t.transform_location(centre).x - base.x)
+    finally:
+        eas.destroy_actor(actor)
+    if not parts or not front_y:
+        return None, None
+    yf = statistics.median(front_y)               # the facade line
+    cx = (lo[0] + hi[0]) * 0.5
+    depth = max(yf - lo[1], 100.0)
+    e = unreal.RammsPaletteMesh()
+    e.set_editor_property("weight", 1.0)
+    e.set_editor_property("scale", 1.0)
+    e.set_editor_property("parts", parts)
+    e.set_editor_property("footprint", unreal.Vector2D(depth, max(hi[0] - lo[0], 100.0)))
+    e.set_editor_property("height", max(hi[2] - lo[2], 100.0))
+    # +Y (the front) to +X: a quarter turn back, under which blueprint (x, y) lands on (y, -x); the footprint's centre
+    # (depth / 2 behind the facade line, cx across) on the requested point
+    e.set_editor_property("rotation_offset", unreal.Rotator(roll=0.0, pitch=0.0, yaw=-90.0))
+    e.set_editor_property("location_offset", unreal.Vector(depth * 0.5 - yf, cx, -lo[2]))
+    if doors:
+        door = min(doors, key=lambda x: abs(x - cx))
+        e.set_editor_property("entrance_offset_y", cx - door)
+    e.set_editor_property("source_id", cls_path.rsplit(".", 1)[0])
+    corner = None
+    # (a building fronted on all four sides stands free: no hand)
+    if yaws != {-180, -90, 0, 90}:
+        corner = "Neg" if -90 in yaws else ("Pos" if 90 in yaws else None)
+    return e, corner
+
+
+def collision_records():
+    """What the pack-asset collision policy in _ensure_collision has recorded so far, as lists:
+    "modified_pack_assets" (MODIFIED_PACK_ASSETS, the pack meshes it changed) and "missing_collision"
+    (MISSING_COLLISION, those it only reported, with FIX_PACK_COLLISION off). Empty where there is no record."""
+    out = {}
+    for attr, key in (("MODIFIED_PACK_ASSETS", "modified_pack_assets"), ("MISSING_COLLISION", "missing_collision")):
+        rec = globals().get(attr)
+        out[key] = list(rec) if rec is not None else []
+    return out
+
+
+def collision_since(before):
+    """The collision records added since `before` (a collision_records() snapshot), for one build's report; all of
+    them when the records were reset in between."""
+    out = {}
+    for key, rec in collision_records().items():
+        old = before.get(key, [])
+        out[key] = rec[len(old):] if rec[:len(old)] == old else rec
+    return out
+
+
+def build_building_slots(pal, pack, report=None):
+    """A pack's whole buildings (packs.base.Pack.buildings) as Building.Downtown / Building.CornerNeg / CornerPos
+    composites, added to those slots. Returns {slot: count}. With `report` (a recipe report), what was skipped goes
+    to report["skipped"] and the pack meshes the parts' collision touched (or would have) to
+    report["building_collision"][pack name], with the number of decorative meshes left without collision."""
+    got = {}
+    before = collision_records()
+    stats = {"decor_meshes": set()}
+    skipped = report.setdefault("skipped", []) if report is not None else []
+
+    def skip(msg):
+        H.warn(msg)
+        skipped.append(msg)
+
+    for kind, paths in pack.buildings.items():
+        for path in paths:
+            full = pack.abs_path(path)
+            cls_path = full if "." in full.rsplit("/", 1)[-1] else "%s.%s_C" % (full, full.rsplit("/", 1)[-1])
+            try:
+                e, corner = packed_building_entry(cls_path, decor=pack.is_building_decor, stats=stats)
+            except Exception as exc:  # noqa: BLE001
+                skip("building %s: %s" % (cls_path, exc))
+                continue
+            if e is None:
+                skip("building %s: not spawned, or no ground-floor front found" % cls_path)
+                continue
+            if kind == "DowntownCorner" and not corner:
+                skip("building %s: listed as a corner building, but its ground floor wraps neither end" % cls_path)
+                continue
+            slot = "Building.Corner" + corner if kind == "DowntownCorner" else "Building.Downtown"
+            pal.add_mesh(unreal.Name(slot), e)
+            got[slot] = got.get(slot, 0) + 1
+    if report is not None:
+        col = collision_since(before)
+        col["decor_meshes"] = len(stats["decor_meshes"])
+        report.setdefault("building_collision", {})[pack.name] = col
+    return got
+
+
+def _pack_ref(path):
+    from .packs.base import Ref
+    return Ref(path)
+
+
+def build_kit_slots(pal, pack, kit, skipped=None):
+    """A pack's kit as the facade style kit.style: its role slots ("Facade.<style>.<Role>") and its kit info.
+    Returns {role: count}; nothing when its GF or Win role finds no mesh. Paths naming an asset of the wrong class
+    are noted in `skipped` (a list)."""
+    entries = {role: [kit_module_entry(m, kit, part) for m, part in pack.kit_meshes(kit, role, skipped)] for role in kit.roles}
+    if not entries.get("GF") or not entries.get("Win"):
+        return {}
+    for role, es in entries.items():
+        slot = unreal.Name("Facade.%s.%s" % (kit.style, role))
+        s = unreal.RammsPaletteSlot()
+        s.set_editor_property("meshes", es)
+        s.set_editor_property("note", "%s kit %s (%s)" % (pack.name, kit.style, role))
+        pal.set_slot(slot, s)
+    # the material sets the kit's slot categories pick from: the kit's own, or the built-in window glass
+    for cat in sorted({c for _rx, c in kit.materials}):
+        mats = []
+        for path in kit.material_sets.get(cat, []):
+            mats += [m for m in pack.resolve(_pack_ref(path), ("MaterialInstanceConstant", "Material"), skipped)]
+        if not mats and cat == "Glass":
+            from . import surfaces
+            gp = surfaces.DIR + "/M_RammsWindowGlass"
+            mats = [unreal.load_asset(gp) if H.EAL.does_asset_exist(gp) else surfaces.build_window_glass()]
+        s = unreal.RammsPaletteSlot()
+        s.set_editor_property("materials", mats)
+        s.set_editor_property("material", mats[0] if mats else None)
+        pal.set_slot(unreal.Name("Facade.%s.Mat.%s" % (kit.style, cat)), s)
+    info = unreal.RammsFacadeKitInfo()
+    info.set_editor_property("family", kit.family)
+    info.set_editor_property("weight", float(kit.weight))
+    info.set_editor_property("max_stretch", float(kit.max_stretch))
+    info.set_editor_property("upper_mix_chance", float(kit.upper_mix))
+    pal.set_facade_kit(kit.style, info)
+    return {role: len(es) for role, es in entries.items()}
 
 
 def build_facade_slots(pal, report):
@@ -548,7 +791,10 @@ def _shelf_heights(mesh, scale):
 
 
 HEAVY_OK_IF_NANITE = {"TreeLarge"}
-NO_COLLISION_SLOTS = {"GrassClump", "Flowers", "LawnTuft"}  # ground cover: wheels and arms pass through it
+NO_COLLISION_SLOTS = {"GrassClump", "Flowers", "LawnTuft",  # ground cover: wheels and arms pass through it
+                      "Skyline",  # distant towers outside the site: nothing ever reaches them
+                      # flat street litter and covers (LitterDensity): spawned as ground cover
+                      "Litter.Leaves", "Litter.Gutter", "Litter.Trash", "Cover.Manhole", "Cover.Utility"}
 
 # Collision of pack meshes (Fab packs; UrbanVerse and SimReady imports). The sim needs every palette mesh to
 # collide, so a palette build fixes collision in the project's local copies of those meshes, which are never
@@ -861,10 +1107,11 @@ def _handle_side(mesh, yaw):
     return 1.0 if pos > neg else -1.0
 
 
-def _mesh_entry(mesh, slot="", yaw=None, normalise=True):
+def _mesh_entry(mesh, slot="", yaw=None, normalise=True, scale=None):
     """Palette entry for a mesh. yaw: the yaw that turns the mesh's front to +X when the source says where
     the front is (UrbanVerse annotations); otherwise it is measured. normalise=False keeps the mesh's own
-    size (metric sources) instead of pulling it toward the slot's expected height."""
+    size (metric sources) instead of pulling it toward the slot's expected height; scale sets the size outright
+    (a pack modelled at another scale)."""
     import math
     _ensure_collision(mesh, slot)
     bounds = mesh.get_bounds()
@@ -877,9 +1124,11 @@ def _mesh_entry(mesh, slot="", yaw=None, normalise=True):
     e = unreal.RammsPaletteMesh()
     e.set_editor_property("mesh", mesh)
     e.set_editor_property("weight", 1.0)
-    scale = 1.0
+    fixed, scale = scale, 1.0
     expected = SLOT_HEIGHTS.get(slot)
-    if normalise and expected and slot not in NO_NORMALISE and ext.z > 1.0:
+    if fixed is not None:
+        scale = fixed
+    elif normalise and expected and slot not in NO_NORMALISE and ext.z > 1.0:
         ratio = expected / (ext.z * 2.0)
         if abs(ratio - 1.0) > 0.12:
             scale = max(0.5, min(1.6, ratio))
@@ -898,8 +1147,9 @@ def _mesh_entry(mesh, slot="", yaw=None, normalise=True):
     ox = origin.x * math.cos(r) - origin.y * math.sin(r)
     oy = origin.x * math.sin(r) + origin.y * math.cos(r)
     base_z = origin.z - ext.z
-    if slot in TREE_SLOTS:
-        # Put the trunk, not the canopy's centre, on the requested point (tree pits, planting strips).
+    if slot in TREE_SLOTS or slot in POLE_SLOTS:
+        # Put the trunk, not the canopy's centre, on the requested point (tree pits, planting strips); the same
+        # for a pole with an arm (a signal mast).
         t = _trunk_xy(mesh)
         if t is not None:
             tx, ty = t[0] * scale, t[1] * scale
@@ -1037,6 +1287,28 @@ def _ensure_solid_material(name, rgb, roughness, metallic):
     return mat
 
 
+def set_collection_values(pal, packs):
+    """Set the palette's CollectionValues from its packs' collection_values (installed packs only; a later pack's
+    value for the same parameter of the same collection wins). Collections are told apart by path: two packs'
+    same-named collections (MPC_Emissive, MPC_Wind...) are different assets. Returns
+    {"<collection path>:<parameter>": value}."""
+    vals = {}
+    for pack in packs:
+        if not pack.installed():
+            continue
+        for coll_path, param, value in pack.collection_values:
+            coll = unreal.load_asset(coll_path)
+            if coll is None:
+                continue
+            v = unreal.RammsCollectionValue()
+            v.set_editor_property("collection", coll)
+            v.set_editor_property("parameter", unreal.Name(param))
+            v.set_editor_property("value", value)
+            vals[(coll.get_path_name().split(".", 1)[0], param)] = v
+    pal.set_editor_property("collection_values", list(vals.values()))
+    return {"%s:%s" % k: v.get_editor_property("value") for k, v in vals.items()}
+
+
 def build_default_palette(path=DEFAULT_PALETTE):
     """Create or refresh the default palette. Returns (palette, report dict); the report lists the pack meshes
     whose collision the build changed (modified_pack_assets) and those it left without usable collision
@@ -1113,6 +1385,10 @@ def build_default_palette(path=DEFAULT_PALETTE):
         mats = [m for m in mats if m is not None]
         if slot.startswith("Decal."):
             mats = [m for m in mats if _is_decal(m)]
+        if not mats:
+            fallback = [MATERIALS_DIR + "/" + n for n in MATERIAL_SET_FALLBACKS.get(slot, [])]
+            mats = [H.EAL.load_asset(p) for p in fallback if H.EAL.does_asset_exist(p)]
+            mats = [m for m in mats if m is not None and (not slot.startswith("Decal.") or _is_decal(m))]
         for m in mats:
             pal.add_material(slot, m)
         report["material_sets"][slot] = [m.get_name() for m in mats]
@@ -1140,6 +1416,9 @@ def build_default_palette(path=DEFAULT_PALETTE):
         else:
             report["missing"].append(slot)
 
+    # its downtown facade kits are American City Packs': their windows' daylight level
+    from . import packs as PK
+    report["collection_values"] = set_collection_values(pal, [PK.get("AmericanCityPacks")])
     H.save(pal)
     missing = [str(n) for n in pal.missing_well_known_slots()]
     report["still_empty"] = missing

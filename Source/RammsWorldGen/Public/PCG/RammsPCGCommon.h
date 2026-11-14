@@ -193,6 +193,10 @@ namespace RammsPCG
 	 *  differently); comparing with this slack keeps the same seed producing the same world everywhere. */
 	constexpr double PlaceEps = 0.05;
 
+	/** World XY boxes from "x0,y0,x1,y1;..." (KeepClear, RampCuts), corners in either order. An entry that is not
+	 *  four numbers is skipped, with one warning per text. */
+	RAMMSWORLDGEN_API TArray<FBox2D> ParseBoxes(const FString& Text);
+
 	/** True when A and B overlap by more than PlaceEps on both axes (touching does not count). */
 	inline bool Overlaps(const FBox2D& A, const FBox2D& B, double Eps = PlaceEps)
 	{

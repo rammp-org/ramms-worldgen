@@ -13,6 +13,8 @@
 #include "TimerManager.h"
 #include "HAL/FileManager.h"
 #include "JsonObjectConverter.h"
+#include "Kismet/KismetMaterialLibrary.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
@@ -81,11 +83,63 @@ void ARammsWorldGenerator::OnConstruction(const FTransform& Transform)
 	Super::OnConstruction(Transform);
 	EnsureBound();
 	ResolveParams();
+	ApplyCollectionValues();
+}
+
+namespace
+{
+	// Collection packages a palette names that this install lacks (a pack not installed): looked up once, so a
+	// missing pack costs no load attempt (and no load warning) on every construction, i.e. every drag of the actor.
+	TSet<FName> GMissingCollectionPackages;
+}
+
+void ARammsWorldGenerator::ApplyCollectionValues()
+{
+	// The values are set in this world, not stored anywhere: with several generators in one world the last one to
+	// apply wins, and nothing reverts a value when the palette changes (the new palette sets only its own).
+	if (!GetWorld() || HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+	{
+		return;
+	}
+	const URammsWorldPalette* Palette = Params.Palette.LoadSynchronous();
+	if (!Palette)
+	{
+		return;
+	}
+	for (const FRammsCollectionValue& V : Palette->CollectionValues)
+	{
+		if (V.Collection.IsNull())
+		{
+			continue;
+		}
+		UMaterialParameterCollection* Collection = V.Collection.Get();
+		if (!Collection)
+		{
+			const FName Package = V.Collection.ToSoftObjectPath().GetLongPackageFName();
+			if (GMissingCollectionPackages.Contains(Package))
+			{
+				continue;
+			}
+			if (!FPackageName::DoesPackageExist(Package.ToString()))
+			{
+				GMissingCollectionPackages.Add(Package);
+				UE_LOG(LogRammsWorldGen, Log, TEXT("%s: palette %s sets a value of %s, which is not installed; skipped"), *GetName(), *Palette->GetName(), *Package.ToString());
+				continue;
+			}
+			Collection = V.Collection.LoadSynchronous();
+		}
+		if (Collection)
+		{
+			UKismetMaterialLibrary::SetScalarParameterValue(this, Collection, V.Parameter, V.Value);
+		}
+	}
 }
 
 void ARammsWorldGenerator::BeginPlay()
 {
 	Super::BeginPlay();
+	// a play world starts from the collections' defaults
+	ApplyCollectionValues();
 	if (bRandomizeSeedOnBeginPlay)
 	{
 		Seed = FMath::Rand();
@@ -209,6 +263,7 @@ bool ARammsWorldGenerator::SetPalette(const FString& Palette)
 		ParamOverrides.Palette.Reset();
 		OverrideKeys.Remove(Key);
 		ResolveParams();
+		ApplyCollectionValues();
 		return true;
 	}
 	FString Path = Palette;
@@ -229,6 +284,7 @@ bool ARammsWorldGenerator::SetPalette(const FString& Palette)
 	ParamOverrides.Palette = Loaded;
 	OverrideKeys.Add(Key);
 	ResolveParams();
+	ApplyCollectionValues();
 	return true;
 }
 
@@ -244,6 +300,7 @@ bool ARammsWorldGenerator::Regenerate()
 		return false;
 	}
 	ResolveParams();
+	ApplyCollectionValues();
 
 	UPCGGraphInterface* Graph = nullptr;
 	if (Preset && !Preset->Graph.IsNull())

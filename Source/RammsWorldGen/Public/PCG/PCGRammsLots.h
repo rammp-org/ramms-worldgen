@@ -22,6 +22,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lots", meta = (PCG_Overridable)) double SetbackMax = 0.0;
 	/** A block deeper than twice this gets two rows of lots (front and back frontages). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lots", meta = (PCG_Overridable)) double MinLotDepth = 1500.0;
+	/** Chance a lot is cut to the frontage of a whole building from the palette (Building Massing places it). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lots", meta = (PCG_Overridable, ClampMin = 0, ClampMax = 1)) double WholeBuildingChance = 0.0;
 
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override { return FName(TEXT("RammsSubdivideLots")); }
@@ -71,6 +73,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double TreeSpacing = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double CanopyChance = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double StreetLightSpacing = 0.0;
+	/** World XY boxes "x0,y0,x1,y1;..." kept clear of the planting strip's street trees, lights and grass (see FRammsWorldGenParams). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) FString KeepClear;
 	/** House lots: probability of a driveway beside the house (sometimes with a car on it). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double DrivewayChance = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double DrivewayWidth = 360.0;

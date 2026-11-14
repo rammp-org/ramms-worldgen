@@ -108,6 +108,60 @@ struct RAMMSWORLDGEN_API FRammsPaletteMesh
 	bool IsComposite() const { return Parts.Num() > 0; }
 };
 
+/**
+ * How a facade style from a pack's own modular kit is put together (palette FacadeKits, by style). A style
+ * with one is tiled from any module widths -- each run of modules (a floor of a face) stretched or squeezed by
+ * at most MaxStretch to fill the face exactly -- dresses only the building's street faces (the front, a corner
+ * lot's side on the cross street, the back of a one-row block; the rest is the massing shell, the party walls),
+ * takes its cornice from a "Facade.<style>.Top" slot (the upper floors' style: itself, or with UpperMixChance
+ * another of its family) and its materials from its own "Facade.<style>.Mat.<Category>" sets (a module slot
+ * with none keeps the mesh's own material). Modules keep their palette transform
+ * (RotationOffset / LocationOffset / Scale: a pack's pivot and size brought to the convention). A style
+ * without one is the original kit: a 100 cm grid, every face, corner pieces, global tops and material sets.
+ */
+USTRUCT(BlueprintType)
+struct RAMMSWORLDGEN_API FRammsFacadeKitInfo
+{
+	GENERATED_BODY()
+
+	/** The pack (family of styles) it comes from: its upper floors only mix with styles of the same family. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	FString Family;
+
+	/** How often it is picked relative to the other allowed styles (the original kits count 1). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette", meta = (ClampMin = "0.0"))
+	float Weight = 1.0f;
+
+	/** How far a run of modules may be stretched or squeezed along the facade (a fraction) to fill a face. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette", meta = (ClampMin = "0.0", ClampMax = "0.3"))
+	float MaxStretch = 0.08f;
+
+	/** Chance a building's upper floors take another style of the same family. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UpperMixChance = 0.0f;
+};
+
+/** A value for a scalar of a material parameter collection, set in the world when a level generates or loads: a
+ *  pack's global look controls, e.g. American City Packs' "Building Emissive Intensity" (its lit windows: 800 is
+ *  night; daylight wants ~10). Collection values live in the world, not in any asset, so the generator applies
+ *  them on construction, on Regenerate, when its palette is set and at BeginPlay. A collection whose package is
+ *  not installed is skipped. With several generators in one world the last one to apply wins; nothing reverts a
+ *  value when the palette changes. */
+USTRUCT(BlueprintType)
+struct RAMMSWORLDGEN_API FRammsCollectionValue
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TSoftObjectPtr<class UMaterialParameterCollection> Collection;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	FName Parameter;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	float Value = 0.0f;
+};
+
 /** A semantic slot: what the generator asks for ("Bench", "Mat.Sidewalk",
  *  "Hazard.AFrame") rather than which asset answers. */
 USTRUCT(BlueprintType)
@@ -187,6 +241,14 @@ namespace RammsPaletteSlots
 	inline const FName HazardBox(TEXT("Hazard.Box"));
 	// more street furniture and dressing
 	inline const FName Hydrant(TEXT("Hydrant"));
+	// street rules and litter (StreetRules / LitterDensity)
+	inline const FName TrafficSignal(TEXT("TrafficSignal"));
+	inline const FName LitterLeaves(TEXT("Litter.Leaves"));
+	inline const FName LitterGutter(TEXT("Litter.Gutter"));
+	inline const FName LitterTrash(TEXT("Litter.Trash"));
+	inline const FName LitterBags(TEXT("Litter.Bags"));
+	inline const FName CoverManhole(TEXT("Cover.Manhole"));
+	inline const FName CoverUtility(TEXT("Cover.Utility"));
 	inline const FName ParkingMeter(TEXT("ParkingMeter"));
 	inline const FName NewspaperBox(TEXT("NewspaperBox"));
 	inline const FName Mailbox(TEXT("Mailbox"));
@@ -207,6 +269,13 @@ namespace RammsPaletteSlots
 	inline const FName FacadePartWin(TEXT("Win"));
 	inline const FName FacadePartWinTop(TEXT("WinTop"));
 	inline const FName FacadePartWinCorner(TEXT("WinCorner"));
+	// whole buildings (composites, front toward +X of the facing frame): the street's, and corner buildings whose second
+	// street face is on the facing frame's -Y (CornerNeg) or +Y (CornerPos) side
+	inline const FName BuildingDowntown(TEXT("Building.Downtown"));
+	inline const FName BuildingCornerNeg(TEXT("Building.CornerNeg"));
+	inline const FName BuildingCornerPos(TEXT("Building.CornerPos"));
+	// a style's own cornice (FRammsFacadeKitInfo styles; the original kits use the global Facade.Top / TallTop)
+	inline const FName FacadePartTop(TEXT("Top"));
 	inline const FName FacadeTop(TEXT("Facade.Top"));
 	inline const FName FacadeTopCorner(TEXT("Facade.TopCorner"));
 	inline const FName FacadeTallTop(TEXT("Facade.TallTop"));
@@ -322,6 +391,22 @@ public:
 	/** Fallback material for any Mat.* slot the palette does not fill. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	TSoftObjectPtr<UMaterialInterface> DefaultMaterial;
+
+	/** Material parameter collection values the palette's packs need (FRammsCollectionValue), set in the world by
+	 *  the generator: e.g. the daylight level of American City Packs' lit windows. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TArray<FRammsCollectionValue> CollectionValues;
+
+	/** Facade styles from a pack's own kit, by style (FRammsFacadeKitInfo); the others are the original kits. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TMap<FString, FRammsFacadeKitInfo> FacadeKits;
+
+	/** A style's kit info, or null for an original kit. */
+	const FRammsFacadeKitInfo* FacadeKit(const FString& Style) const { return FacadeKits.Find(Style); }
+
+	/** Describe (or replace) a style's kit. Used by the Python palette builder. */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
+	void SetFacadeKit(const FString& Style, const FRammsFacadeKitInfo& Info) { Modify(); FacadeKits.Add(Style, Info); }
 
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
 	bool HasSlot(FName Slot) const;

@@ -29,6 +29,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hazards", meta = (PCG_Overridable)) double PlantingStrip = 0.0;
 	/** Probability a hazard intrudes below the minimum clear width. NonCompliance = 0 disables intrusion entirely. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hazards", meta = (PCG_Overridable)) double HazardIntrusionChance = 0.5;
+	/** Street-design rules: hydrants, bus stops and signal posts where the street network put them (see FRammsWorldGenParams). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hazards", meta = (PCG_Overridable)) bool bStreetRules = false;
+	/** Street litter per 100 m of side (Litter.* / Cover.* slots, no collision). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hazards", meta = (PCG_Overridable)) double LitterDensity = 0.0;
+	/** World XY boxes "x0,y0,x1,y1;..." kept clear of everything placed along the sides. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hazards", meta = (PCG_Overridable)) FString KeepClear;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double VerticalChangeMax = 0.64;
 
 #if WITH_EDITOR
