@@ -71,7 +71,7 @@ ARammsProcPiece::ARammsProcPiece()
 
 ERammsProcPieceKind ARammsProcPiece::GetEffectiveKind() const
 {
-	if (KindId >= 0 && KindId <= static_cast<int32>(ERammsProcPieceKind::Patch)) // keep in step with the last enum value
+	if (KindId >= 0 && KindId <= static_cast<int32>(ERammsProcPieceKind::Hump)) // keep in step with the last enum value
 	{
 		return static_cast<ERammsProcPieceKind>(KindId);
 	}
@@ -136,6 +136,8 @@ void ARammsProcPiece::Rebuild()
 	case ERammsProcPieceKind::Column:   BuildColumn(Mesh); break;
 	case ERammsProcPieceKind::Mound:    BuildMound(Mesh); break;
 	case ERammsProcPieceKind::Patch:    BuildPatch(Mesh); break;
+	case ERammsProcPieceKind::GroundPrisms: BuildGroundPrisms(Mesh); break;
+	case ERammsProcPieceKind::Hump:     BuildHump(Mesh); break;
 	default: BuildSlab(Mesh); break;
 	}
 
@@ -549,6 +551,13 @@ void ARammsProcPiece::ApplyCollision()
 
 void ARammsProcPiece::AppendCollisionShapes(TArray<FRammsCollisionShape>& Out) const
 {
+	// The ground kinds describe themselves (RammsProcPieceGround.cpp).
+	switch (GetEffectiveKind())
+	{
+	case ERammsProcPieceKind::GroundPrisms: AppendGroundPrismShapes(Out); return;
+	case ERammsProcPieceKind::Hump:         AppendHumpShapes(Out); return;
+	default: break;
+	}
 	// Per kind: filled in by the exact-export work (existing kinds) and by each new kind as it is added.
 }
 
