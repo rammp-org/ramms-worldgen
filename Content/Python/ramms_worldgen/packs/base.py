@@ -27,14 +27,17 @@ class Ref:
     normalise: pull the mesh toward the slot's real-world height (palettes.SLOT_HEIGHTS); False keeps its size.
     yaw: the yaw that turns its front to +X when the heuristic gets it wrong (None: measured).
     scale: a fixed scale for a pack modelled at another size (e.g. Downtown West's ~1.4x); overrides normalise.
+    materials: {mesh material slot name: pack surface key}: those slots take the surface (built into the recipe's
+      material folder), which makes the palette entry a one-part composite carrying its materials.
     """
 
-    def __init__(self, path, weight=1.0, normalise=True, yaw=None, scale=None):
+    def __init__(self, path, weight=1.0, normalise=True, yaw=None, scale=None, materials=None):
         self.path = path
         self.weight = weight
         self.normalise = normalise
         self.yaw = yaw
         self.scale = scale
+        self.materials = dict(materials or {})
 
     def __repr__(self):
         return "Ref(%r)" % self.path
@@ -166,7 +169,7 @@ class Pack:
     def surface_spec(self, key):
         """The surface's builder spec with its texture paths made absolute."""
         spec = dict(self.surfaces[key])
-        for k in ("bc", "n", "rma", "bc2", "n2", "rma2"):
+        for k in ("bc", "n", "rma", "bc2", "n2", "rma2", "orm", "lens"):
             if isinstance(spec.get(k), str):
                 spec[k] = self.abs_path(spec[k])
         return spec

@@ -57,7 +57,9 @@ PACK = Pack(
         "InfoBoard": [A + "props/prop_poster_stands/SM_prop_poster_pillar_with_posters"],
         "Hazard.Cafe": [A + "props/prop_table/SM_prop_dining_table_a"],
         "Hazard.CafeChair": [A + "props/prop_table/SM_prop_dining_chair_a", A + "props/prop_table/SM_prop_dining_chair_b"],
-        "TrafficSignal": [Ref(A + "props/props_streetlight/SM_light_streetlight_complete", yaw=0.0, scale=DW_SCALE)],
+        # its lamps lit by the pack's own (otherwise unused) lens mask: the SignalLens surface
+        "TrafficSignal": [Ref(A + "props/props_streetlight/SM_light_streetlight_complete", yaw=0.0, scale=DW_SCALE,
+                              materials={"Light_Mat": "SignalLens", "Trim_Lights": "SignalPaint"})],
         # 1.33 m at the pack's scale: ~80 cm covers
         "Cover.Manhole": [Ref(A + "props/prop_sewer_caps/SM_sewer_cap_*", scale=0.6)],
     },
@@ -74,6 +76,26 @@ PACK = Pack(
                         rma="Textures/Asphalt/T_asphalt_base_rough", layout="rma", tile=400.0, second=False, mask=None),
         "Curb": dict(bc="Textures/Concrete_Curb/T_curb_straight_concrete_albedo", n="Textures/Concrete_Curb/T_curb_straight_concrete_normal",
                      rma="Textures/Concrete_Curb/T_curb_straight_concrete_rough", layout="rma", tile=150.0, second=False, mask=None),
+        # the signal mast's lamps lit (surfaces.build_signal). No material of the pack lights them; its lens mask
+        # T_light_emissive does not line up with the mesh's UVs, so the lenses are given by geometry (mesh units:
+        # the two heads on the arm at y 311 / 679 and the one on the pole at y 0, all facing +X; 15.6 cm red
+        # lenses over 10 cm amber and green) and only the mask's pedestrian icon (hand on R, walking figure on G)
+        # is used, projected onto the pedestrian head's lens panel (facing +Y, across the road under the arm)
+        "SignalLens": dict(kind="signal", bc=A + "props/props_streetlight/Textures/T_light_albedo", n=A + "props/props_streetlight/Textures/T_light_normal",
+                           orm=A + "props/props_streetlight/Textures/T_light_orm", lens=A + "props/props_streetlight/Textures/T_light_emissive",
+                           lamp_front_x=45.0,
+                           lamps=dict(red=[(311.0, 735.0, 15.6), (679.0, 735.0, 15.6), (0.0, 354.0, 15.2)],
+                                      green=[(311.0, 668.0, 10.0), (679.0, 668.0, 10.0), (0.0, 287.0, 9.9)]),
+                           ped=dict(plane_y=28.4, centre=(-39.4, 471.95), size=(39.9, 64.2), icon_uv=(0.6917, 0.5344, 0.7466, 0.6226),
+                                    hand="R", walk="G"),
+                           # the pack's maps only on the parts they fit: the three heads, the pedestrian head and the
+                           # street-name sign (x0, x1, y0, y1, z0, z1); the arm and pole are painted (SignalPaint)
+                           textured_boxes=[(25, 90, 268, 356, 634, 787), (25, 90, 635, 724, 634, 787), (14, 91, -23, 22, 264, 384),
+                                           (-80, 3, -13, 37, 418, 525), (10, 22, -20, 220, 670, 727)],
+                           paint=(0.1, 0.1, 0.095), paint_roughness=0.55, paint_metallic=0.0),
+        # the arm and pole: a plain dark grey paint, the same as the signal material's unmapped parts (the pack's own
+        # trim material and much of its atlas on the arm read as black or as stray yellow patches)
+        "SignalPaint": dict(kind="paint", color=(0.1, 0.1, 0.095), roughness=0.55, metallic=0.0),
     },
     notes="Modelled ~1.3-1.5x real size (kits at 0.75); facades are open single-sided shells over the massing.",
 )

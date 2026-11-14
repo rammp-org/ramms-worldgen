@@ -112,6 +112,9 @@ TArray<FPCGPinProperties> UPCGRammsHazardPlacerSettings::OutputPinProperties() c
 	Pins.Emplace(RammsPCG::PinRoutes, EPCGDataType::Point);
 	// litter and covers: flat, no collision (the grass spawner)
 	Pins.Emplace(RammsPCG::PinGrass, EPCGDataType::Point);
+	// composite palette entries (parts with their own materials, e.g. a signal with lit lenses) and their manifest records
+	Pins.Emplace(RammsPCG::PinModules, EPCGDataType::Point);
+	Pins.Emplace(RammsPCG::PinFeatures, EPCGDataType::Point);
 	return Pins;
 }
 
@@ -133,7 +136,7 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 	const FString MatMetal = RammsPCG::Mat(Palette, RammsPaletteSlots::MatMetal);
 	const double Intrude = S->NonCompliance <= 0.0 ? 0.0 : FMath::Clamp(S->HazardIntrusionChance * (0.5 + 2.0 * S->NonCompliance), 0.0, 1.0);
 
-	FRammsPointWriter Props, Pieces, Routes, Litter;
+	FRammsPointWriter Props, Pieces, Routes, Litter, Modules, Features;
 	int32 Counter = 0;
 	auto NextSeed = [&]() { return RammsPCG::SubSeed(Seed, 4000 + (++Counter)); };
 	const TArray<FBox2D> KeepBoxes = RammsPCG::ParseBoxes(S->KeepClear);
@@ -268,8 +271,24 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 					Occ.Take(At - 50.0, At + 50.0);
 					const FVector RightOfDir(-Xf.GetUnitAxis(EAxis::X).Y, Xf.GetUnitAxis(EAxis::X).X, 0.0);
 					const bool bTrafficAlong = (RightOfDir | Xf.GetUnitAxis(EAxis::Y)) > 0.0;
-					const int32 p = RammsPCG::WritePickedMesh(Props, Sm, ToWorld(At, Yc, 0.0), Yaw + (bTrafficAlong ? 180.0 : 0.0), NextSeed());
-					RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), RammsPaletteSlots::TrafficSignal, true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth);
+					const FVector Post = ToWorld(At, Yc, 0.0);
+					const double PostYaw = Yaw + (bTrafficAlong ? 180.0 : 0.0);
+					// The manifest records the pole: a mast arm overhead blocks nothing.
+					const FVector PoleSize(FMath::Min(Sm.Footprint.X, 60.0), FMath::Min(Sm.Footprint.Y, 60.0), Sm.Height);
+					if (Sm.IsComposite())
+					{
+						// Parts with their own materials (the recipe's lit lenses) go out with the facade modules, which
+						// carry per-slot materials; the record goes to the features.
+						RammsPCG::WriteComposite(Modules, Sm, Post, PostYaw, NextSeed());
+						const int32 f = Features.AddBox(Post + FVector(0.0, 0.0, Sm.Height * 0.5), PostYaw, PoleSize, NextSeed());
+						RammsPCG::WriteManifest(Features, f, FName(TEXT("Prop")), RammsPaletteSlots::TrafficSignal, true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth);
+					}
+					else
+					{
+						const int32 p = RammsPCG::WritePickedMesh(Props, Sm, Post, PostYaw, NextSeed());
+						Props.Set(p, RammsPCG::ManifestSize, PoleSize);
+						RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), RammsPaletteSlots::TrafficSignal, true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth);
+					}
 				}
 			}
 
@@ -551,6 +570,8 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 	Pieces.Emit(Context, RammsPCG::PinPieces, { TEXT("Hazards") });
 	Routes.Emit(Context, RammsPCG::PinRoutes);
 	Litter.Emit(Context, RammsPCG::PinGrass, { TEXT("Litter") });
+	Modules.Emit(Context, RammsPCG::PinModules, { TEXT("Street") });
+	Features.Emit(Context, RammsPCG::PinFeatures);
 	return true;
 }
 

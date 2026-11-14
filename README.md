@@ -380,8 +380,9 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   offers, per slot: meshes (`meshes={"Bench": [paths]}`), material sets (`material_sets`, e.g. the decal
   slots) and world-aligned **surfaces** (`surfaces`: a `surfaces.py` spec over the pack's own textures, built
   on demand). Paths are relative to the pack's folder (or absolute; a `*` matches a name pattern), so two
-  packs that ship a mesh of the same name never get mixed up; a `Ref` can also fix a mesh's facing (`yaw`) or
-  its size (`scale`, for a pack modelled at another scale). Known today: American City Packs (decals, street
+  packs that ship a mesh of the same name never get mixed up; a `Ref` can also fix a mesh's facing (`yaw`), its
+  size (`scale`, for a pack modelled at another scale) or some of its materials (`materials`: material slot ->
+  pack surface, built into the recipe's folder; the entry becomes a one-part composite). Known today: American City Packs (decals, street
   litter, manholes, whole buildings, skyline towers), Downtown West (street trees, furniture, the corner signal
   mast, manhole covers, decals, asphalt and curb, facade kits), Camden Market (facade kits, a pole signal,
   utility covers, dirt decals), the Restaurant Scene (stain decals), Megascans (sidewalk, asphalt, concrete,
@@ -835,6 +836,17 @@ URLab cannot replace-import a Blueprint.
   corner where a crossing meets the side (`TrafficSignal`: the entry's front
   is where its heads face, a mast arm runs to its +Y over the road; masts are
   placed by their pole). Off, placement is exactly what it was.
+- **Lit signals**: a composite signal entry (parts carrying their own
+  materials) goes out with the facade modules, its manifest record (the pole)
+  with the features. The Downtown recipe's Downtown West mast is one: its pack
+  material renders it black and its texture maps line up with the mesh only
+  on the heads and the street sign, so `Ref(materials=...)` gives it
+  `surfaces.build_signal` (the pack's maps on the heads and sign, paint
+  elsewhere; lamps lit from the lens geometry; the pedestrian head's icon
+  projected onto its panel) and `build_paint` on the arm. Every signal in a
+  level shows one phase - heads facing along world X green, along Y red
+  (`GreenAlongX` flips it) - and each pedestrian head the opposite. Camden
+  Market's pole signal cycles on its own timer, so the recipe leaves it out.
 - **Litter** (`LitterDensity`, per 100 m of side): leaves under the street
   trees, leaf drifts and trash in the gutter, manholes in the lanes and
   utility covers on the walk go out on the `Grass` pin (no collision:

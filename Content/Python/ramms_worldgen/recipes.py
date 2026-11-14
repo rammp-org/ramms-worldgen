@@ -52,7 +52,8 @@ RECIPES = {
             # street litter and manholes (LitterDensity); Downtown West and Camden add theirs, and the corner
             # signals (StreetRules), with their other slots below
             ("AmericanCityPacks", "add", ["Litter.Leaves", "Litter.Gutter", "Litter.Trash", "Litter.Bags", "Cover.Manhole"], 1.0),
-            ("CamdenMarket", "add", None, 1.0),
+            # (not Camden's pole signal: it cycles on its own timer, out of phase with the lit Downtown West masts)
+            ("CamdenMarket", "add", ["Cover.Utility", "Decal.Stain"], 1.0),
             ("RestaurantScene", "add", None, 1.0),
         ],
         surfaces={
@@ -101,7 +102,29 @@ def _base(name, recipe, path, cache, report):
     return pal
 
 
-def _apply_layer(pal, pack, mode, slots, weight, report):
+def _with_materials(e, mesh, pack, ref, name, report):
+    """Make the entry a one-part composite whose part carries per-slot materials: the slots `ref.materials` names
+    take the pack's surface (built into the recipe's folder), the others keep the mesh's own."""
+    from . import surfaces as SF
+    mats = []
+    for sm in mesh.static_materials:
+        key = ref.materials.get(str(sm.material_slot_name))
+        mat = None
+        if key:
+            if key in pack.surfaces:
+                mat = SF._build("M_%s_%s_%s" % (name, pack.name.replace("_", ""), key), pack.surface_spec(key), directory=materials_dir(name))
+            if mat is None:
+                report["skipped"].append("material %s:%s for %s" % (pack.name, key, mesh.get_name()))
+        mats.append(mat or sm.material_interface)
+    part = unreal.RammsPalettePart()
+    part.set_editor_property("mesh", mesh)
+    part.set_editor_property("relative_transform", unreal.Transform())
+    part.set_editor_property("materials", mats)
+    e.set_editor_property("parts", [part])
+    return e
+
+
+def _apply_layer(pal, pack, mode, slots, weight, report, name=None):
     """One pack's contribution: meshes and material sets for the slots it offers (all, or those listed)."""
     done = {}
     for slot in sorted(pack.meshes):
@@ -111,6 +134,8 @@ def _apply_layer(pal, pack, mode, slots, weight, report):
         for mesh, ref in pack.slot_meshes(slot):
             e = P._mesh_entry(mesh, slot, yaw=ref.yaw, normalise=ref.normalise, scale=ref.scale)
             e.set_editor_property("weight", ref.weight * weight)
+            if ref.materials and name:
+                e = _with_materials(e, mesh, pack, ref, name, report)
             entries.append(e)
         if not entries:
             continue
@@ -191,7 +216,7 @@ def build(name, path=None, urbanverse_cache=None):
         if not pack.installed():
             report["skipped"].append("pack %s (not installed)" % pack_name)
             continue
-        _apply_layer(pal, pack, mode, slots, weight, report)
+        _apply_layer(pal, pack, mode, slots, weight, report, name=name)
     _apply_surfaces(pal, name, recipe.get("surfaces", {}), report)
     for pack_name in recipe.get("kits", []):
         pack = PK.get(pack_name)

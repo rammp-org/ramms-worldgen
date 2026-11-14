@@ -124,7 +124,7 @@ def build_streets_graph(path=STREETS):
             street: ["Primitives", "Props", "Pieces", "Features"],
             massing: ["Primitives", "Props", "Modules", "Grass", "Pieces", "Features"],
             park: ["Primitives", "Props", "Grass", "Pieces", "Features"],
-            hazards: ["Props", "Pieces", "Routes", "Grass"],
+            hazards: ["Props", "Pieces", "Routes", "Grass", "Modules", "Features"],
         }
         for n, pins in outputs.items():
             for p in pins:

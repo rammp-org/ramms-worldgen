@@ -318,7 +318,8 @@ def _glass_parent(textured):
         mat = unreal.load_asset(path)
         if H.EAL.get_metadata_tag(mat, "RammsGlassVersion") == GLASS_VERSION:
             return mat
-        mel.delete_all_material_expressions(mat)     # an older graph: rebuilt in place (instances keep pointing at it)
+        from .surfaces import _clear
+        _clear(mat)     # an older graph: rebuilt in place (instances keep pointing at it)
     else:
         d, n = path.rsplit("/", 1)
         H.ensure_dir(d)
