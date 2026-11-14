@@ -470,7 +470,12 @@ street-furniture, vehicle and hazard slots with far more variety than the Fab pa
      near-black base, Fresnel opacity) or `M_RammsGlassAtlas` for one texture holding glass and solid parts
      (masked; the glass texels dithered with glass roughness). `urbanverse.MATERIAL_OVERRIDES` covers
      panes the analysis cannot tell from opaque parts. Fully transparent helpers and baked shadow cards stay
-     as authored.
+     as authored. glTF `MASK` cut-outs (leaves) that Interchange brings in translucent are made masked at
+     their own `alphaCutoff` (0 keeps every texel; 0.5, the glTF default, when the importer recorded none),
+     so canopies cast and receive shadows; a `BLEND` material made masked clips at 0.5. The glTF roughness
+     factor of a foliage cut-out (a plant's: a foliage word in the material's path or the asset's category) is
+     held at 0.5 or more, and any other cut-out's only when it is near zero (some leaf exports carry 0, a
+     dark mirror in shade; grilles and bike parts keep their gloss). The factor scales any roughness texture.
    - Glass look per placement: both glass materials take `Frost` (0 clear .. 1 milky), `Bump` (0 flat .. 1
      rippled / patterned), `Tint`, `Roughness` and opacity parameters per material instance, and read six
      floats of per-instance custom data on top: frost offset, opacity multiplier, tint multiplier (RGB) and
@@ -843,9 +848,26 @@ tested with a person-sized capsule against everything that blocks (walls,
 furniture, shelving, props, cars); doorway crossings are straightened
 through the middle of the opening, run ends are nudged off furniture, and a
 run that hits something is rerouted around it on a 25 cm grid (A*, then
-string-pulled), or dropped when there is no way through. Junctions shrink to
-fit the free space around them. `crowd.check_lanes()` audits a level
-(verify.py fails a level whose lanes touch geometry).
+string-pulled), or dropped when there is no way through. Outdoors, a run
+whose straight line keeps to one walking level (a sidewalk, a park path) is
+rerouted at that level's height only: around a tree or a bench, never off the
+curb and down the street (the capsule starts 30 cm up, so the curb's drop
+would otherwise read as free). A level is a height, not a surface: a detour
+may cross a planting strip, a lawn or a front yard that lies at the sidewalk's
+height. The ground must not drop more than 60% of the curb height (at most
+8 cm) below the run, under the walker's centre and out to the outer edge of
+either lane's walkers, whatever clearance the detour squeezes through with, so
+neither lane hangs over the road; ground more than 8 cm higher under the
+centre (a planter) is an obstacle. A run end nudged off a prop stays on its
+level the same way. Crossings, which go down to the road by design, are not
+constrained, nor are streets whose curb is under 4 cm (no level to keep). A
+run with no way through on its level is dropped rather than sent down the
+street. Junctions shrink to fit the free space around them.
+`crowd.check_lanes()` audits a level (verify.py fails a level whose lanes
+touch geometry), and `crowd.check_lane_levels()` counts sidewalk-lane samples
+whose walkers would stand off their level (crossings, junctions and indoor
+lanes aside): `off_level_lane_samples` in `build_crowd`'s summary, 0 when every
+lane keeps to its sidewalk.
 
 Every run is sampled about every 50 cm onto the surface below it, so lanes
 follow curb ramps, the drop to the road, path slopes and thresholds instead
@@ -899,10 +921,32 @@ and saved there (the example levels), not with runtime regeneration.
   puts cars along the curbs. Roads carry a dashed centre line, edge lines and stop
   lines in solid marking materials.
 - Everything generated collides (block-all): the spawners' instances, and
-  every palette mesh is given usable collision when the palette is built
-  (its own simple shapes, else its triangles; a box around the trunk for
-  trees; none for grass and flowers). The palette builder edits and saves
-  those pack meshes. Generated geometry is Unreal collision. The Chaos backend drives on it
+  every palette mesh is given usable collision when the palette is built. A
+  mesh keeps the simple collision it ships with; one with none collides
+  against its own triangles (complex as simple), a tree on a 50 cm box around
+  its trunk (so a canopy does not block); grass and flowers get none. A tree
+  whose own collision is a crown hull (wider than 1.5 m, or reaching well
+  above the trunk box: imports and packs can wrap the whole crown, which
+  blocks a sidewalk edge to edge) gets the trunk box instead, but only when
+  its trunk can be measured (one trunk at the centroid of its lowest 60 cm,
+  not several stems, foliage or a wide base at the ground); otherwise the hull
+  stays and the build lists it. A tree never collides complex-as-simple.
+  - Palette builds may change the collision of your local copies of pack
+    meshes (Fab packs, UrbanVerse and SimReady imports), and save them. Those
+    copies are never committed: another checkout gets the same changes from
+    its own palette build, and re-downloading a pack (or re-importing an
+    asset) undoes them; local copies an earlier build changed stay changed
+    until then. Every change
+    is logged and listed in the build's report (`modified_pack_assets`, also
+    `palettes.MODIFIED_PACK_ASSETS`), with what lacks usable collision
+    (`missing_collision`). Set `palettes.FIX_PACK_COLLISION = False` before a
+    build to change nothing and only report.
+  - Instances already placed in an open level keep their old collision until
+    the level is regenerated or reloaded (Python cannot refresh them), so after
+    a palette build that changed collision, regenerate the level
+    (`levels.build_level` does) before `crowd.build_crowd`.
+
+  Generated geometry is Unreal collision. The Chaos backend drives on it
   directly; the MuJoCo / Newton backends only know what URLab has imported, so
   a generated world is not yet visible to them.
 - Pieces are one actor each (walls, ramps, doors, trees). A dense downtown
