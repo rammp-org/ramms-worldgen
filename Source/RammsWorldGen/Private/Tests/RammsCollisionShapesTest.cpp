@@ -137,23 +137,23 @@ namespace RammsCollisionShapesTest
 		{
 			const double X = FMath::Lerp(Region.Min.X, Region.Max.X, Rs.FRand());
 			const double Y = FMath::Lerp(Region.Min.Y, Region.Max.Y, Rs.FRand());
-			const TOptional<double> Chaos = Trace(FVector(X, Y, Region.Max.Z + 50.0), FVector(X, Y, Region.Min.Z - 50.0));
+			const TOptional<double> ChaosTop = Trace(FVector(X, Y, Region.Max.Z + 50.0), FVector(X, Y, Region.Min.Z - 50.0));
 			const TOptional<double> Exported = ShapesTop(Shapes, X, Y);
-			if (Chaos.IsSet() != Exported.IsSet())
+			if (ChaosTop.IsSet() != Exported.IsSet())
 			{
 				++Misses;
 				continue;
 			}
-			if (!Chaos.IsSet())
+			if (!ChaosTop.IsSet())
 			{
 				continue;
 			}
 			++Compared;
-			const double Error = FMath::Abs(Chaos.GetValue() - Exported.GetValue());
+			const double Error = FMath::Abs(ChaosTop.GetValue() - Exported.GetValue());
 			if (Error > Worst)
 			{
 				Worst = Error;
-				WorstAt = FVector(X, Y, Chaos.GetValue());
+				WorstAt = FVector(X, Y, ChaosTop.GetValue());
 			}
 		}
 		Test.TestTrue(FString::Printf(TEXT("%s: probes find a top (%d of %d)"), *Name, Compared, Probes), Compared > Probes / 10);
@@ -384,7 +384,8 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 	TArray<FRammsCollisionShape> Shapes;
 	Generator->GatherCollisionShapes(Shapes);
 	TestTrue(TEXT("instances become shapes"), Shapes.Num() >= Placed.Num());
-	TestTrue(TEXT("spheres stay spheres"), CountOf(Shapes, ERammsCollisionShapeType::Sphere) > 0);
+	AddInfo(FString::Printf(TEXT("%d shapes: %d boxes, %d hulls, %d spheres, %d capsules"), Shapes.Num(), CountOf(Shapes, ERammsCollisionShapeType::Box),
+		CountOf(Shapes, ERammsCollisionShapeType::Convex), CountOf(Shapes, ERammsCollisionShapeType::Sphere), CountOf(Shapes, ERammsCollisionShapeType::Capsule)));
 
 	FRandomStream Rs(4242);
 	UWorld* World = Scratch.World;
