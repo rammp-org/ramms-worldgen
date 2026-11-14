@@ -403,16 +403,20 @@ def build_signal(name, spec, directory=None):
     """A traffic signal's material with its lamps lit, over the mesh's own UV maps (bc, n, orm: occlusion,
     roughness, metallic). The lamps are found from geometry, not a texture (Downtown West's lens mask does not
     line up with its mesh): spec "lamps" {"red": [(y, z, radius)], "green": [...]} are lens discs in mesh units on
-    heads facing +X, lit forward of "lamp_front_x". An optional pedestrian head ("ped": its lens panel's plane
-    "plane_y", "centre" (x, z), icon "size" (w, h) and the icon's "icon_uv" box (u0, v0, u1, v1) in the `lens`
-    texture, "hand" / "walk" channels) shows the icon projected onto the panel.
+    heads facing +X, lit forward of "lamp_front_x" ("amber" lenses too, when the spec has them). An optional
+    pedestrian head ("ped": its lens panel's plane "plane_y", "centre" (x, z), icon "size" (w, h) and the icon's
+    "icon_uv" box (u0, v0, u1, v1) in the `lens` texture, "hand" / "walk" channels) shows the icon projected onto
+    the panel.
 
-    Every signal in a level shows one phase: heads whose front (the instance's +X, where the palette turns them)
-    runs nearer world X than world Y show green and the others red, or the other way round with GreenAlongX at 0
-    -- so the cross directions of an intersection never both show green, at any instance scale. A pole's
-    pedestrian head, facing across the road its heads control, shows the hand while they are green and the
-    walking figure while they are red. Amber stays dark. LampBrightness and the RedLamp / GreenLamp / PedHand /
-    PedWalk colours tune it. Returns the material."""
+    Every signal in a level shows one phase, by the axis its heads face: the instance's +X (where the palette turns
+    them) runs nearer world X or nearer world Y -- so the cross directions of an intersection never disagree, at
+    any instance scale. A pole's pedestrian head faces across the road its heads control and serves the people
+    crossing it. Built into /Game (a recipe's folder), the lamps read the traffic signal clock's material
+    parameter collection (traffic.SIGNAL_MPC: GreenX / AmberX / RedX for heads along X, ...Y for the others, and
+    WalkX / HandX, WalkY / HandY for the pedestrian heads on those poles); its resting values -- and, built
+    elsewhere (no collection), the scalar GreenAlongX (1: heads along X green) -- give the old fixed look: one axis
+    green, the other red, the pedestrian heads the opposite. LampBrightness and the RedLamp / AmberLamp / GreenLamp
+    / PedHand / PedWalk colours tune it. Returns the material."""
     directory = directory or DIR
     bc, n, orm, lens = _load(spec["bc"]), _load(spec.get("n")), _load(spec.get("orm")), _load(spec.get("lens"))
     if bc is None:
@@ -483,10 +487,27 @@ def build_signal(name, spec, directory=None):
     absx = op(unreal.MaterialExpressionAbs, -1250, wx)
     absy = op(unreal.MaterialExpressionAbs, -1250, wy)
     along_x = op(unreal.MaterialExpressionSaturate, -950, op(unreal.MaterialExpressionMultiply, -1100, op(unreal.MaterialExpressionSubtract, -1175, absx, absy), const_b=1000.0))
-    phase = g.node(unreal.MaterialExpressionScalarParameter, -1100, parameter_name="GreenAlongX", default_value=1.0)
-    not_phase = op(unreal.MaterialExpressionOneMinus, -950, phase)
-    green = g.lerp(-800, not_phase, "", phase, "", along_x, "")
-    red = op(unreal.MaterialExpressionOneMinus, -650, green)
+    # The lamps' state per head axis: from the signal clock's collection (a /Game material: the level's own content),
+    # else one fixed phase (GreenAlongX).
+    mpc = None
+    if directory.startswith("/Game/"):
+        from . import traffic as TR
+        mpc = TR.signal_collection()
+    if mpc is not None:
+        def per_axis(stem):
+            on_x = g.node(unreal.MaterialExpressionCollectionParameter, -1100, collection=mpc, parameter_name=stem + "X")
+            on_y = g.node(unreal.MaterialExpressionCollectionParameter, -1100, collection=mpc, parameter_name=stem + "Y")
+            return g.lerp(-800, on_y, "", on_x, "", along_x, "")
+        green, amber, red = per_axis("Green"), per_axis("Amber"), per_axis("Red")
+        walk, hand = per_axis("Walk"), per_axis("Hand")
+    else:
+        phase = g.node(unreal.MaterialExpressionScalarParameter, -1100, parameter_name="GreenAlongX", default_value=1.0)
+        not_phase = op(unreal.MaterialExpressionOneMinus, -950, phase)
+        green = g.lerp(-800, not_phase, "", phase, "", along_x, "")
+        red = op(unreal.MaterialExpressionOneMinus, -650, green)
+        amber = g.node(unreal.MaterialExpressionConstant, -650, r=0.0)
+        # a pole's pedestrian head: the hand while its heads are green, the walking figure while they are red
+        walk, hand = red, green
 
     px, py, pz = comp(pos, -1250, "R"), comp(pos, -1250, "G"), comp(pos, -1250, "B")
     pyz = g.node(unreal.MaterialExpressionAppendVector, -1100)
@@ -555,6 +576,8 @@ def build_signal(name, spec, directory=None):
     parts = []
     if lamps.get("red"):
         parts.append(tinted(discs(lamps["red"], -500), red, "RedLamp", (1.0, 0.04, 0.01), 0))
+    if lamps.get("amber"):
+        parts.append(tinted(discs(lamps["amber"], -500), amber, "AmberLamp", (1.0, 0.42, 0.02), 0))
     if lamps.get("green"):
         parts.append(tinted(discs(lamps["green"], -500), green, "GreenLamp", (0.08, 1.0, 0.5), 0))
 
@@ -587,11 +610,10 @@ def build_signal(name, spec, directory=None):
         on_panel = op(unreal.MaterialExpressionMultiply, -400,
                       op(unreal.MaterialExpressionMultiply, -475, band(px, cx - w * 0.5, cx + w * 0.5, -550), band(pz, cz - h * 0.5, cz + h * 0.5, -550)),
                       band(py, ped["plane_y"] - 1.0, ped["plane_y"] + 1.0, -550))
-        hand = op(unreal.MaterialExpressionMultiply, -250, comp(icon, -400, ped.get("hand", "R")), on_panel)
-        walk = op(unreal.MaterialExpressionMultiply, -250, comp(icon, -400, ped.get("walk", "G")), on_panel)
-        # the hand while this pole's heads are green, the walking figure while they are red
-        parts.append(tinted(hand, green, "PedHand", (1.0, 0.3, 0.03), 0))
-        parts.append(tinted(walk, red, "PedWalk", (0.85, 0.92, 1.0), 0))
+        hand_icon = op(unreal.MaterialExpressionMultiply, -250, comp(icon, -400, ped.get("hand", "R")), on_panel)
+        walk_icon = op(unreal.MaterialExpressionMultiply, -250, comp(icon, -400, ped.get("walk", "G")), on_panel)
+        parts.append(tinted(hand_icon, hand, "PedHand", (1.0, 0.3, 0.03), 0))
+        parts.append(tinted(walk_icon, walk, "PedWalk", (0.85, 0.92, 1.0), 0))
 
     if parts:
         total = parts[0]
