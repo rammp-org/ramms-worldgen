@@ -248,7 +248,7 @@ def build(cache_dir, mode="replace", slots=None, path=PALETTE, base=None, facing
     (SimReady only in the slots it fills) or "mix" (added to the base palette's variants). articulated: give each
     entry whose asset has been imported as a URLab articulation (import_mjcf) that articulation as its stand-in,
     which the generator places instead of the mesh (see articulate). Returns (palette, report)."""
-    P._COLLISION_DONE.clear()
+    P.reset_collision_log()
     imported = import_selection(cache_dir, slots)
     for pairs in imported.values():
         for mesh, it in pairs:
@@ -285,6 +285,7 @@ def build(cache_dir, mode="replace", slots=None, path=PALETTE, base=None, facing
         pal.set_slot(unreal.Name(slot), s)
         report["slots"][slot] = [m.get_name() for m, _it in pairs]
     H.save(pal)
+    report.update(P.collision_report())
     H.log("simready palette %s: %s" % (path, {k: len(v) for k, v in report["slots"].items()}))
     return pal, report
 
