@@ -376,7 +376,9 @@ step and a 6 mm lip stays 6 mm:
 | Instanced and static meshes the generator made | per instance, the mesh's simple collision as Chaos builds it (`FK*Elem::GetFinalScaled`): boxes, spheres, capsules, convex hulls; a complex-as-simple mesh as the hull of its triangles (coarser where it is concave; logged once per asset) |
 
 Foliage and anything without physics collision is skipped, as are articulated
-stand-ins (they simulate as articulations) and pawns.
+stand-ins (they simulate as articulations), pawns, and actors or components
+tagged `RammsDynamic`: tag whatever moves after generation (traffic), or it is
+exported as a fixed obstacle where it stood.
 
 **One code path.** `ARammsProcPiece::AppendCollisionShapes` runs the kind's own
 builder into a scratch mesh with a capture open: every box the builder appends

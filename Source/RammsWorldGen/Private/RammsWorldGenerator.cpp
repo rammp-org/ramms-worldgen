@@ -1040,6 +1040,9 @@ namespace
 		}
 		return false;
 	}
+
+	/** What moves after generation (traffic, anything animated) is tagged RammsDynamic: not static scenery. */
+	const FName DynamicTag(TEXT("RammsDynamic"));
 }
 
 void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& Out) const
@@ -1054,7 +1057,7 @@ void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& O
 	TArray<FRammsCollisionShape> PieceShapes;
 	for (AActor* A : Actors)
 	{
-		if (!A || A->IsA<APawn>() || IsArticulatedStandIn(*A))
+		if (!A || A->IsA<APawn>() || IsArticulatedStandIn(*A) || A->ActorHasTag(DynamicTag))
 		{
 			continue;
 		}
@@ -1082,7 +1085,7 @@ void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& O
 		TInlineComponentArray<UStaticMeshComponent*> Meshes(A);
 		for (const UStaticMeshComponent* C : Meshes)
 		{
-			if (C)
+			if (C && !C->ComponentHasTag(DynamicTag))
 			{
 				EmitStaticMeshComponent(*C, Filter, Out);
 			}

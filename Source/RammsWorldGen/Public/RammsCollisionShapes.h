@@ -125,6 +125,6 @@ namespace RammsCollisionShapes
 	/** "Box", "Convex", "HeightGrid", "Sphere", "Capsule". */
 	RAMMSWORLDGEN_API const TCHAR* TypeName(ERammsCollisionShapeType Type);
 
-	/** One past the last ERammsCollisionShapeType, for tables indexed by type. */
+	/** One past the last ERammsCollisionShapeType, for tables indexed by type: move it when a type is appended. */
 	constexpr int32 NumTypes = static_cast<int32>(ERammsCollisionShapeType::Capsule) + 1;
 }
