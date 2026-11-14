@@ -10,6 +10,8 @@ A recipe says how one palette is made:
   surfaces   palette Mat.* slots -> "<pack>:<surface>" (or a list: the slot's material set), built from that
              pack's textures as world-aligned materials into the recipe's material folder;
   puddles    add the built-in puddle decal (surfaces.build_puddle_decal: no pack ships one) to Decal.Puddle;
+  buildings  packs whose whole buildings fill Building.Downtown / Building.CornerNeg / CornerPos (lots are cut to
+             them with the WholeBuildingChance parameter, e.g. PRE_DenseDowntown's);
   kits       packs whose modular facade kits become facade styles (packs.base.Kit; a level picks among them
              through the FacadeStyles parameter, e.g. PRE_DenseDowntown's).
 
@@ -46,6 +48,7 @@ RECIPES = {
             ("Downtown_West", "add", None, 1.0),
             ("AmericanCityPacks", "replace", ["Decal.Road.Patch", "Decal.Road.Pothole"], 1.0),
             ("AmericanCityPacks", "add", ["Decal.Road.Crack", "Decal.Sidewalk.Crack", "Decal.Stain"], 1.0),
+            ("AmericanCityPacks", "replace", ["Skyline"], 1.0),
             ("CamdenMarket", "add", None, 1.0),
             ("RestaurantScene", "add", None, 1.0),
         ],
@@ -57,6 +60,7 @@ RECIPES = {
         },
         puddles=True,
         kits=["Downtown_West", "CamdenMarket"],
+        buildings=["AmericanCityPacks"],
     ),
 }
 
@@ -197,6 +201,16 @@ def build(name, path=None, urbanverse_cache=None):
                 report.setdefault("kits", {})[kit.style] = got
             else:
                 report["skipped"].append("kit %s (no ground floor or window floor found)" % kit.style)
+    for pack_name in recipe.get("buildings", []):
+        pack = PK.get(pack_name)
+        if not pack.installed():
+            report["skipped"].append("buildings of %s (not installed)" % pack_name)
+            continue
+        for slot in ("Building.Downtown", "Building.CornerNeg", "Building.CornerPos"):
+            s = _slot(pal, slot)
+            s.set_editor_property("meshes", [])
+            pal.set_slot(unreal.Name(slot), s)
+        report.setdefault("buildings", {}).update(P.build_building_slots(pal, pack))
     if recipe.get("puddles"):
         from . import surfaces as SF
         # built once (it is plugin content): rebuilding it every time would re-save it for nothing

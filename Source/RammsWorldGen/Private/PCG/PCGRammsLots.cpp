@@ -78,6 +78,9 @@ namespace
 	const FName StreetSidePos(TEXT("StreetSidePos"));
 	// ... and the lot's back is on a street: a block too shallow for two rows of lots has a street on both sides.
 	const FName StreetBack(TEXT("StreetBack"));
+	// ... and the lot was cut for this whole building (palette slot, entry index): Building Massing places it.
+	const FName WholeSlotAttr(TEXT("WholeSlot"));
+	const FName WholeIndexAttr(TEXT("WholeIndex"));
 
 	// Index of a weighted pick among Num items. With equal weights it is the same pick, from the same single
 	// draw, as the uniform FRand() * Num the original kits use, so their buildings come out as before.
@@ -424,6 +427,8 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 	const int32 Seed = Context->GetSeed();
 	FRammsPointWriter Lots, Parks;
 	int32 LotId = 0;
+	// Only with whole buildings asked for: the palette, for their frontages.
+	const URammsWorldPalette* Palette = S->WholeBuildingChance > 0.0 ? RammsPCG::LoadPalette(S->Palette, Context) : nullptr;
 
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinIn))
 	{
@@ -458,7 +463,32 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 				TArray<int32> RowLots;
 				while (xEnd - x > S->LotWidthMin * 0.5)
 				{
-					double W = RammsPCG::RandRange(Rng, S->LotWidthMin, S->LotWidthMax);
+					// Now and then a whole building: the lot is cut to its frontage (and what is left of the row must
+					// still make a lot, or be next to nothing). The row's first lot is a corner -- its west side is on
+					// the cross street, the lot's -Y side in row 0 and +Y in row 1 -- so it takes a corner building of
+					// that hand.
+					FName WholeSlot;
+					int32 WholeIdx = INDEX_NONE;
+					if (Palette && Rng.FRand() < S->WholeBuildingChance)
+					{
+						const FName Slot = RowLots.Num() == 0 ? (Row == 0 ? RammsPaletteSlots::BuildingCornerNeg : RammsPaletteSlots::BuildingCornerPos) : RammsPaletteSlots::BuildingDowntown;
+						if (const TArray<FRammsPaletteMesh>* Bs = Palette->GetMeshes(Slot))
+						{
+							TArray<int32> Fit;
+							for (int32 k = 0; k < Bs->Num(); ++k)
+							{
+								const FRammsPaletteMesh& B = (*Bs)[k];
+								const double Rest = xEnd - x - B.Footprint.Y - 30.0;
+								if (B.IsComposite() && B.Footprint.X <= RowDepth - 150.0 && Rest > -30.0 && (Rest < 60.0 || Rest >= S->LotWidthMin * 0.6)) { Fit.Add(k); }
+							}
+							if (Fit.Num() > 0)
+							{
+								WholeIdx = Fit[PickWeighted(Fit.Num(), [Bs, &Fit](int32 k) { return static_cast<double>((*Bs)[Fit[k]].Weight); }, Rng)];
+								WholeSlot = Slot;
+							}
+						}
+					}
+					double W = WholeIdx != INDEX_NONE ? FMath::Min((*Palette->GetMeshes(WholeSlot))[WholeIdx].Footprint.Y + 30.0, xEnd - x) : RammsPCG::RandRange(Rng, S->LotWidthMin, S->LotWidthMax);
 					if (xEnd - (x + W) < S->LotWidthMin * 0.6) { W = xEnd - x; }
 					const FVector LotCentre(x + W * 0.5, RowY, Centre.Z);
 					// Local frame: +X toward the street (depth axis), Y along the frontage (width).
@@ -472,6 +502,11 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 					Lots.Set(l, FName(TEXT("RampCuts")), R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
 					(void)FaceSign;
 					if (!bTwoRows) { Lots.SetBool(l, StreetBack, true); }
+					if (WholeIdx != INDEX_NONE)
+					{
+						Lots.Set(l, WholeSlotAttr, WholeSlot.ToString());
+						Lots.SetInt(l, WholeIndexAttr, WholeIdx);
+					}
 					RowLots.Add(l);
 					x += W;
 				}
@@ -589,7 +624,22 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			// windows and dressing; the entrance pieces (steps, ramp, door record) stay ours.
 			FRammsPaletteMesh HouseMesh;
 			bool bHouseMesh = false;
-			if (bHouse && Palette)
+			// A whole building Subdivide Lots cut this lot for: placed like a pack house, its front on the street.
+			bool bWhole = false;
+			{
+				const FString WholeSlotName = R.Get<FString>(i, WholeSlotAttr, FString());
+				const int32 WholeIdx = static_cast<int32>(R.GetD(i, WholeIndexAttr, -1.0));
+				const TArray<FRammsPaletteMesh>* Bs = (Palette && !WholeSlotName.IsEmpty()) ? Palette->GetMeshes(FName(*WholeSlotName)) : nullptr;
+				if (Bs && Bs->IsValidIndex(WholeIdx))
+				{
+					HouseMesh = (*Bs)[WholeIdx];
+					bHouseMesh = bWhole = true;
+					BW = FMath::Min(HouseMesh.Footprint.Y, Width);
+					BD = HouseMesh.Footprint.X;
+					BackX = FrontX - BD;
+				}
+			}
+			if (bHouse && Palette && !bWhole)
 			{
 				// Every house that fits the lot (allowing a slight scale-down) is a candidate; one is picked at random.
 				if (const TArray<FRammsPaletteMesh>* Houses = Palette->GetMeshes(RammsPaletteSlots::House))
@@ -626,7 +676,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					RammsPCG::WritePickedMesh(Props, HouseMesh, HouseLoc, Yaw, NextSeed());
 				}
 				const int32 h = Features.AddBox(HouseLoc + FVector(0.0, 0.0, HouseMesh.Height * 0.5), Yaw, FVector(HD, HW, HouseMesh.Height), NextSeed());
-				RammsPCG::WriteManifest(Features, h, FName(TEXT("Building")), FName(TEXT("House")), true, ERammsComplianceIssue::None, HW, 0.0);
+				RammsPCG::WriteManifest(Features, h, FName(TEXT("Building")), bWhole ? FName(TEXT("Commercial")) : FName(TEXT("House")), true, ERammsComplianceIssue::None, HW, 0.0);
 				Features.SetInt(h, RammsPCG::LotId, LotId);
 			}
 

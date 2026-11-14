@@ -417,6 +417,104 @@ def kit_module_entry(mesh, kit, part):
     return e
 
 
+def packed_building_entry(cls_path):
+    """A whole building from a packed-level-actor blueprint (its modules instanced): every instance one part, the
+    front -- the side its ground-floor modules face at yaw 0, +Y in the blueprint -- turned to +X of the facing
+    frame, the facade line (not a cornice's overhang) on the front of the footprint, centred across it, the base
+    on the ground. Returns (entry, corner): corner "Neg" / "Pos" when its ground floor also wraps the end that ends
+    up on the facing frame's -Y / +Y side (a corner building's cross-street face), else None; (None, None) when
+    the blueprint cannot be spawned or has no front."""
+    import statistics
+    cls = unreal.load_class(None, cls_path)
+    if cls is None:
+        return None, None
+    eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    base = unreal.Vector(0.0, 0.0, 50000.0)
+    actor = eas.spawn_actor_from_class(cls, base)
+    if actor is None:
+        return None, None
+    parts, front_y, doors, yaws = [], [], [], set()
+    lo, hi = [1e9] * 3, [-1e9] * 3
+    try:
+        for c in actor.get_components_by_class(unreal.InstancedStaticMeshComponent):
+            mesh = c.get_editor_property("static_mesh")
+            if mesh is None:
+                continue
+            _ensure_collision(mesh, "Building")
+            bb = mesh.get_bounding_box()
+            mats = [c.get_material(k) for k in range(c.get_num_materials())]
+            mats = mats if mats and all(m is not None for m in mats) else []
+            name = mesh.get_name()
+            for i in range(c.get_instance_count()):
+                t = c.get_instance_transform(i, True)
+                rel = unreal.Transform(t.translation - base, t.rotation.rotator(), t.scale3d)
+                part = unreal.RammsPalettePart()
+                part.set_editor_property("mesh", mesh)
+                part.set_editor_property("relative_transform", rel)
+                part.set_editor_property("materials", mats)
+                parts.append(part)
+                for k in range(8):
+                    w = t.transform_location(unreal.Vector(bb.max.x if k & 1 else bb.min.x, bb.max.y if k & 2 else bb.min.y, bb.max.z if k & 4 else bb.min.z)) - base
+                    for d, v in enumerate((w.x, w.y, w.z)):
+                        lo[d], hi[d] = min(lo[d], v), max(hi[d], v)
+                if "GroundFloor" in name:
+                    yaw = round(t.rotation.rotator().yaw)
+                    yaws.add(((yaw + 180) % 360) - 180)
+                    if yaw == 0:
+                        front_y.append(t.translation.y - base.y)
+                        if "_door" in name.lower():
+                            doors.append(t.translation.x - base.x)
+    finally:
+        eas.destroy_actor(actor)
+    if not parts or not front_y:
+        return None, None
+    yf = statistics.median(front_y)               # the facade line
+    cx = (lo[0] + hi[0]) * 0.5
+    depth = max(yf - lo[1], 100.0)
+    e = unreal.RammsPaletteMesh()
+    e.set_editor_property("weight", 1.0)
+    e.set_editor_property("scale", 1.0)
+    e.set_editor_property("parts", parts)
+    e.set_editor_property("footprint", unreal.Vector2D(depth, max(hi[0] - lo[0], 100.0)))
+    e.set_editor_property("height", max(hi[2] - lo[2], 100.0))
+    # +Y (the front) to +X: a quarter turn back, under which blueprint (x, y) lands on (y, -x); the footprint's centre
+    # (depth / 2 behind the facade line, cx across) on the requested point
+    e.set_editor_property("rotation_offset", unreal.Rotator(roll=0.0, pitch=0.0, yaw=-90.0))
+    e.set_editor_property("location_offset", unreal.Vector(depth * 0.5 - yf, cx, -lo[2]))
+    if doors:
+        door = min(doors, key=lambda x: abs(x - cx))
+        e.set_editor_property("entrance_offset_y", cx - door)
+    e.set_editor_property("source_id", cls_path.rsplit(".", 1)[0])
+    corner = None
+    if yaws not in ({-180, -90, 0, 90},):
+        corner = "Neg" if -90 in yaws else ("Pos" if 90 in yaws else None)
+    return e, corner
+
+
+def build_building_slots(pal, pack):
+    """A pack's whole buildings (packs.base.Pack.buildings) as Building.Downtown / Building.CornerNeg / CornerPos
+    composites. Returns {slot: count}."""
+    got = {}
+    for kind, paths in pack.buildings.items():
+        for path in paths:
+            full = pack.abs_path(path)
+            cls_path = full if "." in full.rsplit("/", 1)[-1] else "%s.%s_C" % (full, full.rsplit("/", 1)[-1])
+            try:
+                e, corner = packed_building_entry(cls_path)
+            except Exception as exc:  # noqa: BLE001
+                H.warn("building %s: %s" % (cls_path, exc))
+                continue
+            if e is None:
+                H.warn("building %s: no front found" % cls_path)
+                continue
+            slot = "Building.Corner" + corner if (kind == "DowntownCorner" and corner) else "Building.Downtown"
+            if kind == "DowntownCorner" and not corner:
+                continue
+            pal.add_mesh(unreal.Name(slot), e)
+            got[slot] = got.get(slot, 0) + 1
+    return got
+
+
 def _pack_ref(path):
     from .packs.base import Ref
     return Ref(path)
@@ -621,7 +719,8 @@ def _shelf_heights(mesh, scale):
 
 
 HEAVY_OK_IF_NANITE = {"TreeLarge"}
-NO_COLLISION_SLOTS = {"GrassClump", "Flowers", "LawnTuft"}  # ground cover: wheels and arms pass through it
+NO_COLLISION_SLOTS = {"GrassClump", "Flowers", "LawnTuft",  # ground cover: wheels and arms pass through it
+                      "Skyline"}  # distant towers outside the site: nothing ever reaches them
 _COLLISION_DONE = set()
 
 

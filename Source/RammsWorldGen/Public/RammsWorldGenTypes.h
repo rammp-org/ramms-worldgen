@@ -234,6 +234,9 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings") double FloorHeight = 380.0;
 	/** Fraction of a lot's frontage the building occupies. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (ClampMin = 0.2, ClampMax = 1)) double LotCoverage = 0.9;
+	/** Chance a lot is cut to a whole building from the palette (Building.Downtown, and Building.CornerNeg / CornerPos
+	 *  at a row's corner), placed as it was modelled, instead of a massing with facade modules. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (ClampMin = 0, ClampMax = 1)) double WholeBuildingChance = 0.0;
 	/** Probability an entrance has a step rather than being level or ramped. Scaled by NonCompliance. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (ClampMin = 0, ClampMax = 1)) double EntranceStepChance = 0.35;
 	/** Probability a stepped entrance also gets a compliant ramp beside it. */

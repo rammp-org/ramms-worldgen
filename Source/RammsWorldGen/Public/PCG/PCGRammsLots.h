@@ -22,6 +22,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lots", meta = (PCG_Overridable)) double SetbackMax = 0.0;
 	/** A block deeper than twice this gets two rows of lots (front and back frontages). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lots", meta = (PCG_Overridable)) double MinLotDepth = 1500.0;
+	/** Chance a lot is cut to the frontage of a whole building from the palette (Building Massing places it). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lots", meta = (PCG_Overridable, ClampMin = 0, ClampMax = 1)) double WholeBuildingChance = 0.0;
 
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override { return FName(TEXT("RammsSubdivideLots")); }

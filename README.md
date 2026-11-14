@@ -365,7 +365,7 @@ runs it at 0.2, the office at 0.1.
 |---|---|
 | Site | `SiteSizeX/Y`, `NonCompliance`, `Palette` |
 | Streets | `BlockSizeMin/Max`, `RoadWidth`, `SidewalkWidth`, `FurnitureZoneWidth`, `PlantingStrip` (1 = the furniture zone is a grass strip), `CurbHeight`, `StreetJitter`, `StreetDropout`, `MidblockCrossingChance`, `CrosswalkWidth`, `ParkFraction`, `ParkingDensity`, `DecalDensity` (cracks, potholes, patches, stains per 100 m) |
-| Buildings | `LotWidthMin/Max`, `SetbackMin/Max`, `FloorsMin/Max`, `FloorHeight`, `LotCoverage`, `EntranceStepChance`, `EntranceRampChance`, `WindowSpacing`, `FacadeStyles`, `RearParkingChance` |
+| Buildings | `LotWidthMin/Max`, `SetbackMin/Max`, `FloorsMin/Max`, `FloorHeight`, `LotCoverage`, `WholeBuildingChance`, `EntranceStepChance`, `EntranceRampChance`, `WindowSpacing`, `FacadeStyles`, `RearParkingChance` |
 | Hazards | `PropDensity`, `HazardDensity` (per 100 m), `TreeSpacing`, `CanopyChance` (big old trees, closer together), `StreetLightSpacing`, `HazardIntrusionChance` |
 | Accessibility | `MinClearWidth`, `PreferredClearWidth`, `RampMaxSlope`, `MaxCrossSlope`, `CurbRampFlareSlope`, `DoorClearWidth`, `DoorThresholdMax`, `VerticalChangeMax`, `LandingSize`, `DetectableWarningDepth` |
 | Suburban / park | `LawnLots`, `YardTreeChance`, `DrivewayChance`, `DrivewayWidth`, `FrontBoundaryChance`, `PathWidth`, `FoliageDensity`, `GrassDensity` (grass clumps per m^2 on lawns, strips and parks) |
@@ -468,6 +468,17 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   (up to four) before the cube dressing. Today: Downtown West's buildings a, b (two storefront lines), d, e and
   f at 0.75 scale (the pack's 6 m storeys), Camden Market's pub, and its residential and industrial terraces
   over the Building04 storefronts. The original kits are untouched (same picks for the same seed).
+- **Whole buildings**: `Building.Downtown`, `Building.CornerNeg` and `Building.CornerPos` hold complete buildings
+  as composites (`palettes.packed_building_entry` captures a packed-level-actor blueprint instance by instance:
+  its front -- the side its ground-floor modules face -- toward the street, the facade line, not a cornice's
+  overhang, on the lot's front, the entrance at its front door). With `WholeBuildingChance`, Subdivide Lots
+  cuts a lot to the frontage of a building that fits the row (a row's first lot, a corner, takes a corner
+  building whose second street face is on its cross-street side) and Building Massing places it instead of a
+  massing: `Building/Commercial` in the manifest. The Downtown recipe fills them from American City Packs'
+  `BPP_Building[Corner]_DT_*` (13-24 storeys, 17-40 m of frontage: they need deep rows).
+- **Skyline**: a downtown level's ring of distant towers outside the site (`levels._add_skyline`, the palette's
+  `Skyline` slot: American City Packs' closed low-poly background buildings in the Downtown recipe), so a view
+  down a street ends in a city.
 - **New preset**: add an entry to `presets.PRESETS` (or duplicate an asset),
   point it at a graph.
 - **New parameter**: `FRammsWorldGenParams` member + same-named

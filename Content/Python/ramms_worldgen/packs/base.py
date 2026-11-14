@@ -95,19 +95,22 @@ class Pack:
     meshes: slot -> [Ref | path] of static meshes.
     material_sets: slot -> [Ref | path] of material interfaces (decals, facade material sets).
     kits: [Kit]: modular facade kits, each one facade style.
+    buildings: {"Downtown" | "DowntownCorner": [blueprint paths]}: whole buildings (packed level actors), captured
+        part by part (palettes.packed_building_entry); a corner one's hand is measured.
     surfaces: key -> a `surfaces._build` spec (bc / n / rma texture paths relative to the root or absolute,
         tile size, tint...): world-aligned ground and wall materials, built on demand into a recipe's
         material folder as M_<Recipe>_<key>.
     notes: free text (licence, scale quirks) shown in reports.
     """
 
-    def __init__(self, name, roots, meshes=None, material_sets=None, surfaces=None, kits=None, notes=""):
+    def __init__(self, name, roots, meshes=None, material_sets=None, surfaces=None, kits=None, buildings=None, notes=""):
         self.name = name
         self.roots = list(roots)
         self.meshes = {k: _refs(v) for k, v in (meshes or {}).items()}
         self.material_sets = {k: _refs(v) for k, v in (material_sets or {}).items()}
         self.surfaces = dict(surfaces or {})
         self.kits = list(kits or [])
+        self.buildings = dict(buildings or {})
         self.notes = notes
 
     def installed(self):

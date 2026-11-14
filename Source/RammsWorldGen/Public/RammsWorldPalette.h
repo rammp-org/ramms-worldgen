@@ -239,6 +239,11 @@ namespace RammsPaletteSlots
 	inline const FName FacadePartWin(TEXT("Win"));
 	inline const FName FacadePartWinTop(TEXT("WinTop"));
 	inline const FName FacadePartWinCorner(TEXT("WinCorner"));
+	// whole buildings (composites, front toward +X of the facing frame): the street's, and corner buildings whose second
+	// street face is on the facing frame's -Y (CornerNeg) or +Y (CornerPos) side
+	inline const FName BuildingDowntown(TEXT("Building.Downtown"));
+	inline const FName BuildingCornerNeg(TEXT("Building.CornerNeg"));
+	inline const FName BuildingCornerPos(TEXT("Building.CornerPos"));
 	// a style's own cornice (FRammsFacadeKitInfo styles; the original kits use the global Facade.Top / TallTop)
 	inline const FName FacadePartTop(TEXT("Top"));
 	inline const FName FacadeTop(TEXT("Facade.Top"));

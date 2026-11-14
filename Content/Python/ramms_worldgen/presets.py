@@ -36,7 +36,9 @@ PRESETS = {
              ParkingDensity=0.85, CanopyChance=0.25, StreetLightSpacing=1800.0, DecalDensity=8.0, GrassDensity=0.9,
              # the original downtown kits, and the pack kits a recipe palette adds (Downtown West, Camden Market):
              # styles a palette does not have are skipped
-             FacadeStyles="dt01,dt02,dt03,dwba,dwbb,dwcafe,dwd,dwe,dwf,cmpub,cmres,cmind"),
+             FacadeStyles="dt01,dt02,dt03,dwba,dwbb,dwcafe,dwd,dwe,dwf,cmpub,cmres,cmind",
+             # a share of the lots cut to whole buildings when the palette has them (the Downtown recipe's)
+             WholeBuildingChance=0.3),
     ),
     "PRE_Suburban": (
         unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,

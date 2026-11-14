@@ -70,6 +70,51 @@ def _add_ground(size, material_path):
     return piece
 
 
+def _add_skyline(palette, site, ground, seed, count=36):
+    """Distant towers around a downtown site (the palette's Skyline slot: closed low-poly buildings, no collision),
+    so a view down a street ends in a city rather than open ground: a ring of them between 35 m beyond the site's
+    edge and the ground slab's, each facing the site. Returns how many were placed (0 without Skyline meshes)."""
+    import math
+    import random
+    slot = palette.get_editor_property("slots").get(unreal.Name("Skyline")) if palette else None
+    entries = [e for e in (slot.get_editor_property("meshes") if slot else []) if e.get_editor_property("mesh")]
+    if not entries:
+        return 0
+    rng = random.Random(7007 + int(seed))
+    inner = site * 0.5 + 3500.0
+    outer = ground * 0.5 - 500.0
+    if outer - inner < 3000.0:
+        return 0
+    n = 0
+    for k in range(count):
+        e = rng.choice(entries)
+        fp = e.get_editor_property("footprint")
+        half = max(fp.x, fp.y) * 0.5
+        if outer - inner < 2.0 * half:
+            continue
+        ang = (k + rng.uniform(-0.35, 0.35)) * (2.0 * math.pi / count)
+        r = rng.uniform(inner + half, outer - half)
+        x, y = math.cos(ang) * r, math.sin(ang) * r
+        if abs(x) + half > ground * 0.5 - 100.0 or abs(y) + half > ground * 0.5 - 100.0:
+            continue
+        # front (+X of the facing frame) toward the site, squared to the street grid
+        yaw = round(math.degrees(ang + math.pi) / 90.0) * 90.0
+        off = e.get_editor_property("location_offset")
+        rot = e.get_editor_property("rotation_offset")
+        r_yaw = math.radians(yaw)
+        ox = off.x * math.cos(r_yaw) - off.y * math.sin(r_yaw)
+        oy = off.x * math.sin(r_yaw) + off.y * math.cos(r_yaw)
+        a = _spawn(unreal.StaticMeshActor, (x + ox, y + oy, off.z - 30.0), (0.0, yaw + rot.yaw, 0.0), "Skyline%02d" % k)
+        if a is None:
+            continue
+        c = a.static_mesh_component
+        c.set_static_mesh(e.get_editor_property("mesh"))
+        c.set_collision_enabled(unreal.CollisionEnabled.NO_COLLISION)
+        a.set_folder_path(unreal.Name("WorldGen/Skyline"))
+        n += 1
+    return n
+
+
 def _add_hills(site, ground, material_path, seed):
     """Rolling grassy hills on the ground outside the generated site, so the horizon is not a flat plane.
     Mound pieces (cosine bumps) between the site edge plus a margin and the ground slab's edge."""
@@ -154,6 +199,8 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     _add_ground(ground, ground_mat)
     if not indoor:
         _add_hills(site, ground, ground_mat, seed)
+    if preset.get_editor_property("scene_kind") == unreal.RammsSceneKind.DOWNTOWN and palette:
+        _add_skyline(palette, site, ground, seed)
 
     gen = _spawn(unreal.RammsWorldGenerator, (0, 0, 0), label="WorldGenerator")
     gen.set_editor_property("preset", preset)
