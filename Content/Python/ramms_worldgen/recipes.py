@@ -9,7 +9,9 @@ A recipe says how one palette is made:
              slots it offers -- slots None for every slot it offers. Later layers see earlier ones;
   surfaces   palette Mat.* slots -> "<pack>:<surface>" (or a list: the slot's material set), built from that
              pack's textures as world-aligned materials into the recipe's material folder;
-  puddles    add the built-in puddle decal (surfaces.build_puddle_decal: no pack ships one) to Decal.Puddle.
+  puddles    add the built-in puddle decal (surfaces.build_puddle_decal: no pack ships one) to Decal.Puddle;
+  kits       packs whose modular facade kits become facade styles (packs.base.Kit; a level picks among them
+             through the FacadeStyles parameter, e.g. PRE_DenseDowntown's).
 
 Packs that are not installed contribute nothing: a recipe still builds (and reports what it skipped).
 
@@ -54,6 +56,7 @@ RECIPES = {
             "Mat.Facade": ["Megascans:Brick"], "Mat.FacadeAlt": ["Megascans:Plaster", "Megascans:ConcreteWall"],
         },
         puddles=True,
+        kits=["Downtown_West", "CamdenMarket"],
     ),
 }
 
@@ -183,9 +186,22 @@ def build(name, path=None, urbanverse_cache=None):
             continue
         _apply_layer(pal, pack, mode, slots, weight, report)
     _apply_surfaces(pal, name, recipe.get("surfaces", {}), report)
+    for pack_name in recipe.get("kits", []):
+        pack = PK.get(pack_name)
+        if not pack.installed():
+            report["skipped"].append("kits of %s (not installed)" % pack_name)
+            continue
+        for kit in pack.kits:
+            got = P.build_kit_slots(pal, pack, kit)
+            if got:
+                report.setdefault("kits", {})[kit.style] = got
+            else:
+                report["skipped"].append("kit %s (no ground floor or window floor found)" % kit.style)
     if recipe.get("puddles"):
         from . import surfaces as SF
-        puddle = SF.build_puddle_decal()
+        # built once (it is plugin content): rebuilding it every time would re-save it for nothing
+        path = SF.DIR + "/M_RammsPuddle"
+        puddle = unreal.load_asset(path) if H.EAL.does_asset_exist(path) else SF.build_puddle_decal()
         s = _slot(pal, "Decal.Puddle")
         have = [m for m in s.get_editor_property("materials") if m is not None]
         if puddle.get_path_name() not in {m.get_path_name() for m in have}:

@@ -425,6 +425,45 @@ def build_puddle_decal(name="M_RammsPuddle", directory=None):
     return mat
 
 
+def build_window_glass(name="M_RammsWindowGlass", directory=None):
+    """Window glass for facade modules, made from nodes alone: a dark, smooth dielectric that reflects the sky and
+    the street (Lumen), its tint varied per module instance (PerInstanceRandom) so a facade's windows do not all
+    read the same. Packs' own facade glass is often a fake-interior material that needs reflection captures or
+    virtual textures and renders as a flat light panel without them. Returns the material."""
+    directory = directory or DIR
+    path = directory + "/" + name
+    H.ensure_dir(directory)
+    if H.EAL.does_asset_exist(path):
+        mat = H.EAL.load_asset(path)
+        MEL.delete_all_material_expressions(mat)
+    else:
+        mat = H.asset_tools().create_asset(name, directory, unreal.Material, unreal.MaterialFactoryNew())
+    # two-sided: packs model window panes facing either way (their own glass is two-sided too)
+    mat.set_editor_property("two_sided", True)
+
+    def node(cls, x, y, **props):
+        e = MEL.create_material_expression(mat, cls, x, y)
+        for k, v in props.items():
+            e.set_editor_property(k, v)
+        return e
+
+    rnd = node(unreal.MaterialExpressionPerInstanceRandom, -700, 0)
+    dark = node(unreal.MaterialExpressionConstant3Vector, -700, -160, constant=unreal.LinearColor(0.010, 0.013, 0.018, 1.0))
+    lighter = node(unreal.MaterialExpressionConstant3Vector, -700, -60, constant=unreal.LinearColor(0.045, 0.050, 0.052, 1.0))
+    tint = node(unreal.MaterialExpressionLinearInterpolate, -450, -100)
+    MEL.connect_material_expressions(dark, "", tint, "A")
+    MEL.connect_material_expressions(lighter, "", tint, "B")
+    MEL.connect_material_expressions(rnd, "", tint, "Alpha")
+    MEL.connect_material_property(tint, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    rough = node(unreal.MaterialExpressionConstant, -450, 60, r=0.05)
+    MEL.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    spec = node(unreal.MaterialExpressionConstant, -450, 140, r=0.6)
+    MEL.connect_material_property(spec, "", unreal.MaterialProperty.MP_SPECULAR)
+    MEL.recompile_material(mat)
+    H.save(mat)
+    return mat
+
+
 def build_surfaces():
     """Create or refresh every surface material, the paint instances and the puddle decal. Returns {name: path or None}."""
     out = {}
@@ -443,5 +482,9 @@ def build_surfaces():
         out["M_RammsPuddle"] = build_puddle_decal().get_path_name()
     except Exception as exc:  # noqa: BLE001
         H.warn("puddle decal failed: %s" % exc)
+    try:
+        out["M_RammsWindowGlass"] = build_window_glass().get_path_name()
+    except Exception as exc:  # noqa: BLE001
+        H.warn("window glass failed: %s" % exc)
     H.log("surfaces: %s" % out)
     return out

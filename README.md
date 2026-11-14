@@ -387,7 +387,8 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   furniture, cars and trees on top), slots to clear, pack **layers** that add to or replace the slots they
   offer (with a weight, in order), and `Mat.*` slots pointed at pack surfaces. `Downtown` is the README's hero
   street: UrbanVerse furniture and cars, Downtown West street trees and furniture, decals from every pack,
-  Megascans sidewalks, concrete and walls, Downtown West asphalt and curbs, the built-in puddle decal.
+  Megascans sidewalks, concrete and walls, Downtown West asphalt and curbs, the built-in puddle decal, and
+  the Downtown West and Camden Market facade kits (`kits`; `PRE_DenseDowntown`'s `FacadeStyles` lists them).
 - **Building one**: `recipes.build("Downtown")` (or the `worldgen_build_palette` MCP tool) writes
   `/Game/WorldGen/Palettes/PAL_Downtown` and its materials under `/Game/WorldGen/Materials/Downtown`; it needs
   the UrbanVerse cache (`urbanverse_cache=` or `$RAMMS_URBANVERSE_CACHE`) for that layer and skips it
@@ -451,6 +452,22 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   `bFacadeModules` (default on) and `FacadeStyles` (`dt01,dt02,dt03`) choose
   the kits; a lot narrower than 5 m, or a style that cannot tile it, falls
   back to the cube dressing.
+- **Pack facade kits** (`packs.base.Kit`): a pack's own modular kit becomes a style with a
+  `FRammsFacadeKitInfo` in the palette's `FacadeKits` (family, weight, `MaxStretch`, `UpperMixChance`).
+  Its modules need no common grid: each floor of a face is a run of modules (the door module placed first,
+  inside the front's ground floor) stretched or squeezed by at most `MaxStretch` to fill the face exactly, a
+  knapsack over the kit's widths. Only the street faces are dressed -- the front, a corner lot's side on the
+  cross street (`StreetSideNeg` / `StreetSidePos` from Subdivide Lots), the back of a one-row block
+  (`StreetBack`) -- over the massing shell; the cornice is the style's own `Facade.<style>.Top`; a module's
+  material slots keep the pack's materials unless the kit maps a slot to `Facade.<style>.Mat.<Category>`
+  (the glass slots of Downtown West and Camden take the built-in `M_RammsWindowGlass`: their own fake-interior
+  glass renders as flat panels without reflection captures). The massing shell stands back from the street
+  faces by the kit's deepest module, so recessed window panes are not behind its wall.
+  Each entry carries the yaw, offset and scale that bring the pack's pieces to the convention (measured from
+  the bounds, so centred and end pivots both work). A style that cannot tile a building gives way to another
+  (up to four) before the cube dressing. Today: Downtown West's buildings a, b (two storefront lines), d, e and
+  f at 0.75 scale (the pack's 6 m storeys), Camden Market's pub, and its residential and industrial terraces
+  over the Building04 storefronts. The original kits are untouched (same picks for the same seed).
 - **New preset**: add an entry to `presets.PRESETS` (or duplicate an asset),
   point it at a graph.
 - **New parameter**: `FRammsWorldGenParams` member + same-named

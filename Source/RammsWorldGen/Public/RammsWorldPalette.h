@@ -108,6 +108,38 @@ struct RAMMSWORLDGEN_API FRammsPaletteMesh
 	bool IsComposite() const { return Parts.Num() > 0; }
 };
 
+/**
+ * How a facade style from a pack's own modular kit is put together (palette FacadeKits, by style). A style
+ * with one is tiled from any module widths -- each run of modules (a floor of a face) stretched or squeezed by
+ * at most MaxStretch to fill the face exactly -- dresses only the building's street faces (the front, a corner
+ * lot's side on the cross street, the back of a one-row block; the rest is the massing shell, the party walls),
+ * takes its cornice from its own "Facade.<style>.Top" slot and its materials from its own
+ * "Facade.<style>.Mat.<Category>" sets (a module slot with none keeps the mesh's own material). Modules keep their palette transform
+ * (RotationOffset / LocationOffset / Scale: a pack's pivot and size brought to the convention). A style
+ * without one is the original kit: a 100 cm grid, every face, corner pieces, global tops and material sets.
+ */
+USTRUCT(BlueprintType)
+struct RAMMSWORLDGEN_API FRammsFacadeKitInfo
+{
+	GENERATED_BODY()
+
+	/** The pack (family of styles) it comes from: its upper floors only mix with styles of the same family. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	FString Family;
+
+	/** How often it is picked relative to the other allowed styles (the original kits count 1). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette", meta = (ClampMin = "0.0"))
+	float Weight = 1.0f;
+
+	/** How far a run of modules may be stretched or squeezed along the facade (a fraction) to fill a face. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette", meta = (ClampMin = "0.0", ClampMax = "0.3"))
+	float MaxStretch = 0.08f;
+
+	/** Chance a building's upper floors take another style of the same family. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UpperMixChance = 0.0f;
+};
+
 /** A semantic slot: what the generator asks for ("Bench", "Mat.Sidewalk",
  *  "Hazard.AFrame") rather than which asset answers. */
 USTRUCT(BlueprintType)
@@ -207,6 +239,8 @@ namespace RammsPaletteSlots
 	inline const FName FacadePartWin(TEXT("Win"));
 	inline const FName FacadePartWinTop(TEXT("WinTop"));
 	inline const FName FacadePartWinCorner(TEXT("WinCorner"));
+	// a style's own cornice (FRammsFacadeKitInfo styles; the original kits use the global Facade.Top / TallTop)
+	inline const FName FacadePartTop(TEXT("Top"));
 	inline const FName FacadeTop(TEXT("Facade.Top"));
 	inline const FName FacadeTopCorner(TEXT("Facade.TopCorner"));
 	inline const FName FacadeTallTop(TEXT("Facade.TallTop"));
@@ -322,6 +356,17 @@ public:
 	/** Fallback material for any Mat.* slot the palette does not fill. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	TSoftObjectPtr<UMaterialInterface> DefaultMaterial;
+
+	/** Facade styles from a pack's own kit, by style (FRammsFacadeKitInfo); the others are the original kits. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TMap<FString, FRammsFacadeKitInfo> FacadeKits;
+
+	/** A style's kit info, or null for an original kit. */
+	const FRammsFacadeKitInfo* FacadeKit(const FString& Style) const { return FacadeKits.Find(Style); }
+
+	/** Describe (or replace) a style's kit. Used by the Python palette builder. */
+	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
+	void SetFacadeKit(const FString& Style, const FRammsFacadeKitInfo& Info) { FacadeKits.Add(Style, Info); }
 
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
 	bool HasSlot(FName Slot) const;

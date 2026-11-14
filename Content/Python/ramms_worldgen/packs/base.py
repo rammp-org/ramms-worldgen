@@ -42,6 +42,51 @@ def _refs(items):
     return [i if isinstance(i, Ref) else Ref(i) for i in items]
 
 
+class Part:
+    """Kit pieces for a facade role: path (relative to the pack's root or absolute; fnmatch patterns allowed in the
+    last component), the yaw that turns the pack's piece to the facade convention (exterior toward +Y, the run
+    along +X; None: the kit's), and dy, a shift out of (+) or into (-) the facade plane in cm at native size (a
+    wall modelled centred on its plane is moved in by half its thickness)."""
+
+    def __init__(self, path, yaw=None, dy=0.0, weight=1.0):
+        self.path = path
+        self.yaw = yaw
+        self.dy = dy
+        self.weight = weight
+
+
+class Kit:
+    """A pack's modular facade kit as one facade style (palette FacadeKits, FRammsFacadeKitInfo).
+
+    style: the style name ("Facade.<style>.<Role>" slots; no dots).
+    family: styles of one family may share upper floors (UpperMixChance).
+    roles: {"GF" | "GFDoor" | "Win" | "WinTop" | "Top": [Part | path]}: ground-floor modules, the front's door
+        module, window floors, the top floor's variant, the cornice. GF and Win are required.
+    scale: uniform scale of every module (a pack modelled oversize comes down to real storeys).
+    yaw: the yaw that brings the pack's pieces to the convention (Parts may override it). The run's start
+        (pivot) is measured from the bounds, so centred and end pivots both work.
+    weight, max_stretch, upper_mix: FRammsFacadeKitInfo's Weight, MaxStretch, UpperMixChance.
+    materials: [(regex on the mesh's material slot name, category)]: those slots take a pick from the
+        palette's "Facade.<style>.Mat.<category>" set; every other slot keeps the pack's own material.
+    material_sets: {category: [paths]}: that set's materials (relative to the pack or absolute); the "Glass"
+        category defaults to the built-in window glass (surfaces.build_window_glass).
+    """
+
+    def __init__(self, style, family, roles, scale=1.0, yaw=0.0, weight=1.0, max_stretch=0.08, upper_mix=0.0, materials=(), material_sets=None, notes=""):
+        assert "." not in style, style
+        self.style = style
+        self.family = family
+        self.roles = {r: [p if isinstance(p, Part) else Part(p) for p in parts] for r, parts in roles.items()}
+        self.scale = scale
+        self.yaw = yaw
+        self.weight = weight
+        self.max_stretch = max_stretch
+        self.upper_mix = upper_mix
+        self.materials = list(materials)
+        self.material_sets = dict(material_sets or {})
+        self.notes = notes
+
+
 class Pack:
     """A content pack: where it lives and what it contributes, per slot.
 
@@ -49,18 +94,20 @@ class Pack:
     roots: its content folders; the first is the base of relative paths. Installed when any exists.
     meshes: slot -> [Ref | path] of static meshes.
     material_sets: slot -> [Ref | path] of material interfaces (decals, facade material sets).
+    kits: [Kit]: modular facade kits, each one facade style.
     surfaces: key -> a `surfaces._build` spec (bc / n / rma texture paths relative to the root or absolute,
         tile size, tint...): world-aligned ground and wall materials, built on demand into a recipe's
         material folder as M_<Recipe>_<key>.
     notes: free text (licence, scale quirks) shown in reports.
     """
 
-    def __init__(self, name, roots, meshes=None, material_sets=None, surfaces=None, notes=""):
+    def __init__(self, name, roots, meshes=None, material_sets=None, surfaces=None, kits=None, notes=""):
         self.name = name
         self.roots = list(roots)
         self.meshes = {k: _refs(v) for k, v in (meshes or {}).items()}
         self.material_sets = {k: _refs(v) for k, v in (material_sets or {}).items()}
         self.surfaces = dict(surfaces or {})
+        self.kits = list(kits or [])
         self.notes = notes
 
     def installed(self):
@@ -101,6 +148,14 @@ class Pack:
         for ref in self.material_sets.get(slot, []):
             for m in self.resolve(ref, ("MaterialInstanceConstant", "Material")):
                 out.append((m, ref))
+        return out
+
+    def kit_meshes(self, kit, role):
+        """[(mesh, part)] of a kit's role."""
+        out = []
+        for part in kit.roles.get(role, []):
+            for m in self.resolve(Ref(part.path), ("StaticMesh",)):
+                out.append((m, part))
         return out
 
     def surface_spec(self, key):

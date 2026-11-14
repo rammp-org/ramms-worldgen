@@ -5,7 +5,7 @@ material_sets={slot: [paths]}, surfaces={key: spec}), listed in ALL below.
 """
 
 from . import american_city, camden_market, downtown_west, fab_scenes, megascans
-from .base import Pack, Ref
+from .base import Kit, Pack, Part, Ref
 
 ALL = [american_city.PACK, downtown_west.PACK, camden_market.PACK, megascans.PACK, fab_scenes.PACK]
 BY_NAME = {p.name: p for p in ALL}
@@ -22,4 +22,4 @@ def installed():
     return [p.name for p in ALL if p.installed()]
 
 
-__all__ = ["ALL", "BY_NAME", "Pack", "Ref", "get", "installed"]
+__all__ = ["ALL", "BY_NAME", "Kit", "Pack", "Part", "Ref", "get", "installed"]

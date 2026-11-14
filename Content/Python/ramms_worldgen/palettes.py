@@ -384,6 +384,78 @@ def _module_entry(mesh):
     return e
 
 
+def kit_module_entry(mesh, kit, part):
+    """Palette entry for a module of a pack's kit (packs.base.Kit): the yaw and scale that bring the pack's piece to
+    the facade convention (exterior toward +Y, the run along +X from 0, base on the ground), the run's start
+    measured from the bounds whatever the pivot, and every material slot left to the mesh unless the kit maps
+    its name to a category (then "Facade.<style>.Mat.<category>" overrides it)."""
+    import math
+    import re
+    yaw = kit.yaw if part.yaw is None else part.yaw
+    s = kit.scale
+    box = mesh.get_bounding_box()
+    lo, hi = box.min, box.max
+    r = math.radians(yaw)
+    xs, ys = [], []
+    for x in (lo.x, hi.x):
+        for y in (lo.y, hi.y):
+            xs.append(x * math.cos(r) - y * math.sin(r))
+            ys.append(x * math.sin(r) + y * math.cos(r))
+    e = unreal.RammsPaletteMesh()
+    e.set_editor_property("mesh", mesh)
+    e.set_editor_property("weight", float(part.weight))
+    e.set_editor_property("scale", float(s))
+    e.set_editor_property("footprint", unreal.Vector2D(max((max(xs) - min(xs)) * s, 1.0), max(max(abs(min(ys) + part.dy), abs(max(ys) + part.dy)) * s, 1.0)))
+    e.set_editor_property("height", max(hi.z * s, 1.0))
+    e.set_editor_property("rotation_offset", unreal.Rotator(roll=0.0, pitch=0.0, yaw=yaw))
+    e.set_editor_property("location_offset", unreal.Vector(-min(xs) * s, part.dy * s, 0.0))
+    cats = []
+    for sm in mesh.get_editor_property("static_materials"):
+        name = str(sm.material_slot_name)
+        cats.append(next((c for rx, c in kit.materials if re.match(rx, name, re.I)), "Native"))
+    e.set_editor_property("material_slots", cats)
+    return e
+
+
+def _pack_ref(path):
+    from .packs.base import Ref
+    return Ref(path)
+
+
+def build_kit_slots(pal, pack, kit):
+    """A pack's kit as the facade style kit.style: its role slots ("Facade.<style>.<Role>") and its kit info.
+    Returns {role: count}; nothing when its GF or Win role finds no mesh."""
+    entries = {role: [kit_module_entry(m, kit, part) for m, part in pack.kit_meshes(kit, role)] for role in kit.roles}
+    if not entries.get("GF") or not entries.get("Win"):
+        return {}
+    for role, es in entries.items():
+        slot = unreal.Name("Facade.%s.%s" % (kit.style, role))
+        s = unreal.RammsPaletteSlot()
+        s.set_editor_property("meshes", es)
+        s.set_editor_property("note", "%s kit %s (%s)" % (pack.name, kit.style, role))
+        pal.set_slot(slot, s)
+    # the material sets the kit's slot categories pick from: the kit's own, or the built-in window glass
+    for cat in sorted({c for _rx, c in kit.materials}):
+        mats = []
+        for path in kit.material_sets.get(cat, []):
+            mats += [m for m in pack.resolve(_pack_ref(path), ("MaterialInstanceConstant", "Material"))]
+        if not mats and cat == "Glass":
+            from . import surfaces
+            gp = surfaces.DIR + "/M_RammsWindowGlass"
+            mats = [unreal.load_asset(gp) if H.EAL.does_asset_exist(gp) else surfaces.build_window_glass()]
+        s = unreal.RammsPaletteSlot()
+        s.set_editor_property("materials", mats)
+        s.set_editor_property("material", mats[0] if mats else None)
+        pal.set_slot(unreal.Name("Facade.%s.Mat.%s" % (kit.style, cat)), s)
+    info = unreal.RammsFacadeKitInfo()
+    info.set_editor_property("family", kit.family)
+    info.set_editor_property("weight", float(kit.weight))
+    info.set_editor_property("max_stretch", float(kit.max_stretch))
+    info.set_editor_property("upper_mix_chance", float(kit.upper_mix))
+    pal.set_facade_kit(kit.style, info)
+    return {role: len(es) for role, es in entries.items()}
+
+
 def build_facade_slots(pal, report):
     """Fill Facade.* slots from whatever facade kits the registry holds."""
     reg = unreal.AssetRegistryHelpers.get_asset_registry()
