@@ -251,20 +251,23 @@ def _world_uv(g):
 _LAYOUTS = {"rma": ("R", "B", False), "mrao": ("G", "B", False), "orm": ("G", "R", False), "mask": ("A", "G", True)}
 
 
-def _build(name, spec):
+def _build(name, spec, directory=None):
+    """Create or refresh the world-aligned material `name` from spec (see SURFACES) in directory (DIR by
+    default: a recipe builds its own surfaces into its own folder)."""
+    directory = directory or DIR
     bc, n, rma, mask = _load(spec["bc"]), _load(spec.get("n")), _load(spec.get("rma")), _load(spec.get("mask"))
     if bc is None:
         H.warn("surface %s: base colour %s missing" % (name, spec["bc"]))
         return None
     bc2, n2, rma2 = _load(spec.get("bc2")), _load(spec.get("n2")), _load(spec.get("rma2"))
     second = spec.get("second", True) or bc2 is not None
-    path = DIR + "/" + name
-    H.ensure_dir(DIR)
+    path = directory + "/" + name
+    H.ensure_dir(directory)
     if H.EAL.does_asset_exist(path):
         mat = H.EAL.load_asset(path)
         MEL.delete_all_material_expressions(mat)
     else:
-        mat = H.asset_tools().create_asset(name, DIR, unreal.Material, unreal.MaterialFactoryNew())
+        mat = H.asset_tools().create_asset(name, directory, unreal.Material, unreal.MaterialFactoryNew())
     g = _G(mat)
     tile = float(spec.get("tile", 300.0))
 
@@ -370,8 +373,60 @@ def build_paints():
     return out
 
 
+def build_puddle_decal(name="M_RammsPuddle", directory=None):
+    """A deferred decal of standing water, made from nodes alone (no pack ships one): an irregular blob (a radial
+    falloff broken up by noise) of dark, near-mirror water with a flat normal. Returns the material."""
+    directory = directory or DIR
+    path = directory + "/" + name
+    H.ensure_dir(directory)
+    if H.EAL.does_asset_exist(path):
+        mat = H.EAL.load_asset(path)
+        MEL.delete_all_material_expressions(mat)
+    else:
+        mat = H.asset_tools().create_asset(name, directory, unreal.Material, unreal.MaterialFactoryNew())
+    mat.set_editor_property("material_domain", unreal.MaterialDomain.MD_DEFERRED_DECAL)
+    mat.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+
+    def node(cls, x, y, **props):
+        e = MEL.create_material_expression(mat, cls, x, y)
+        for k, v in props.items():
+            e.set_editor_property(k, v)
+        return e
+
+    uv = node(unreal.MaterialExpressionTextureCoordinate, -1200, 0)
+    centre = node(unreal.MaterialExpressionConstant2Vector, -1200, 120, r=0.5, g=0.5)
+    dist = node(unreal.MaterialExpressionDistance, -1000, 40)
+    MEL.connect_material_expressions(uv, "", dist, "A")
+    MEL.connect_material_expressions(centre, "", dist, "B")
+    # 1 at the centre, 0 on the decal's edge circle, broken up by noise and sharpened into a blob
+    two = node(unreal.MaterialExpressionMultiply, -930, 40, const_b=2.0)
+    MEL.connect_material_expressions(dist, "", two, "A")
+    radial = node(unreal.MaterialExpressionOneMinus, -850, 40)
+    MEL.connect_material_expressions(two, "", radial, "")
+    noise = node(unreal.MaterialExpressionNoise, -1200, 260, scale=0.012, levels=4, output_min=-0.6, output_max=0.6)
+    add = node(unreal.MaterialExpressionAdd, -650, 120)
+    MEL.connect_material_expressions(radial, "", add, "A")
+    MEL.connect_material_expressions(noise, "", add, "B")
+    sharp = node(unreal.MaterialExpressionMultiply, -500, 120, const_b=4.0)
+    MEL.connect_material_expressions(add, "", sharp, "A")
+    mask = node(unreal.MaterialExpressionSaturate, -350, 120)
+    MEL.connect_material_expressions(sharp, "", mask, "")
+    MEL.connect_material_property(mask, "", unreal.MaterialProperty.MP_OPACITY)
+    base = node(unreal.MaterialExpressionConstant3Vector, -350, -200, constant=unreal.LinearColor(0.025, 0.025, 0.03, 1.0))
+    MEL.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    rough = node(unreal.MaterialExpressionConstant, -350, -60, r=0.04)
+    MEL.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    spec = node(unreal.MaterialExpressionConstant, -350, 0, r=0.5)
+    MEL.connect_material_property(spec, "", unreal.MaterialProperty.MP_SPECULAR)
+    flat = node(unreal.MaterialExpressionConstant3Vector, -350, 260, constant=unreal.LinearColor(0.0, 0.0, 1.0, 1.0))
+    MEL.connect_material_property(flat, "", unreal.MaterialProperty.MP_NORMAL)
+    MEL.recompile_material(mat)
+    H.save(mat)
+    return mat
+
+
 def build_surfaces():
-    """Create or refresh every surface material and the paint instances. Returns {name: path or None}."""
+    """Create or refresh every surface material, the paint instances and the puddle decal. Returns {name: path or None}."""
     out = {}
     for name, spec in SURFACES.items():
         try:
@@ -384,5 +439,9 @@ def build_surfaces():
         out["paints"] = build_paints()
     except Exception as exc:  # noqa: BLE001
         H.warn("paints failed: %s" % exc)
+    try:
+        out["M_RammsPuddle"] = build_puddle_decal().get_path_name()
+    except Exception as exc:  # noqa: BLE001
+        H.warn("puddle decal failed: %s" % exc)
     H.log("surfaces: %s" % out)
     return out

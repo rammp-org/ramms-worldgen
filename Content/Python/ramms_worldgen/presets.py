@@ -22,6 +22,19 @@ PRESETS = {
              PropDensity=7.0, HazardDensity=4.0, TreeSpacing=900.0, HazardIntrusionChance=0.5, ParkFraction=0.08,
              ParkingDensity=0.6, CanopyChance=0.15, StreetLightSpacing=2500.0, DecalDensity=10.0, GrassDensity=0.9),
     ),
+    "PRE_DenseDowntown": (
+        unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+        "A busier, more cluttered downtown (the README's hero street): shorter blocks and narrower lots built to "
+        "the sidewalk, 3 m sidewalks, cars parked along most curbs, more street furniture, street trees and "
+        "wear, no parks. Pair it with the Downtown palette recipe (recipes.py) for the full look.",
+        dict(SiteSizeX=10000.0, SiteSizeY=10000.0, NonCompliance=0.15,
+             BlockSizeMin=3600.0, BlockSizeMax=5200.0, RoadWidth=800.0, SidewalkWidth=300.0, FurnitureZoneWidth=100.0,
+             StreetJitter=0.2, StreetDropout=0.0, MidblockCrossingChance=0.3, CrosswalkWidth=300.0,
+             LotWidthMin=800.0, LotWidthMax=1600.0, SetbackMin=0.0, SetbackMax=0.0, FloorsMin=3, FloorsMax=8,
+             FloorHeight=380.0, LotCoverage=0.95, EntranceStepChance=0.35, EntranceRampChance=0.6, WindowSpacing=300.0, RearParkingChance=0.0,
+             PropDensity=10.0, HazardDensity=5.0, TreeSpacing=800.0, HazardIntrusionChance=0.5, ParkFraction=0.0,
+             ParkingDensity=0.85, CanopyChance=0.25, StreetLightSpacing=1800.0, DecalDensity=8.0, GrassDensity=0.9),
+    ),
     "PRE_Suburban": (
         unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,
         "Residential streets: long blocks, sidewalks behind a grass planting strip with street trees (some streets "

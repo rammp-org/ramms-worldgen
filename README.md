@@ -60,6 +60,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 - [The manifest](#the-manifest)
 - [Segmentation labels](#segmentation-labels)
 - [Parameters](#parameters)
+- [Packs and palette recipes](#packs-and-palette-recipes)
 - [Extending](#extending)
 - [UrbanVerse assets](#urbanverse-assets)
 - [SimReady assets](#simready-assets)
@@ -369,6 +370,35 @@ runs it at 0.2, the office at 0.1.
 | Accessibility | `MinClearWidth`, `PreferredClearWidth`, `RampMaxSlope`, `MaxCrossSlope`, `CurbRampFlareSlope`, `DoorClearWidth`, `DoorThresholdMax`, `VerticalChangeMax`, `LandingSize`, `DetectableWarningDepth` |
 | Suburban / park | `LawnLots`, `YardTreeChance`, `DrivewayChance`, `DrivewayWidth`, `FrontBoundaryChance`, `PathWidth`, `FoliageDensity`, `GrassDensity` (grass clumps per m^2 on lawns, strips and parks) |
 | Indoor | `RoomSizeMin/Max`, `CorridorWidth`, `CorridorChance`, `WallThickness`, `WallHeight`, `DoorWidthMean/Std`, `ThresholdChance`, `FurnitureDensity`, `OfficeFraction`, `RetailFraction` |
+
+## Packs and palette recipes
+
+A palette that mixes several content packs is built from code, so the same look comes back on any machine
+with the same packs, and a pack that is not installed only leaves its slots to the others.
+
+- **Packs** (`Content/Python/ramms_worldgen/packs/`): one module per pack declares where it lives and what it
+  offers, per slot: meshes (`meshes={"Bench": [paths]}`), material sets (`material_sets`, e.g. the decal
+  slots) and world-aligned **surfaces** (`surfaces`: a `surfaces.py` spec over the pack's own textures, built
+  on demand). Paths are relative to the pack's folder (or absolute; a `*` matches a name pattern), so two
+  packs that ship a mesh of the same name never get mixed up. Known today: American City Packs (decals),
+  Downtown West (street trees, furniture, decals, asphalt and curb), Camden Market and the Restaurant Scene
+  (dirt and stain decals), Megascans (sidewalk, asphalt, concrete, brick, plaster and weathered-concrete walls).
+- **Recipes** (`recipes.py`): a palette is a base (`PAL_Default`'s slots, optionally with UrbanVerse-100K
+  furniture, cars and trees on top), slots to clear, pack **layers** that add to or replace the slots they
+  offer (with a weight, in order), and `Mat.*` slots pointed at pack surfaces. `Downtown` is the README's hero
+  street: UrbanVerse furniture and cars, Downtown West street trees and furniture, decals from every pack,
+  Megascans sidewalks, concrete and walls, Downtown West asphalt and curbs, the built-in puddle decal.
+- **Building one**: `recipes.build("Downtown")` (or the `worldgen_build_palette` MCP tool) writes
+  `/Game/WorldGen/Palettes/PAL_Downtown` and its materials under `/Game/WorldGen/Materials/Downtown`; it needs
+  the UrbanVerse cache (`urbanverse_cache=` or `$RAMMS_URBANVERSE_CACHE`) for that layer and skips it
+  otherwise. The report lists the packs found, each layer's additions, the surfaces built and what was
+  skipped. `/Game/WorldGen` holds only what is built from local packs and is not committed.
+- **A level**: `levels.build_level("dense_downtown")` builds the recipe if needed and generates
+  `/Game/WorldGen/Maps/Map_Gen_DenseDowntown` with `PRE_DenseDowntown` (shorter blocks, narrow lots to the
+  sidewalk, cars along most curbs, more furniture and wear, no parks). `worldgen_list_packs` shows what is
+  installed.
+- **Adding a pack**: a module in `packs/` with `PACK = Pack(name, [folders], meshes=..., material_sets=...,
+  surfaces=...)`, listed in `packs.ALL`; then a layer for it in a recipe.
 
 ## Extending
 

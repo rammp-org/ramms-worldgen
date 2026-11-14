@@ -233,7 +233,8 @@ class RammsWorldGenToolset(unreal.ToolsetDefinition):
         """Create an example level with lights, ground, a generator and a PlayerStart, and generate it.
 
         Args:
-            kind: downtown, suburban, park, indoor, office.
+            kind: downtown, suburban, park, indoor, office, mainstreet, or dense_downtown (built with the
+                Downtown palette recipe from the packs installed here, saved under /Game/WorldGen/Maps).
             seed: Seed; -1 uses the example's default.
 
         Returns:
@@ -241,3 +242,36 @@ class RammsWorldGenToolset(unreal.ToolsetDefinition):
         """
         from . import levels
         return H.dumps({"map": levels.build_level(kind, None if seed < 0 else seed)})
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def worldgen_list_packs() -> str:
+        """The content packs world generation knows (packs/), whether each is installed, and the palette
+        recipes that combine them.
+
+        Returns:
+            JSON {packs: [{name, installed, roots, slots, material_sets, surfaces}], recipes: [names]}.
+        """
+        from . import packs, recipes
+        return H.dumps({"packs": [{"name": p.name, "installed": p.installed(), "roots": p.roots, "slots": sorted(p.meshes),
+                                   "material_sets": sorted(p.material_sets), "surfaces": sorted(p.surfaces)} for p in packs.ALL],
+                        "recipes": sorted(recipes.RECIPES)})
+
+    @toolset_registry.tool_call
+    @staticmethod
+    def worldgen_build_palette(recipe: str, urbanverse_cache: str = "") -> str:
+        """Build (or refresh in place) a palette from a recipe: the packs installed here, layered on the
+        default palette, saved as /Game/WorldGen/Palettes/PAL_<recipe>. Point a generator at it with
+        the generator's SetPalette, or build the dense_downtown example level.
+
+        Args:
+            recipe: a recipes.RECIPES name, e.g. Downtown.
+            urbanverse_cache: the UrbanVerse-100K cache folder when the recipe uses it ($RAMMS_URBANVERSE_CACHE
+                otherwise; without one the UrbanVerse layer is skipped).
+
+        Returns:
+            JSON report: the packs found, each layer's additions, the surfaces built, what was skipped.
+        """
+        from . import recipes
+        _pal, report = recipes.build(recipe, urbanverse_cache=urbanverse_cache or None)
+        return H.dumps(report)

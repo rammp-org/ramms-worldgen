@@ -250,7 +250,8 @@ MATERIAL_SETS = {
                          "MI_16_Round_Manhole_Cover_scolskp_4K_RM", "MI_17_Round_Manhole_Cover_scomxop_4K_RM"],
     "Decal.Sidewalk.Crack": ["MI_Cracks_01", "MI_Cracks_02", "MI_Cracks_03", "MI_Cracks_04", "MI_Crack01", "MI_Crack02"],
     "Decal.Stain": ["MI_decal_overlay_grime_01_RM", "Mi_Stain_01a", "MI_Stains"],
-    "Decal.Puddle": ["MI_AsphaltPuddle01", "MI_AsphaltPuddle02", "MI_Puddle01", "MI_RoadPuddle01", "MI_RoadPuddle02"],
+    # (M_RammsPuddle: surfaces.build_puddle_decal, for when no pack has one)
+    "Decal.Puddle": ["MI_AsphaltPuddle01", "MI_AsphaltPuddle02", "MI_Puddle01", "MI_RoadPuddle01", "MI_RoadPuddle02", "M_RammsPuddle"],
 }
 
 ACTOR_SLOTS = {

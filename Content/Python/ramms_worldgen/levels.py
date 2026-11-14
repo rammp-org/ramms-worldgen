@@ -19,6 +19,9 @@ EXAMPLES = {
     "indoor": ("Map_Gen_Indoor", "PRE_Indoor_Home", 5),
     "office": ("Map_Gen_Office", "PRE_Indoor_Office", 2),
     "mainstreet": ("Map_Gen_MainStreet", "PRE_MainStreet", 4),
+    # with a palette recipe (recipes.py): built from the packs installed locally, so the level goes with its
+    # palette under /Game/WorldGen rather than among the committed example maps
+    "dense_downtown": ("Map_Gen_DenseDowntown", "PRE_DenseDowntown", 11, "Downtown"),
     "store": ("Map_Gen_Store", "PRE_Indoor_Store", 6),
 }
 
@@ -107,14 +110,23 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     """Create (or recreate) one example level and start its generation."""
     if kind not in EXAMPLES:
         raise RuntimeError("unknown example '%s'; choose from %s" % (kind, list(EXAMPLES)))
-    map_name, preset_name, default_seed = EXAMPLES[kind]
+    map_name, preset_name, default_seed = EXAMPLES[kind][:3]
+    recipe = EXAMPLES[kind][3] if len(EXAMPLES[kind]) > 3 else None
     seed = default_seed if seed is None else int(seed)
     preset = PR.load_preset(preset_name)
     indoor = preset.get_editor_property("scene_kind") == unreal.RammsSceneKind.INDOOR
-    path = H.MAPS + "/" + map_name
+    maps = H.MAPS
+    recipe_palette = None
+    if recipe:
+        from . import recipes as R
+        maps = R.OUT + "/Maps"
+        recipe_palette = R.palette_path(recipe)
+        if not H.EAL.does_asset_exist(recipe_palette):
+            R.build(recipe)
+    path = maps + "/" + map_name
 
     les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
-    H.ensure_dir(H.MAPS)
+    H.ensure_dir(maps)
     if H.EAL.does_asset_exist(path):
         # new_level() refuses to overwrite and a loaded map cannot be deleted, so reuse it: load and empty it.
         if H.editor_world().get_path_name() != "%s.%s" % (path, map_name):
@@ -133,7 +145,7 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     _add_lighting(indoor)
     params = preset.get_editor_property("params")
     site = max(params.get_editor_property("site_size_x"), params.get_editor_property("site_size_y"))
-    palette = preset.get_editor_property("palette")
+    palette = unreal.load_asset(recipe_palette) if recipe_palette else preset.get_editor_property("palette")
     ground_mat = ""
     if palette:
         ground_mat = palette.material_path("Mat.Lawn" if not indoor else "Mat.Concrete")
@@ -147,6 +159,8 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     gen.set_editor_property("preset", preset)
     gen.set_editor_property("seed", seed)
     gen.set_editor_property("generate_on_begin_play", False)
+    if recipe_palette:
+        gen.set_palette(recipe_palette)
 
     gm = unreal.load_class(None, GAME_MODE)
     if gm:
@@ -218,8 +232,9 @@ def _watch(path):
 
 
 def build_all_levels(kinds=None):
-    """Build the example levels one after another (each waits for the previous generation)."""
-    kinds = list(kinds or EXAMPLES)
+    """Build the example levels one after another (each waits for the previous generation). By default the
+    committed examples: the recipe ones (built from local packs) only when asked for."""
+    kinds = list(kinds or [k for k, v in EXAMPLES.items() if len(v) == 3])
     if not kinds:
         return []
     done = []
