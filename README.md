@@ -846,16 +846,26 @@ tested with a person-sized capsule against everything that blocks (walls,
 furniture, shelving, props, cars); doorway crossings are straightened
 through the middle of the opening, run ends are nudged off furniture, and a
 run that hits something is rerouted around it on a 25 cm grid (A*, then
-string-pulled), or dropped when there is no way through. A run along a
-sidewalk is rerouted on the sidewalk's own level (around a tree or a bench,
-never off the curb and down the street: the capsule starts 30 cm up, so the
-curb's drop would otherwise read as free). The ground must be at that level
-under the walker's centre, with no drop within their radius either side, so
-neither lane hangs over the road; crossings, which go down to the road by
-design, are not constrained. A run with no way through on its level is dropped
-rather than sent down the street. Junctions shrink to
-fit the free space around them. `crowd.check_lanes()` audits a level
-(verify.py fails a level whose lanes touch geometry).
+string-pulled), or dropped when there is no way through. Outdoors, a run
+whose straight line keeps to one walking level (a sidewalk, a park path) is
+rerouted at that level's height only: around a tree or a bench, never off the
+curb and down the street (the capsule starts 30 cm up, so the curb's drop
+would otherwise read as free). A level is a height, not a surface: a detour
+may cross a planting strip, a lawn or a front yard that lies at the sidewalk's
+height. The ground must not drop more than 60% of the curb height (at most
+8 cm) below the run, under the walker's centre and out to the outer edge of
+either lane's walkers, whatever clearance the detour squeezes through with, so
+neither lane hangs over the road; ground more than 8 cm higher under the
+centre (a planter) is an obstacle. A run end nudged off a prop stays on its
+level the same way. Crossings, which go down to the road by design, are not
+constrained, nor are streets whose curb is under 4 cm (no level to keep). A
+run with no way through on its level is dropped rather than sent down the
+street. Junctions shrink to fit the free space around them.
+`crowd.check_lanes()` audits a level (verify.py fails a level whose lanes
+touch geometry), and `crowd.check_lane_levels()` counts sidewalk-lane samples
+whose walkers would stand off their level (crossings, junctions and indoor
+lanes aside): `off_level_lane_samples` in `build_crowd`'s summary, 0 when every
+lane keeps to its sidewalk.
 
 Every run is sampled about every 50 cm onto the surface below it, so lanes
 follow curb ramps, the drop to the road, path slopes and thresholds instead
