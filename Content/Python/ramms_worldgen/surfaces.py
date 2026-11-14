@@ -171,6 +171,17 @@ def _clear(mat):
         MEL.delete_all_material_expressions(mat)
 
 
+def _instanced_usage(mat):
+    """Usage flags for a material the PCG spawners put on instanced (and often Nanite) pack meshes: set when it is
+    built, so a cooked build has those shader permutations. The editor adds a missing flag only when it first
+    renders the combination, and leaves the material dirty rather than saving it."""
+    for prop in ("used_with_instanced_static_meshes", "used_with_nanite"):
+        try:
+            mat.set_editor_property(prop, True)
+        except Exception as exc:  # noqa: BLE001
+            H.warn("%s: could not set %s: %s" % (mat.get_name(), prop, exc))
+
+
 def _load(path):
     if not path:
         return None
@@ -397,10 +408,11 @@ def build_signal(name, spec, directory=None):
     texture, "hand" / "walk" channels) shows the icon projected onto the panel.
 
     Every signal in a level shows one phase: heads whose front (the instance's +X, where the palette turns them)
-    runs along world X show green and those along Y red, or the other way round with GreenAlongX at 0 -- so the
-    cross directions of an intersection never both show green. A pole's pedestrian head, facing across the road
-    its heads control, shows the hand while they are green and the walking figure while they are red. Amber stays
-    dark. LampBrightness and the RedLamp / GreenLamp / PedHand / PedWalk colours tune it. Returns the material."""
+    runs nearer world X than world Y show green and the others red, or the other way round with GreenAlongX at 0
+    -- so the cross directions of an intersection never both show green, at any instance scale. A pole's
+    pedestrian head, facing across the road its heads control, shows the hand while they are green and the
+    walking figure while they are red. Amber stays dark. LampBrightness and the RedLamp / GreenLamp / PedHand /
+    PedWalk colours tune it. Returns the material."""
     directory = directory or DIR
     bc, n, orm, lens = _load(spec["bc"]), _load(spec.get("n")), _load(spec.get("orm")), _load(spec.get("lens"))
     if bc is None:
@@ -413,8 +425,7 @@ def build_signal(name, spec, directory=None):
         _clear(mat)
     else:
         mat = H.asset_tools().create_asset(name, directory, unreal.Material, unreal.MaterialFactoryNew())
-    # placed by the PCG spawners: instanced static meshes (set here so a cooked build has the shader permutation)
-    mat.set_editor_property("used_with_instanced_static_meshes", True)
+    _instanced_usage(mat)
     g = _G(mat)
     P = unreal.MaterialProperty
 
@@ -465,8 +476,13 @@ def build_signal(name, spec, directory=None):
     link(vl, ["PS", ""], pos, [""])
     wx = g.node(unreal.MaterialExpressionComponentMask, -1400, r=True, g=False, b=False, a=False)
     link(vi, ["PS", ""], wx, [""])
+    wy = g.node(unreal.MaterialExpressionComponentMask, -1400, r=False, g=True, b=False, a=False)
+    link(vi, ["PS", ""], wy, [""])
+    # along X when |x| > |y|: the transformed axis carries the instance's scale, so it is compared with its own other
+    # component, not with a fixed length -- any scale, and perpendicular heads never agree (the switch is at 45 deg)
     absx = op(unreal.MaterialExpressionAbs, -1250, wx)
-    along_x = op(unreal.MaterialExpressionSaturate, -950, op(unreal.MaterialExpressionMultiply, -1100, op(unreal.MaterialExpressionSubtract, -1250, absx, const_b=0.5), const_b=1000.0))
+    absy = op(unreal.MaterialExpressionAbs, -1250, wy)
+    along_x = op(unreal.MaterialExpressionSaturate, -950, op(unreal.MaterialExpressionMultiply, -1100, op(unreal.MaterialExpressionSubtract, -1175, absx, absy), const_b=1000.0))
     phase = g.node(unreal.MaterialExpressionScalarParameter, -1100, parameter_name="GreenAlongX", default_value=1.0)
     not_phase = op(unreal.MaterialExpressionOneMinus, -950, phase)
     green = g.lerp(-800, not_phase, "", phase, "", along_x, "")
@@ -601,7 +617,7 @@ def build_paint(name, spec, directory=None):
         _clear(mat)
     else:
         mat = H.asset_tools().create_asset(name, directory, unreal.Material, unreal.MaterialFactoryNew())
-    mat.set_editor_property("used_with_instanced_static_meshes", True)
+    _instanced_usage(mat)
     c = spec.get("color", (0.1, 0.1, 0.095))
     col = MEL.create_material_expression(mat, unreal.MaterialExpressionVectorParameter, -400, 0)
     col.set_editor_property("parameter_name", "Paint")
@@ -685,6 +701,7 @@ def build_window_glass(name="M_RammsWindowGlass", directory=None):
         mat = H.asset_tools().create_asset(name, directory, unreal.Material, unreal.MaterialFactoryNew())
     # two-sided: packs model window panes facing either way (their own glass is two-sided too)
     mat.set_editor_property("two_sided", True)
+    _instanced_usage(mat)   # on facade modules, which the spawners place as instances (pack kits are often Nanite)
 
     def node(cls, x, y, **props):
         e = MEL.create_material_expression(mat, cls, x, y)
@@ -710,7 +727,8 @@ def build_window_glass(name="M_RammsWindowGlass", directory=None):
 
 
 def build_surfaces():
-    """Create or refresh every surface material, the paint instances and the puddle decal. Returns {name: path or None}."""
+    """Create or refresh every surface material, the paint instances, the puddle decal and the window glass.
+    Returns {name: path or None}."""
     out = {}
     for name, spec in SURFACES.items():
         try:

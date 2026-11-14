@@ -254,8 +254,13 @@ MATERIAL_SETS = {
                          "MI_16_Round_Manhole_Cover_scolskp_4K_RM", "MI_17_Round_Manhole_Cover_scomxop_4K_RM"],
     "Decal.Sidewalk.Crack": ["MI_Cracks_01", "MI_Cracks_02", "MI_Cracks_03", "MI_Cracks_04", "MI_Crack01", "MI_Crack02"],
     "Decal.Stain": ["MI_decal_overlay_grime_01_RM", "Mi_Stain_01a", "MI_Stains"],
-    # (M_RammsPuddle: surfaces.build_puddle_decal, for when no pack has one)
-    "Decal.Puddle": ["MI_AsphaltPuddle01", "MI_AsphaltPuddle02", "MI_Puddle01", "MI_RoadPuddle01", "MI_RoadPuddle02", "M_RammsPuddle"],
+    "Decal.Puddle": ["MI_AsphaltPuddle01", "MI_AsphaltPuddle02", "MI_Puddle01", "MI_RoadPuddle01", "MI_RoadPuddle02"],
+}
+
+# Built-in stand-ins (under MATERIALS_DIR) for a material set none of whose MATERIAL_SETS names exists here: the
+# set takes them only then, so a palette built with the packs keeps exactly the packs' choices.
+MATERIAL_SET_FALLBACKS = {
+    "Decal.Puddle": ["M_RammsPuddle"],   # surfaces.build_puddle_decal
 }
 
 ACTOR_SLOTS = {
@@ -421,13 +426,31 @@ def kit_module_entry(mesh, kit, part):
     return e
 
 
-def packed_building_entry(cls_path):
+# A whole building's ground-floor modules -- the kit patterns' GF / GFDoor, in whatever case the pack spells them
+# (American City Packs has "groundFloor" as well as "GroundFloor") -- face its street fronts. The corner and
+# corner-end pieces (GroundFloorCorner*, GroundFloorCornerEnd*) do not match: they stand at the building's ends
+# whichever way it faces, so they would make any building look as if it wrapped a corner.
+_GF_PARTS = [(part, _re.compile(rx.pattern, _re.I)) for part, rx in FACADE_PATTERNS if part in ("GF", "GFDoor")]
+
+
+def _ground_floor_part(name):
+    """"GF" or "GFDoor" for a whole building's ground-floor module (by mesh name), else None."""
+    for part, rx in _GF_PARTS:
+        if rx.match(name):
+            return part
+    return None
+
+
+def packed_building_entry(cls_path, decor=None, stats=None):
     """A whole building from a packed-level-actor blueprint (its modules instanced): every instance one part, the
     front -- the side its ground-floor modules face at yaw 0, +Y in the blueprint -- turned to +X of the facing
     frame, the facade line (not a cornice's overhang) on the front of the footprint, centred across it, the base
-    on the ground. Returns (entry, corner): corner "Neg" / "Pos" when its ground floor also wraps the end that ends
-    up on the facing frame's -Y / +Y side (a corner building's cross-street face), else None; (None, None) when
-    the blueprint cannot be spawned or has no front."""
+    on the ground, the entrance at the front door module nearest the middle (its bounds centre). The parts are
+    the building's only collision: each mesh is made solid (_ensure_collision) unless `decor(mesh path)` says it
+    is decoration (packs.base.Pack.building_decor); `stats` (a dict) collects those in "decor_meshes" (a set).
+    Returns (entry, corner): corner "Neg" / "Pos" when its ground floor also wraps the end that ends up on the
+    facing frame's -Y / +Y side (a corner building's cross-street face), else None; (None, None) when the
+    blueprint cannot be spawned or has no front."""
     import statistics
     cls = unreal.load_class(None, cls_path)
     if cls is None:
@@ -444,11 +467,16 @@ def packed_building_entry(cls_path):
             mesh = c.get_editor_property("static_mesh")
             if mesh is None:
                 continue
-            _ensure_collision(mesh, "Building")
+            if decor is not None and decor(mesh.get_path_name()):
+                if stats is not None:
+                    stats.setdefault("decor_meshes", set()).add(mesh.get_path_name())
+            else:
+                _ensure_collision(mesh, "Building")
             bb = mesh.get_bounding_box()
+            centre = unreal.Vector((bb.min.x + bb.max.x) * 0.5, (bb.min.y + bb.max.y) * 0.5, (bb.min.z + bb.max.z) * 0.5)
             mats = [c.get_material(k) for k in range(c.get_num_materials())]
             mats = mats if mats and all(m is not None for m in mats) else []
-            name = mesh.get_name()
+            gf = _ground_floor_part(mesh.get_name())
             for i in range(c.get_instance_count()):
                 t = c.get_instance_transform(i, True)
                 rel = unreal.Transform(t.translation - base, t.rotation.rotator(), t.scale3d)
@@ -461,13 +489,15 @@ def packed_building_entry(cls_path):
                     w = t.transform_location(unreal.Vector(bb.max.x if k & 1 else bb.min.x, bb.max.y if k & 2 else bb.min.y, bb.max.z if k & 4 else bb.min.z)) - base
                     for d, v in enumerate((w.x, w.y, w.z)):
                         lo[d], hi[d] = min(lo[d], v), max(hi[d], v)
-                if "GroundFloor" in name:
-                    yaw = round(t.rotation.rotator().yaw)
-                    yaws.add(((yaw + 180) % 360) - 180)
+                if gf:
+                    yaw = ((round(t.rotation.rotator().yaw) + 180) % 360) - 180
+                    yaws.add(yaw)
                     if yaw == 0:
+                        # the module's pivot is on the facade plane (the kits' convention), at the start of its run
                         front_y.append(t.translation.y - base.y)
-                        if "_door" in name.lower():
-                            doors.append(t.translation.x - base.x)
+                        if gf == "GFDoor":
+                            # the door is in the middle of its module, not at the pivot
+                            doors.append(t.transform_location(centre).x - base.x)
     finally:
         eas.destroy_actor(actor)
     if not parts or not front_y:
@@ -490,32 +520,69 @@ def packed_building_entry(cls_path):
         e.set_editor_property("entrance_offset_y", cx - door)
     e.set_editor_property("source_id", cls_path.rsplit(".", 1)[0])
     corner = None
-    if yaws not in ({-180, -90, 0, 90},):
+    # (a building fronted on all four sides stands free: no hand)
+    if yaws != {-180, -90, 0, 90}:
         corner = "Neg" if -90 in yaws else ("Pos" if 90 in yaws else None)
     return e, corner
 
 
-def build_building_slots(pal, pack):
+def collision_records():
+    """What the pack-asset collision policy in _ensure_collision has recorded so far, as lists:
+    "modified_pack_assets" (MODIFIED_PACK_ASSETS, the pack meshes it changed) and "missing_collision"
+    (MISSING_COLLISION, those it only reported, with FIX_PACK_COLLISION off). Empty where there is no record."""
+    out = {}
+    for attr, key in (("MODIFIED_PACK_ASSETS", "modified_pack_assets"), ("MISSING_COLLISION", "missing_collision")):
+        rec = globals().get(attr)
+        out[key] = list(rec) if rec is not None else []
+    return out
+
+
+def collision_since(before):
+    """The collision records added since `before` (a collision_records() snapshot), for one build's report; all of
+    them when the records were reset in between."""
+    out = {}
+    for key, rec in collision_records().items():
+        old = before.get(key, [])
+        out[key] = rec[len(old):] if rec[:len(old)] == old else rec
+    return out
+
+
+def build_building_slots(pal, pack, report=None):
     """A pack's whole buildings (packs.base.Pack.buildings) as Building.Downtown / Building.CornerNeg / CornerPos
-    composites. Returns {slot: count}."""
+    composites, added to those slots. Returns {slot: count}. With `report` (a recipe report), what was skipped goes
+    to report["skipped"] and the pack meshes the parts' collision touched (or would have) to
+    report["building_collision"][pack name], with the number of decorative meshes left without collision."""
     got = {}
+    before = collision_records()
+    stats = {"decor_meshes": set()}
+    skipped = report.setdefault("skipped", []) if report is not None else []
+
+    def skip(msg):
+        H.warn(msg)
+        skipped.append(msg)
+
     for kind, paths in pack.buildings.items():
         for path in paths:
             full = pack.abs_path(path)
             cls_path = full if "." in full.rsplit("/", 1)[-1] else "%s.%s_C" % (full, full.rsplit("/", 1)[-1])
             try:
-                e, corner = packed_building_entry(cls_path)
+                e, corner = packed_building_entry(cls_path, decor=pack.is_building_decor, stats=stats)
             except Exception as exc:  # noqa: BLE001
-                H.warn("building %s: %s" % (cls_path, exc))
+                skip("building %s: %s" % (cls_path, exc))
                 continue
             if e is None:
-                H.warn("building %s: no front found" % cls_path)
+                skip("building %s: not spawned, or no ground-floor front found" % cls_path)
                 continue
-            slot = "Building.Corner" + corner if (kind == "DowntownCorner" and corner) else "Building.Downtown"
             if kind == "DowntownCorner" and not corner:
+                skip("building %s: listed as a corner building, but its ground floor wraps neither end" % cls_path)
                 continue
+            slot = "Building.Corner" + corner if kind == "DowntownCorner" else "Building.Downtown"
             pal.add_mesh(unreal.Name(slot), e)
             got[slot] = got.get(slot, 0) + 1
+    if report is not None:
+        col = collision_since(before)
+        col["decor_meshes"] = len(stats["decor_meshes"])
+        report.setdefault("building_collision", {})[pack.name] = col
     return got
 
 
@@ -524,10 +591,11 @@ def _pack_ref(path):
     return Ref(path)
 
 
-def build_kit_slots(pal, pack, kit):
+def build_kit_slots(pal, pack, kit, skipped=None):
     """A pack's kit as the facade style kit.style: its role slots ("Facade.<style>.<Role>") and its kit info.
-    Returns {role: count}; nothing when its GF or Win role finds no mesh."""
-    entries = {role: [kit_module_entry(m, kit, part) for m, part in pack.kit_meshes(kit, role)] for role in kit.roles}
+    Returns {role: count}; nothing when its GF or Win role finds no mesh. Paths naming an asset of the wrong class
+    are noted in `skipped` (a list)."""
+    entries = {role: [kit_module_entry(m, kit, part) for m, part in pack.kit_meshes(kit, role, skipped)] for role in kit.roles}
     if not entries.get("GF") or not entries.get("Win"):
         return {}
     for role, es in entries.items():
@@ -540,7 +608,7 @@ def build_kit_slots(pal, pack, kit):
     for cat in sorted({c for _rx, c in kit.materials}):
         mats = []
         for path in kit.material_sets.get(cat, []):
-            mats += [m for m in pack.resolve(_pack_ref(path), ("MaterialInstanceConstant", "Material"))]
+            mats += [m for m in pack.resolve(_pack_ref(path), ("MaterialInstanceConstant", "Material"), skipped)]
         if not mats and cat == "Glass":
             from . import surfaces
             gp = surfaces.DIR + "/M_RammsWindowGlass"
@@ -1045,7 +1113,9 @@ def _ensure_solid_material(name, rgb, roughness, metallic):
 
 def set_collection_values(pal, packs):
     """Set the palette's CollectionValues from its packs' collection_values (installed packs only; a later pack's
-    value for the same parameter wins). Returns {"<collection>:<parameter>": value}."""
+    value for the same parameter of the same collection wins). Collections are told apart by path: two packs'
+    same-named collections (MPC_Emissive, MPC_Wind...) are different assets. Returns
+    {"<collection path>:<parameter>": value}."""
     vals = {}
     for pack in packs:
         if not pack.installed():
@@ -1058,7 +1128,7 @@ def set_collection_values(pal, packs):
             v.set_editor_property("collection", coll)
             v.set_editor_property("parameter", unreal.Name(param))
             v.set_editor_property("value", value)
-            vals[(coll.get_name(), param)] = v
+            vals[(coll.get_path_name().split(".", 1)[0], param)] = v
     pal.set_editor_property("collection_values", list(vals.values()))
     return {"%s:%s" % k: v.get_editor_property("value") for k, v in vals.items()}
 
@@ -1137,6 +1207,10 @@ def build_default_palette(path=DEFAULT_PALETTE):
         mats = [m for m in mats if m is not None]
         if slot.startswith("Decal."):
             mats = [m for m in mats if _is_decal(m)]
+        if not mats:
+            fallback = [MATERIALS_DIR + "/" + n for n in MATERIAL_SET_FALLBACKS.get(slot, [])]
+            mats = [H.EAL.load_asset(p) for p in fallback if H.EAL.does_asset_exist(p)]
+            mats = [m for m in mats if m is not None and (not slot.startswith("Decal.") or _is_decal(m))]
         for m in mats:
             pal.add_material(slot, m)
         report["material_sets"][slot] = [m.get_name() for m in mats]

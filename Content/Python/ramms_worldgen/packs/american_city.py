@@ -34,6 +34,12 @@ PACK = Pack(
         "Downtown": [G + "BPP_Building_DT_0%d" % n for n in (1, 2, 3, 4, 5, 7)],
         "DowntownCorner": [G + "BPP_BuildingCorner_DT_0%d" % n for n in range(1, 7)],
     },
+    # The buildings' trim strips along the floor lines (Borders) and what is hung on their walls (AddedElements:
+    # window and door ornaments, grills, lamps, awnings, fire escapes, rooftop AC units) are placed without
+    # collision: they lie on or stand off walls that are solid already (GroundFloor / SimpleFloors / Top), and
+    # what stands well off a wall is above a wheelchair's reach (awnings, fire escapes) or on the roof. The
+    # sensors still see them (they trace render geometry), and those pack meshes are left as shipped.
+    building_decor=["Geometry/Borders", "Geometry/AddedElements"],
     # Its window and background-building materials glow by MPC_Emissive's "Building Emissive Intensity", which the
     # pack ships at 800: night, which blows every window out to white in daylight. 10 leaves a faint interior.
     collection_values=[("MasterMaterials/MaterialParameterCollections/MPC_Emissive", "Building Emissive Intensity", 10.0)],
