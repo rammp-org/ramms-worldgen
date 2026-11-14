@@ -757,6 +757,42 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 		}
 	}
 
+	// --- traffic records (ramms_worldgen.traffic lays the vehicle lanes from them) ----------------------------------
+	// Records only, appended after everything else (no Rng draws, own seeds): nothing placed changes. One Road per
+	// live segment: its centre on the centreline at road level, yaw 0 along X / 90 along Y, size.x the length between
+	// the intersection squares, size.y the road width (also Measure). One Intersection per node a live segment
+	// touches: the square at road level, Measure the number of segments meeting there, subtype Cross (4), Tee (3),
+	// Through or Bend (2), End (1).
+	{
+		int32 TrafficRecord = 0;
+		for (const FSeg& Sg : Segs)
+		{
+			if (!Sg.bLive) { continue; }
+			const double SegA = Sg.bAlongX ? X[Sg.I] : Y[Sg.J];
+			const double SegB = Sg.bAlongX ? X[Sg.I + 1] : Y[Sg.J + 1];
+			const double SegAcross = Sg.bAlongX ? Y[Sg.J] : X[Sg.I];
+			const FVector RoadCentre = Sg.bAlongX ? FVector((SegA + SegB) * 0.5, SegAcross, Zr) : FVector(SegAcross, (SegA + SegB) * 0.5, Zr);
+			const int32 f = Features.AddBox(RoadCentre, Sg.bAlongX ? 0.0 : 90.0, FVector(SegB - SegA - RW, RW, 1.0), RammsPCG::SubSeed(Seed, 900000 + TrafficRecord++));
+			RammsPCG::WriteManifest(Features, f, FName(TEXT("Road")), Sg.bAlongX ? FName(TEXT("AlongX")) : FName(TEXT("AlongY")), true, ERammsComplianceIssue::None, RW, 0.0);
+		}
+		for (int32 j = 0; j < NY; ++j)
+		{
+			for (int32 i = 0; i < NX; ++i)
+			{
+				const bool bWest = i > 0 && Segs[SegIndexX(i - 1, j)].bLive;
+				const bool bEast = i + 1 < NX && Segs[SegIndexX(i, j)].bLive;
+				const bool bSouth = j > 0 && Segs[SegIndexY(i, j - 1)].bLive;
+				const bool bNorth = j + 1 < NY && Segs[SegIndexY(i, j)].bLive;
+				const int32 Arms = (bWest ? 1 : 0) + (bEast ? 1 : 0) + (bSouth ? 1 : 0) + (bNorth ? 1 : 0);
+				if (Arms == 0) { continue; }
+				const TCHAR* Kind = Arms >= 4 ? TEXT("Cross") : Arms == 3 ? TEXT("Tee") : Arms == 1 ? TEXT("End") : ((bWest && bEast) || (bSouth && bNorth)) ? TEXT("Through") : TEXT("Bend");
+				const int32 f = Features.AddBox(FVector(X[i], Y[j], Zr), 0.0, FVector(RW, RW, 1.0), RammsPCG::SubSeed(Seed, 900000 + TrafficRecord++));
+				RammsPCG::WriteManifest(Features, f, FName(TEXT("Intersection")), FName(Kind), true, ERammsComplianceIssue::None, Arms, 0.0);
+			}
+		}
+	}
+	// --- end traffic records ------------------------------------------------------------------------------------------
+
 	Primitives.Emit(Context, RammsPCG::PinPrimitives, { TEXT("Street") });
 	Props.Emit(Context, RammsPCG::PinProps, { TEXT("Curb") });
 	Pieces.Emit(Context, RammsPCG::PinPieces, { TEXT("Street") });

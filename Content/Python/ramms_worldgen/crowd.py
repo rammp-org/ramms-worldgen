@@ -27,6 +27,12 @@ ARammsCrowdSpawner in ZoneGraphLanes mode is placed with /Game/NPCs/DA_CrowdAgen
 
 Every actor made here carries the tag RammsCrowd and sits in the WorldGen/Crowd outliner folder, so a
 rebuild replaces it.
+
+Street crossings are tagged CROSSING_TAG (an actor tag). On a level with traffic (traffic.py) the crossings at its
+signalized intersections also get the ZoneGraph tag Crossing (tag_crossings; MassCrowd's CrossingTag): MassCrowd
+closes those lanes, the traffic signal clock opens them for Walk, and walkers wait at the curb meanwhile. Other
+crossings (mid-block, all-way stops, every crossing of a level without traffic) never carry it: there the crowd
+walks when it likes and the cars yield.
 """
 import math
 
@@ -1010,9 +1016,55 @@ def check_lane_levels(world=None, curb_height=None, step=25.0):
     return bad
 
 
-def build_crowd(gen, count=None):
+SIGNALIZED_ACTOR_TAG = "RammsTrafficSignalized"   # traffic.py's tag on the shapes of signalized intersections
+CROSSING_ZG_TAG = "Crossing"                       # ZoneGraph tag (MassCrowd's CrossingTag): a lane a signal opens and closes
+
+
+def _signalized_areas():
+    """[(x, y, radius)] around every signalized intersection traffic.py laid in the level (none without traffic)."""
+    out = []
+    for a in unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors():
+        if isinstance(a, unreal.ZoneShape) and a.actor_has_tag(SIGNALIZED_ACTOR_TAG):
+            o, e = a.get_actor_bounds(False)
+            out.append((o.x, o.y, max(e.x, e.y) + 300.0))
+    return out
+
+
+def tag_crossings(areas=None, tag=CROSSING_ZG_TAG):
+    """Give the crowd's street-crossing shapes (actor tag CROSSING_TAG) whose middle lies in one of `areas`
+    [(x, y, radius)] the ZoneGraph tag `tag`, and take it off the others. MassCrowd closes a crossing lane with that
+    tag until something opens it -- the traffic signal clock does, for Walk -- so only crossings a signal controls
+    may carry it. `areas` None: the signalized intersections in the level. Takes effect when the ZoneGraph is
+    rebuilt. Returns how many shapes carry the tag."""
+    areas = _signalized_areas() if areas is None else list(areas)
+    lib = unreal.RammsCrowdZoneGraphLibrary
+    if not hasattr(lib, "set_zone_shape_tags"):
+        if areas:
+            H.warn("crowd: RammsCrowdZoneGraphLibrary.set_zone_shape_tags missing (rebuild RammsCrowd); crossings not tied to the signals")
+        return 0
+    tagged = 0
+    for a in unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors():
+        if not isinstance(a, unreal.ZoneShape) or not a.actor_has_tag(TAG) or not a.actor_has_tag(CROSSING_TAG):
+            continue
+        comp = a.get_component_by_class(unreal.ZoneShapeComponent)
+        P = [p.position for p in comp.get_editor_property("points")]
+        if not P:
+            continue
+        mx, my = sum(p.x for p in P) / len(P), sum(p.y for p in P) / len(P)
+        if any(math.hypot(mx - x, my - y) < r for x, y, r in areas):
+            lib.set_zone_shape_tags(comp, [unreal.Name(tag)], True)
+            tagged += 1
+        else:
+            lib.remove_zone_shape_tags(comp, [unreal.Name(tag)])
+        lib.update_zone_shape(comp)
+    return tagged
+
+
+def build_crowd(gen, count=None, signal_crossings=None):
     """Lay ZoneGraph lanes along the generated level's routes, rebuild the ZoneGraph and place a crowd
-    spawner. Returns a summary dict. Editor only; the caller saves the level."""
+    spawner. Street crossings at signalized intersections (`signal_crossings` [(x, y, radius)]; None: those
+    traffic.py laid in the level, if any) get the ZoneGraph Crossing tag, so they wait for the signal clock's Walk.
+    Returns a summary dict. Editor only; the caller saves the level."""
     m = H.manifest_to_dict(gen)
     routes = m.get("routes", [])
     removed = _clear()
@@ -1036,6 +1088,8 @@ def build_crowd(gen, count=None):
         par[_root(a)] = _root(b)
     cleared["components"] = len({_root(n) for n in range(len(g.nodes)) if g.degree(n) > 0})
     shapes, lane_cm = _emit(g, kind, world, "Crowd")
+    areas = _signalized_areas() if signal_crossings is None else list(signal_crossings)
+    signal_tagged = tag_crossings(areas) if (areas and not indoor) else 0
     unreal.RammsCrowdZoneGraphLibrary.rebuild_zone_graph()
     for a in unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors():
         if isinstance(a, unreal.ZoneGraphData):
@@ -1070,6 +1124,7 @@ def build_crowd(gen, count=None):
     res = {"cleared": cleared, "blocked_lane_segments": bad_lane, "blocked_junction_edges": bad_poly, "blocked": list(BLOCKED[:10]), "shapes": shapes, "nodes": len(g.nodes), "edges": len(g.edges), "lane_m": round(lane_cm / 100.0),
            "count": count if spawner else 0, "removed": removed, "indoor": indoor,
            "crosswalks": getattr(g, "crosswalks", 0), "crosswalks_unmatched": getattr(g, "crosswalks_unmatched", 0),
+           "signal_crossings": signal_tagged,
            "curb_height": curb, "off_level_lane_samples": off_level, "off_level": list(OFF_LEVEL[:10])}
     H.log("crowd: %s" % res)
     return res

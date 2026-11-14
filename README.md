@@ -67,6 +67,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
   - [Articulated SimReady assets in MuJoCo](#articulated-simready-assets-in-mujoco)
   - [Articulated SimReady assets in generated levels](#articulated-simready-assets-in-generated-levels)
   - [Hinged doors and ceilings](#hinged-doors-and-ceilings)
+- [Traffic (RammsCrowd)](#traffic-rammscrowd)
 - [Design notes and limits](#design-notes-and-limits)
 - [First-compile checklist](#first-compile-checklist)
 
@@ -202,7 +203,7 @@ The in-editor MCP server (see the project README) lists the toolset
 | `worldgen_export_manifest` | Write the manifest JSON |
 | `worldgen_place_player_start` | PlayerStart to the suggested start |
 | `worldgen_build_assets` | Rebuild palette / presets / graphs from code |
-| `worldgen_build_level` | Create an example level (`downtown`, `suburban`, `park`, `indoor`, `office`, `mainstreet`, `store`) |
+| `worldgen_build_level` | Create an example level (`downtown`, `suburban`, `park`, `indoor`, `office`, `mainstreet`, `store`; recipe-built `dense_downtown`, `traffic`) |
 
 A typical session: `worldgen_list_presets` → `worldgen_generate(preset="PRE_Downtown", seed=7)`
 → poll `worldgen_status` → `worldgen_manifest(only_non_compliant=true)` →
@@ -318,6 +319,8 @@ Kinds and the issues they can carry:
 | `Path`, `Driveway`, `Vehicle`, `CarPark` | FrontWalk / Concrete / Parked, Driveway, CarPark / SingleRow, DoubleRow, MultiRow | — |
 | `CheckoutLane` | Standard, Narrow (store checkouts; measure = lane width) | ClearWidthBelowMinimum |
 | `Tree`, `Shrub`, `Prop` (lots) | StreetTree, Canopy / Foundation / Mailbox, StreetLight | — |
+| `Road` | AlongX, AlongY (a live street segment, recorded for the traffic: location on its centreline at road level, size.x = length between the intersection squares, size.y = width = measure) | — |
+| `Intersection` | Cross, Tee, Through, Bend, End (a node live segments meet at: location its centre at road level, size = the square, measure = how many segments meet) | — |
 
 `measure` / `threshold` are the number that decided it (slope as rise/run,
 widths and heights in cm) and what it was compared to.
@@ -856,8 +859,10 @@ URLab cannot replace-import a Blueprint.
   `surfaces.build_signal` (the pack's maps on the heads and sign, paint
   elsewhere; lamps lit from the lens geometry; the pedestrian head's icon
   projected onto its panel) and `build_paint` on the arm. Every signal in a
-  level shows one phase - heads facing nearer world X green, nearer Y red
-  (`GreenAlongX` flips it) - and each pedestrian head the opposite. Camden
+  level shows one phase by the axis its heads face: on a level with traffic the
+  signal clock cycles it (amber and walk / don't walk included, see "Traffic"),
+  otherwise heads facing nearer world X are green, nearer Y red, and each
+  pedestrian head the opposite. Camden
   Market's pole signal cycles on its own timer, so the recipe leaves it out.
 - **Pack look controls** (palette `CollectionValues`): scalars of a pack's
   material parameter collections, set in the world by the generator (on
@@ -1000,6 +1005,50 @@ of lane outdoors, per 8 m indoors). Everything sits in the `WorldGen/Crowd`
 outliner folder with the tag `RammsCrowd`, so a rebuild replaces it. The
 ZoneGraph is built in the editor, so the crowd comes with levels generated
 and saved there (the example levels), not with runtime regeneration.
+
+## Traffic (RammsCrowd)
+
+Moving cars on the generated streets, with RammsCrowd's lightweight Mass traffic (its README, "Traffic").
+`ramms_worldgen.traffic.build_traffic` (run by `levels.finish_level` after the crowd on a traffic level) turns the
+street network's `Road` and `Intersection` manifest records into ZoneGraph vehicle lanes:
+
+- each road segment becomes a spline `ZoneShape` on the `VehicleLanes` profile (2 x 320 cm, lane centres 160 cm
+  off the centreline: room beside the parked cars of an 11 m street; `VehicleLanesNarrow`, 2 x 250 cm, on roads
+  under 10 m), right-hand traffic, from the stop line at one end to the stop line at the other. It is sampled
+  every 1.5 m onto the generated road surface, each sample traced from the previous one's height, so the lanes
+  follow grades, crowns and humps; the cars also trace their axles near the robot.
+- each intersection becomes a polygon `ZoneShape`: a lane-profile entry on every arm at its stop line (70 cm
+  beyond the arm's crosswalk, where the street network paints it; 1.5 m beyond the square without one), the
+  outline along the arms' curb lines and round the square's corners, arc routing with an inner radius that puts a
+  right turn's centre on the curb corner (and a left turn's near the opposite one). ZoneGraph adds the turning
+  lanes, never back the way they came. Three- and four-way intersections carry the ZoneGraph tag `Intersection`
+  (all-way stop), and `Signalized` too when a `TrafficSignal` record stands at their corners (the corner signals
+  of `StreetRules`); a two-road bend is a plain polygon (free flow).
+- the crowd's street crossings at the signalized intersections get the ZoneGraph tag `Crossing`
+  (`crowd.tag_crossings`; `build_crowd` does it too when the level already has traffic): MassCrowd closes them
+  until the signal clock opens them for Walk, and the crowd waits at the curb. Mid-block crossings and crossings
+  at all-way stops stay open; the cars yield there.
+- an `ARammsTrafficSignalClock` (one phase for every signal: 20 s green, 3.5 s amber, 1.5 s all red per axis;
+  Walk with the parallel green, then 8 s of Flashing Don't Walk) reading `/Game/WorldGen/Traffic/MPC_RammsTrafficSignals`
+  (built by `traffic.signal_collection()`), and an `ARammsTrafficSpawner` with the palette's `Car` meshes (their
+  palette offsets: cars face the way they drive), about one car per 45 m of lane (6..60), speed limit 10 m/s, the
+  generator's seed.
+
+The traffic signal material (`surfaces.build_signal`, built into a recipe's folder) reads the clock's collection:
+per head axis `GreenX` / `AmberX` / `RedX` (heads facing nearer world X) and `...Y`, and `WalkX` / `HandX`,
+`WalkY` / `HandY` for the pedestrian heads on those poles. Its resting values are the old fixed look (X green, Y
+red), so a level without a clock looks as before; a signal material built outside `/Game` keeps the `GreenAlongX`
+scalar. Downtown West's amber lens positions are estimated (between the red and green lenses). After pulling this,
+`build_all.build("traffic")` builds the collection and rebuilds the recipes' signal materials.
+
+`levels.build_level("traffic")` makes `/Game/WorldGen/Maps/Map_Gen_Traffic` (`PRE_DowntownTraffic`, Downtown recipe,
+seed 21): the dense downtown with 11 m streets, a 120 m site and signals. Any street level gets traffic with
+`build_level(kind, traffic=True)` or `traffic.build_traffic(gen)` after `crowd.build_crowd(gen)`; `build_traffic`'s
+summary lists the intersections (signalized, all-way stop, bends), lane metres, cars, tagged crossings and
+`parked_in_lane`: parked cars a moving car would brush (an 8 m street with parking on both sides has no room for
+two lanes, which is why the dense downtown preset stays without traffic). Everything sits in the `WorldGen/Traffic`
+outliner folder with the tag `RammsTraffic`. Not yet: MuJoCo does not see the cars, no per-intersection signal
+offsets, wheels do not turn.
 
 ## Design notes and limits
 

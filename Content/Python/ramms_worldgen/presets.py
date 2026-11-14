@@ -43,6 +43,21 @@ PRESETS = {
              # facing their traffic, signals at the corners) and street litter
              StreetRules=True, LitterDensity=8.0),
     ),
+    "PRE_DowntownTraffic": (
+        unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+        "The dense downtown with moving traffic (levels 'traffic'): 11 m streets (two traffic lanes between the "
+        "parked cars), a larger site with more intersections, signals at the corners. traffic.py lays the vehicle "
+        "lanes and places the signal clock and the cars after generation.",
+        dict(SiteSizeX=12000.0, SiteSizeY=12000.0, NonCompliance=0.15,
+             BlockSizeMin=3600.0, BlockSizeMax=5200.0, RoadWidth=1100.0, SidewalkWidth=300.0, FurnitureZoneWidth=100.0,
+             StreetJitter=0.2, StreetDropout=0.0, MidblockCrossingChance=0.25, CrosswalkWidth=300.0,
+             LotWidthMin=800.0, LotWidthMax=1600.0, SetbackMin=0.0, SetbackMax=0.0, FloorsMin=3, FloorsMax=8,
+             FloorHeight=380.0, LotCoverage=0.95, EntranceStepChance=0.35, EntranceRampChance=0.6, WindowSpacing=300.0, RearParkingChance=0.0,
+             PropDensity=10.0, HazardDensity=5.0, TreeSpacing=800.0, HazardIntrusionChance=0.5, ParkFraction=0.0,
+             ParkingDensity=0.6, CanopyChance=0.25, StreetLightSpacing=1800.0, DecalDensity=8.0, GrassDensity=0.9,
+             FacadeStyles="dt01,dt02,dt03,dwba,dwbb,dwcafe,dwd,dwe,dwf,cmpub,cmres,cmind",
+             WholeBuildingChance=0.3, StreetRules=True, LitterDensity=8.0),
+    ),
     "PRE_Suburban": (
         unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,
         "Residential streets: long blocks, sidewalks behind a grass planting strip with street trees (some streets "
