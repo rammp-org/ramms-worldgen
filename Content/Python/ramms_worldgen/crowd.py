@@ -49,6 +49,7 @@ LANE_PROFILES = {
 }
 AGENT_RADIUS = 30.0     # a little under the profile's 35 cm: agents brush past a door jamb rather than refuse it
 CELL = 25.0             # clearance grid for rerouting a lane around furniture and props
+LEVEL_TOL = 8.0         # a detour of a run on one walking level stays within this of it (cm): not down a curb
 
 
 # --- geometry -------------------------------------------------------------------------------------
@@ -343,6 +344,7 @@ class _Clearance:
 
     def __init__(self, world):
         self.world = world
+        self.level_tol = None   # set while rerouting a run that keeps to one level: the ground must stay at it
         self.cache = {}
         self.types = [unreal.ObjectTypeQuery.OBJECT_TYPE_QUERY1, unreal.ObjectTypeQuery.OBJECT_TYPE_QUERY2]
         self.calls = 0
@@ -350,7 +352,8 @@ class _Clearance:
     def free(self, x, y, z, r):
         # Cached at 5 cm, not the 25 cm search grid: a doorway is only ~8 cm wider than a person, and
         # snapping a test point to the grid would close it.
-        key = (int(round(x / 5.0)), int(round(y / 5.0)), int(round(z / 20.0)), int(r))
+        lvl = self.level_tol
+        key = (int(round(x / 5.0)), int(round(y / 5.0)), int(round(z / 20.0)), int(r), lvl is not None)
         hit = self.cache.get(key)
         if hit is None:
             self.calls += 1
@@ -363,6 +366,11 @@ class _Clearance:
             if isinstance(res, tuple):
                 res = res[-1] if res and res[0] else None
             hit = bool(res)
+            if not hit and lvl is not None:
+                # The capsule starts 30 cm up, so a curb's 15 cm drop into the road reads as free: on a run that
+                # keeps to one level, ground off that level (or none) blocks too.
+                g = _trace_down(self.world, cx, cy, z)
+                hit = g is None or abs(g - z) > lvl
             self.cache[key] = hit
         return not hit
 
@@ -387,6 +395,25 @@ class _Clearance:
                 if d <= reach and (best is None or d < best[0]) and self.free(q[0], q[1], z, r):
                     best = (d, q)
         return best[1] if best else None
+
+
+def _on_level(world, chain, za, zb, step=50.0):
+    """Does the run keep to one walking level (a sidewalk, a floor) along its straight line, rather than
+    going down to the road and back (a crossing)?"""
+    total = sum(_len(_sub(chain[i + 1], chain[i])) for i in range(len(chain) - 1)) or 1.0
+    done = 0.0
+    for i in range(len(chain) - 1):
+        a, b = chain[i], chain[i + 1]
+        d = _len(_sub(b, a))
+        n = max(1, int(d / step))
+        for j in range(n + 1):
+            t = j / n
+            z = za + (zb - za) * ((done + d * t) / total)
+            g = _ground_z(world, a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, z)
+            if abs(g - z) > LEVEL_TOL:
+                return False
+        done += d
+    return True
 
 
 def _astar(clr, a, b, za, zb, r, margin):
@@ -553,6 +580,9 @@ def _clear_lanes(g, world, lane_half, indoor):
             if all(clr.segment_free(chain[i], chain[i + 1], za, zb, 15.0) for i in segs):
                 continue
         ok_min = all(clr.segment_free(chain[i], chain[i + 1], za, zb, r_min) for i in segs)
+        # A run on one level (a sidewalk) is rerouted on that level only: around a tree or a bench, not off the
+        # curb and down the street. A crossing, which goes down to the road by design, is not constrained.
+        clr.level_tol = LEVEL_TOL if (not indoor and _on_level(world, chain, za, zb)) else None
         path = _astar(clr, chain[0], chain[-1], za, zb, r_lane, margin)
         r_used = r_lane
         if path is None and not ok_min:
@@ -562,6 +592,7 @@ def _clear_lanes(g, world, lane_half, indoor):
             path = _astar(clr, chain[0], chain[-1], za, zb, 24.0, margin)
             r_used = 24.0
         if path is None:
+            clr.level_tol = None
             if ok_min:
                 continue            # tight but passable as laid out: keep it
             del g.edges[k]
@@ -569,6 +600,7 @@ def _clear_lanes(g, world, lane_half, indoor):
             stats.setdefault("dropped_runs", []).append([round(v) for v in chain[0] + chain[-1]])
             continue
         path = _pull(clr, path, za, zb, r_used)
+        clr.level_tol = None
         g.edges[k][2] = [(p[0], p[1], za + (zb - za) * (i / max(len(path) - 1, 1))) for i, p in enumerate(path[1:-1], 1)]
         stats["rerouted"] += 1
     stats["queries"] = clr.calls

@@ -138,6 +138,10 @@ def _norm(name):
 
 def material_kind(name, info):
     """"opaque" | "mask" | "glass" | "glass_tex" | "keep" for one glTF material's analysis."""
+    if info.get("alpha_mode") == "MASK" and "shadow" not in str(name).lower():
+        # glTF cut-outs (leaves, grilles). Interchange can bring them in translucent (colored transmittance), which
+        # neither casts nor receives proper shadows: a tree's canopy stays lit in a building's shade.
+        return "mask"
     if info.get("alpha_mode") != "BLEND" or "shadow" in str(name).lower():
         return "keep"       # opaque / masked already; baked contact-shadow cards stay as authored
     f = float(info.get("alpha_factor", 1.0))
@@ -457,14 +461,31 @@ def _mi_params(mi):
     return sc, ve, tx
 
 
+def _floor_cutout_roughness(mi, save=True):
+    """Cut-outs are leaves and grilles: a glossy one (some leaf exports carry roughness 0) turns into a dark
+    mirror in shade, a black canopy. Returns True when it raised the roughness."""
+    if float(_mi_params(mi)[0].get("RoughnessFactor", 1.0)) >= 0.5:
+        return False
+    mel = unreal.MaterialEditingLibrary
+    mel.set_material_instance_scalar_parameter_value(mi, "RoughnessFactor", 0.5)
+    if save:
+        mel.update_material_instance(mi)
+        H.EAL.save_loaded_asset(mi, False)
+    return True
+
+
 def _set_blend(mi, blend, alpha_mode):
     mel = unreal.MaterialEditingLibrary
     bo = mi.get_editor_property("base_property_overrides")
     bo.set_editor_property("override_blend_mode", True)
     bo.set_editor_property("blend_mode", blend)
     if blend == unreal.BlendMode.BLEND_MASKED:
+        # the asset's own glTF alphaCutoff where it has one (0.5 is the glTF default)
+        sc = _mi_params(mi)[0]
+        cut = sc.get("AlphaCutoff") or 0.0
         bo.set_editor_property("override_opacity_mask_clip_value", True)
-        bo.set_editor_property("opacity_mask_clip_value", 0.5)
+        bo.set_editor_property("opacity_mask_clip_value", float(cut) if 0.0 < cut < 1.0 else 0.5)
+        _floor_cutout_roughness(mi, save=False)
     mi.set_editor_property("base_property_overrides", bo)
     mel.set_material_instance_scalar_parameter_value(mi, "AlphaMode", float(alpha_mode))
     mel.update_material_instance(mi)
@@ -569,6 +590,8 @@ def fix_materials(mesh, item):
         blend = bo.get_editor_property("blend_mode") if bo.get_editor_property("override_blend_mode") else None
         kind = _decide(mi, info, item.get("uid", ""))
         if blend not in (unreal.BlendMode.BLEND_TRANSLUCENT, unreal.BlendMode.BLEND_TRANSLUCENT_COLORED_TRANSMITTANCE):
+            if blend == unreal.BlendMode.BLEND_MASKED and _floor_cutout_roughness(mi):
+                done["roughness"] = done.get("roughness", 0) + 1     # masked by an earlier build
             # Opaque as imported (or made opaque by an earlier build): only an override turns it into glass.
             if not (kind in ("glass", "glass_tex") and any(item.get("uid", "").startswith(p) and mi.get_name() in t
                                                            for p, t in MATERIAL_OVERRIDES.items())):

@@ -470,7 +470,9 @@ street-furniture, vehicle and hazard slots with far more variety than the Fab pa
      near-black base, Fresnel opacity) or `M_RammsGlassAtlas` for one texture holding glass and solid parts
      (masked; the glass texels dithered with glass roughness). `urbanverse.MATERIAL_OVERRIDES` covers
      panes the analysis cannot tell from opaque parts. Fully transparent helpers and baked shadow cards stay
-     as authored.
+     as authored. glTF `MASK` cut-outs (leaves) that Interchange brings in translucent are made masked at
+     their own `alphaCutoff`, so canopies cast and receive shadows, and a cut-out's roughness is held at
+     0.5 or more (some leaf exports carry 0, a dark mirror in shade).
    - Glass look per placement: both glass materials take `Frost` (0 clear .. 1 milky), `Bump` (0 flat .. 1
      rippled / patterned), `Tint`, `Roughness` and opacity parameters per material instance, and read six
      floats of per-instance custom data on top: frost offset, opacity multiplier, tint multiplier (RGB) and
@@ -843,7 +845,11 @@ tested with a person-sized capsule against everything that blocks (walls,
 furniture, shelving, props, cars); doorway crossings are straightened
 through the middle of the opening, run ends are nudged off furniture, and a
 run that hits something is rerouted around it on a 25 cm grid (A*, then
-string-pulled), or dropped when there is no way through. Junctions shrink to
+string-pulled), or dropped when there is no way through. A run along a
+sidewalk is rerouted on the sidewalk's own level (around a tree or a bench,
+never off the curb and down the street: the capsule starts 30 cm up, so the
+curb's drop would otherwise read as free); crossings, which go down to the
+road by design, are not constrained. Junctions shrink to
 fit the free space around them. `crowd.check_lanes()` audits a level
 (verify.py fails a level whose lanes touch geometry).
 
@@ -901,7 +907,8 @@ and saved there (the example levels), not with runtime regeneration.
 - Everything generated collides (block-all): the spawners' instances, and
   every palette mesh is given usable collision when the palette is built
   (its own simple shapes, else its triangles; a box around the trunk for
-  trees; none for grass and flowers). The palette builder edits and saves
+  trees, replacing any hull the mesh came with, since imports can wrap the whole
+  crown and block a sidewalk; none for grass and flowers). The palette builder edits and saves
   those pack meshes. Generated geometry is Unreal collision. The Chaos backend drives on it
   directly; the MuJoCo / Newton backends only know what URLab has imported, so
   a generated world is not yet visible to them.

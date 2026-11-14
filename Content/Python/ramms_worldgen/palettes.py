@@ -555,8 +555,9 @@ _COLLISION_DONE = set()
 def _ensure_collision(mesh, slot=""):
     """Make a palette mesh solid. The PCG spawners use BlockAll, but a mesh with no simple collision has no
     physics shape at all (pack props often ship that way): trees get a box around the trunk (so canopies
-    do not block), everything else collides against its own triangles (complex as simple). Edits the mesh
-    asset once per build; ground cover is left alone."""
+    do not block), everything else collides against its own triangles (complex as simple). A tree's own
+    simple collision is replaced too: imports (UrbanVerse GLBs) can arrive with a hull around the whole crown,
+    which blocks a sidewalk edge to edge. Edits the mesh asset once per build; ground cover is left alone."""
     if mesh is None or slot in NO_COLLISION_SLOTS:
         return
     path = mesh.get_path_name()
@@ -564,12 +565,15 @@ def _ensure_collision(mesh, slot=""):
         return
     _COLLISION_DONE.add(path)
     try:
+        tree = slot in TREE_SLOTS
         if unreal.EditorStaticMeshLibrary.get_simple_collision_count(mesh) > 0:
-            return
+            if not tree:
+                return
+            unreal.EditorStaticMeshLibrary.remove_collisions(mesh)
         bs = mesh.get_editor_property("body_setup")
         if bs is None:
             return
-        if slot in TREE_SLOTS:
+        if tree:
             t = _trunk_xy(mesh)
             if t is None:
                 return
