@@ -105,10 +105,14 @@ class Pack:
     surfaces: key -> a `surfaces._build` spec (bc / n / rma texture paths relative to the root or absolute,
         tile size, tint...): world-aligned ground and wall materials, built on demand into a recipe's
         material folder as M_<Recipe>_<key>.
+    collection_values: [(material parameter collection path, scalar parameter, value)]: global look controls the
+        pack's materials read, set in the world by the generator for any palette using the pack (e.g. a
+        daylight level for lit windows tuned for night).
     notes: free text (licence, scale quirks) shown in reports.
     """
 
-    def __init__(self, name, roots, meshes=None, material_sets=None, surfaces=None, kits=None, buildings=None, notes=""):
+    def __init__(self, name, roots, meshes=None, material_sets=None, surfaces=None, kits=None, buildings=None, notes="",
+                 collection_values=None):
         self.name = name
         self.roots = list(roots)
         self.meshes = {k: _refs(v) for k, v in (meshes or {}).items()}
@@ -117,6 +121,7 @@ class Pack:
         self.kits = list(kits or [])
         self.buildings = dict(buildings or {})
         self.notes = notes
+        self.collection_values = [(self.abs_path(c), p, float(v)) for c, p, v in (collection_values or [])]
 
     def installed(self):
         return any(EAL.does_directory_exist(r) for r in self.roots)

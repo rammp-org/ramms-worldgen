@@ -13,6 +13,8 @@
 #include "TimerManager.h"
 #include "HAL/FileManager.h"
 #include "JsonObjectConverter.h"
+#include "Kismet/KismetMaterialLibrary.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
@@ -81,11 +83,34 @@ void ARammsWorldGenerator::OnConstruction(const FTransform& Transform)
 	Super::OnConstruction(Transform);
 	EnsureBound();
 	ResolveParams();
+	ApplyCollectionValues();
+}
+
+void ARammsWorldGenerator::ApplyCollectionValues()
+{
+	if (!GetWorld() || HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+	{
+		return;
+	}
+	const URammsWorldPalette* Palette = Params.Palette.LoadSynchronous();
+	if (!Palette)
+	{
+		return;
+	}
+	for (const FRammsCollectionValue& V : Palette->CollectionValues)
+	{
+		if (UMaterialParameterCollection* Collection = V.Collection.LoadSynchronous())
+		{
+			UKismetMaterialLibrary::SetScalarParameterValue(this, Collection, V.Parameter, V.Value);
+		}
+	}
 }
 
 void ARammsWorldGenerator::BeginPlay()
 {
 	Super::BeginPlay();
+	// a play world starts from the collections' defaults
+	ApplyCollectionValues();
 	if (bRandomizeSeedOnBeginPlay)
 	{
 		Seed = FMath::Rand();
@@ -244,6 +269,7 @@ bool ARammsWorldGenerator::Regenerate()
 		return false;
 	}
 	ResolveParams();
+	ApplyCollectionValues();
 
 	UPCGGraphInterface* Graph = nullptr;
 	if (Preset && !Preset->Graph.IsNull())

@@ -847,6 +847,14 @@ URLab cannot replace-import a Blueprint.
   level shows one phase - heads facing along world X green, along Y red
   (`GreenAlongX` flips it) - and each pedestrian head the opposite. Camden
   Market's pole signal cycles on its own timer, so the recipe leaves it out.
+- **Pack look controls** (palette `CollectionValues`): scalars of a pack's
+  material parameter collections, set in the world by the generator (on
+  construction, Regenerate and BeginPlay: collection values live in the
+  world, not in assets). Packs declare them (`collection_values`); the default
+  palette and recipes carry their packs'. American City Packs' windows and
+  background towers glow by `MPC_Emissive`'s `Building Emissive Intensity`,
+  shipped at 800 (night: every window blown out in daylight); its daylight
+  value here is 10.
 - **Litter** (`LitterDensity`, per 100 m of side): leaves under the street
   trees, leaf drifts and trash in the gutter, manholes in the lanes and
   utility covers on the walk go out on the `Grass` pin (no collision:

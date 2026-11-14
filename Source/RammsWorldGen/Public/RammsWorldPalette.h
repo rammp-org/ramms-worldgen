@@ -140,6 +140,25 @@ struct RAMMSWORLDGEN_API FRammsFacadeKitInfo
 	float UpperMixChance = 0.0f;
 };
 
+/** A value for a scalar of a material parameter collection, set in the world when a level generates or loads: a
+ *  pack's global look controls, e.g. American City Packs' "Building Emissive Intensity" (its lit windows: 800 is
+ *  night; daylight wants ~10). Collection values live in the world, not in any asset, so the generator applies
+ *  them on construction, on Regenerate and at BeginPlay. */
+USTRUCT(BlueprintType)
+struct RAMMSWORLDGEN_API FRammsCollectionValue
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TSoftObjectPtr<class UMaterialParameterCollection> Collection;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	FName Parameter;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	float Value = 0.0f;
+};
+
 /** A semantic slot: what the generator asks for ("Bench", "Mat.Sidewalk",
  *  "Hazard.AFrame") rather than which asset answers. */
 USTRUCT(BlueprintType)
@@ -369,6 +388,11 @@ public:
 	/** Fallback material for any Mat.* slot the palette does not fill. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
 	TSoftObjectPtr<UMaterialInterface> DefaultMaterial;
+
+	/** Material parameter collection values the palette's packs need (FRammsCollectionValue), set in the world by
+	 *  the generator: e.g. the daylight level of American City Packs' lit windows. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")
+	TArray<FRammsCollectionValue> CollectionValues;
 
 	/** Facade styles from a pack's own kit, by style (FRammsFacadeKitInfo); the others are the original kits. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Palette")

@@ -1043,6 +1043,26 @@ def _ensure_solid_material(name, rgb, roughness, metallic):
     return mat
 
 
+def set_collection_values(pal, packs):
+    """Set the palette's CollectionValues from its packs' collection_values (installed packs only; a later pack's
+    value for the same parameter wins). Returns {"<collection>:<parameter>": value}."""
+    vals = {}
+    for pack in packs:
+        if not pack.installed():
+            continue
+        for coll_path, param, value in pack.collection_values:
+            coll = unreal.load_asset(coll_path)
+            if coll is None:
+                continue
+            v = unreal.RammsCollectionValue()
+            v.set_editor_property("collection", coll)
+            v.set_editor_property("parameter", unreal.Name(param))
+            v.set_editor_property("value", value)
+            vals[(coll.get_name(), param)] = v
+    pal.set_editor_property("collection_values", list(vals.values()))
+    return {"%s:%s" % k: v.get_editor_property("value") for k, v in vals.items()}
+
+
 def build_default_palette(path=DEFAULT_PALETTE):
     """Create or refresh the default palette. Returns (palette, report dict)."""
     _COLLISION_DONE.clear()   # a new build re-checks every mesh (an asset may have been re-imported since)
@@ -1144,6 +1164,9 @@ def build_default_palette(path=DEFAULT_PALETTE):
         else:
             report["missing"].append(slot)
 
+    # its downtown facade kits are American City Packs': their windows' daylight level
+    from . import packs as PK
+    report["collection_values"] = set_collection_values(pal, [PK.get("AmericanCityPacks")])
     H.save(pal)
     missing = [str(n) for n in pal.missing_well_known_slots()]
     report["still_empty"] = missing

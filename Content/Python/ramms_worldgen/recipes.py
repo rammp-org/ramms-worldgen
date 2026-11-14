@@ -251,6 +251,9 @@ def build(name, path=None, urbanverse_cache=None):
         if s.get_editor_property("material") is None:
             s.set_editor_property("material", puddle)
         pal.set_slot(unreal.Name("Decal.Puddle"), s)
+    # global look controls of the packs in use (American City Packs' too: the base's downtown kits are its)
+    used = ["AmericanCityPacks"] + [l[0] for l in recipe.get("layers", [])] + list(recipe.get("kits", [])) + list(recipe.get("buildings", []))
+    report["collection_values"] = P.set_collection_values(pal, [PK.get(n) for n in dict.fromkeys(used)])
     H.save(pal)
     H.log("recipe %s -> %s: %d layers, surfaces %s; skipped %s" % (name, path, len(report["layers"]), sorted(report["surfaces"]), report["skipped"]))
     return pal, report

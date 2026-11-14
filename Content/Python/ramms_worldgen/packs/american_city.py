@@ -34,6 +34,9 @@ PACK = Pack(
         "Downtown": [G + "BPP_Building_DT_0%d" % n for n in (1, 2, 3, 4, 5, 7)],
         "DowntownCorner": [G + "BPP_BuildingCorner_DT_0%d" % n for n in range(1, 7)],
     },
+    # Its window and background-building materials glow by MPC_Emissive's "Building Emissive Intensity", which the
+    # pack ships at 800: night, which blows every window out to white in daylight. 10 leaves a faint interior.
+    collection_values=[("MasterMaterials/MaterialParameterCollections/MPC_Emissive", "Building Emissive Intensity", 10.0)],
     material_sets={
         "Decal.Road.Crack": [D + "Cracks/MI_Cracks_0%d" % i for i in range(1, 5)],
         "Decal.Sidewalk.Crack": [D + "Cracks/MI_Cracks_0%d" % i for i in range(1, 5)],

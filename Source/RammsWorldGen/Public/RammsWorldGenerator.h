@@ -174,6 +174,8 @@ public:
 
 private:
 	void EnsureBound();
+	/** Set the palette's material parameter collection values (URammsWorldPalette::CollectionValues) in this world. */
+	void ApplyCollectionValues();
 	void HandleGenerated(UPCGComponent* Component);
 	void HandleCancelled(UPCGComponent* Component);
 	void BuildManifestFromOutput();
