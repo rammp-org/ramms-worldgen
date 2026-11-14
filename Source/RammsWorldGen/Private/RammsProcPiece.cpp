@@ -547,6 +547,11 @@ void ARammsProcPiece::ApplyCollision()
 	MeshComponent->UpdateCollision(false);
 }
 
+void ARammsProcPiece::AppendCollisionShapes(TArray<FRammsCollisionShape>& Out) const
+{
+	// Per kind: filled in by the exact-export work (existing kinds) and by each new kind as it is added.
+}
+
 FRammsManifestFeature ARammsProcPiece::ToManifestFeature() const
 {
 	FRammsManifestFeature F;

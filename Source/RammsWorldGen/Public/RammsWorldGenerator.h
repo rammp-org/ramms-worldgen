@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "RammsWorldGenTypes.h"
+#include "RammsCollisionShapes.h"
 #include "RammsWorldGenerator.generated.h"
 
 class UPCGComponent;
@@ -125,6 +126,15 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "World Generator")
 	FString GetManifestJson() const;
+
+	/** The generated world's collision as exact primitive shapes (RammsCollisionShapes.h): every procedural piece's
+	 *  (ARammsProcPiece::AppendCollisionShapes) plus the simple collision of every colliding instanced mesh. For
+	 *  physics engines that build their own world from it (MuJoCo). */
+	void GatherCollisionShapes(TArray<FRammsCollisionShape>& Out) const;
+
+	/** GatherCollisionShapes, counted by type and surface, as one line of text (for scripts and checks). */
+	UFUNCTION(BlueprintCallable, Category = "World Generator")
+	FString DescribeCollisionShapes() const;
 
 	/** Write the manifest JSON next to the project's Saved folder (or to AbsolutePath when given). Returns the path written. */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "World Generator")

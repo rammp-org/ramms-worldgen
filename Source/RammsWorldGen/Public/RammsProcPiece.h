@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "RammsWorldGenTypes.h"
+#include "RammsCollisionShapes.h"
 #include "RammsProcPiece.generated.h"
 
 class UDynamicMeshComponent;
@@ -103,6 +104,11 @@ public:
 	/** Describe this piece for the world manifest. */
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
 	FRammsManifestFeature ToManifestFeature() const;
+
+	/** This piece's collision as exact primitive shapes in world space (see RammsCollisionShapes.h): what Chaos
+	 *  collides with, for physics engines that build their own world. Decals and other non-colliding kinds add
+	 *  nothing. */
+	void AppendCollisionShapes(TArray<FRammsCollisionShape>& Out) const;
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 

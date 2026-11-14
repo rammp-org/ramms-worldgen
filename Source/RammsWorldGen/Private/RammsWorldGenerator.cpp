@@ -698,6 +698,31 @@ void ARammsWorldGenerator::CollectProcPieces()
 
 // --- outputs ---------------------------------------------------------------------------
 
+void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& Out) const
+{
+	// Every procedural piece the generation spawned, and the generator's colliding instanced meshes: filled in by the
+	// exact-export work.
+}
+
+FString ARammsWorldGenerator::DescribeCollisionShapes() const
+{
+	TArray<FRammsCollisionShape> Shapes;
+	GatherCollisionShapes(Shapes);
+	int32 Counts[3] = { 0, 0, 0 };
+	TMap<FName, int32> BySurface;
+	for (const FRammsCollisionShape& S : Shapes)
+	{
+		++Counts[static_cast<int32>(S.Type)];
+		++BySurface.FindOrAdd(S.Surface);
+	}
+	FString Line = FString::Printf(TEXT("%d shapes: %d boxes, %d convex, %d height grids;"), Shapes.Num(), Counts[0], Counts[1], Counts[2]);
+	for (const TPair<FName, int32>& P : BySurface)
+	{
+		Line += FString::Printf(TEXT(" %s %d"), *P.Key.ToString(), P.Value);
+	}
+	return Line;
+}
+
 FString ARammsWorldGenerator::GetManifestJson() const
 {
 	FString Out;
