@@ -165,6 +165,43 @@ def _crosswalk_ends(features):
     return out
 
 
+GRADE_BREAK = 0.003     # a route whose grade changes by more than this between its points gets a node there
+
+
+def _seg_z(s, p):
+    """The walking height of a run at point p: interpolated along its route's polyline (evenly spaced from the route's
+    start to its end; on graded ground it follows the ground, on flat streets every point has the same height), by
+    p's position along the route's original straight line."""
+    pts = s["pts"]
+    if len(pts) < 2:
+        return s["z"]
+    a0, b0 = s["a0"], s["b0"]
+    v = _sub(b0, a0)
+    L2 = v[0] * v[0] + v[1] * v[1]
+    t = 0.0 if L2 < 1e-6 else ((p[0] - a0[0]) * v[0] + (p[1] - a0[1]) * v[1]) / L2
+    f = min(max(t, 0.0), 1.0) * (len(pts) - 1)
+    k = min(int(f), len(pts) - 2)
+    z0, z1 = pts[k].get("z", 0.0), pts[k + 1].get("z", 0.0)
+    return z0 + (z1 - z0) * (f - k)
+
+
+def _grade_breaks(pts):
+    """Fractions along a route (its points evenly spaced) where its grade bends: a run between two nodes is then one
+    straight slope, so a lane interpolated between its ends keeps to the ground (graded streets bend where a street
+    was dropped inside a block). None on flat or evenly graded routes."""
+    out = []
+    n = len(pts)
+    if n < 3:
+        return out
+    def slope(i):
+        d = math.hypot(pts[i + 1]["x"] - pts[i]["x"], pts[i + 1]["y"] - pts[i]["y"])
+        return 0.0 if d < 1e-6 else (pts[i + 1].get("z", 0.0) - pts[i].get("z", 0.0)) / d
+    for k in range(1, n - 1):
+        if abs(slope(k) - slope(k - 1)) > GRADE_BREAK:
+            out.append(k / (n - 1.0))
+    return out
+
+
 def _outdoor_graph(routes, features=()):
     """Straight runs (sidewalk sides, park paths) cut at every crossing into a graph, joined across the
     streets along the crosswalks."""
@@ -176,7 +213,8 @@ def _outdoor_graph(routes, features=()):
         a = (pts[0]["x"], pts[0]["y"]); b = (pts[-1]["x"], pts[-1]["y"])
         if _len(_sub(b, a)) < 50.0:
             continue
-        segs.append({"a": a, "b": b, "z": pts[0].get("z", 0.0), "cuts": [0.0, 1.0], "name": r.get("name", "")})
+        segs.append({"a": a, "b": b, "a0": a, "b0": b, "pts": pts, "z": pts[0].get("z", 0.0),
+                     "cuts": [0.0, 1.0] + _grade_breaks(pts), "name": r.get("name", "")})
     # A park's entrance paths stop at the back of the sidewalk, short of its centre line: carry each one on
     # to the sidewalk run it meets.
     for ps in segs:
@@ -224,7 +262,10 @@ def _outdoor_graph(routes, features=()):
         if all(b is not None for _e, b in ends):
             for _e, b in ends:
                 segs[b[1]]["cuts"].append(b[2])
-            crossings.append((ends[0][1][3], ends[0][0], ends[1][0], ends[1][1][3], segs[ends[0][1][1]]["z"], zr))
+            # Each end at its own sidewalk's height (on graded ground the two can differ).
+            za = _seg_z(segs[ends[0][1][1]], ends[0][1][3])
+            zb = _seg_z(segs[ends[1][1][1]], ends[1][1][3])
+            crossings.append((ends[0][1][3], ends[0][0], ends[1][0], ends[1][1][3], za, zb, zr))
         else:
             unmatched += 1                           # no sidewalk run behind one of its curbs: no lane across
     g = _Graph(snap=60.0)
@@ -233,19 +274,19 @@ def _outdoor_graph(routes, features=()):
     for s in segs:
         cuts = sorted(set(round(c, 5) for c in s["cuts"]))
         pts = [_add(s["a"], _mul(_sub(s["b"], s["a"]), c)) for c in cuts]
-        ids = [g.node(p, s["z"]) for p in pts]
+        ids = [g.node(p, _seg_z(s, p)) for p in pts]
         for k in range(len(ids) - 1):
             if _len(_sub(pts[k + 1], pts[k])) > 40.0:
                 g.add(ids[k], ids[k + 1])
     g.prune_stubs(450.0)
     if crossings:
-        for qa, ca, cb, qb, zs, zr in crossings:
+        for qa, ca, cb, qb, za, zb, zr in crossings:
             # Interior points 2 cm either side of both curb lines, so the lane's height is sampled on the
             # sidewalk (ramp foot) and on the road, never on the curb edge itself, where a trace can land on
             # the curb's top corner and put a spike in the lane.
             d = _unit(_sub(cb, ca))
-            inner = [(p[0], p[1], zs) for p in (_sub(ca, _mul(d, 2.0)), _add(ca, _mul(d, 2.0)), _sub(cb, _mul(d, 2.0)), _add(cb, _mul(d, 2.0)))]
-            k = g.add(g.node(qa, zs), g.node(qb, zs), inner)
+            inner = [(p[0], p[1], z) for p, z in ((_sub(ca, _mul(d, 2.0)), za), (_add(ca, _mul(d, 2.0)), za), (_sub(cb, _mul(d, 2.0)), zb), (_add(cb, _mul(d, 2.0)), zb))]
+            k = g.add(g.node(qa, za), g.node(qb, zb), inner)
             if k is not None:
                 g.crossing_edges.add(k)
         return g
@@ -945,12 +986,19 @@ OFF_LEVEL = []     # (shape, sample) of the first lane samples the last check_la
 
 def _curb_height(gen):
     """The streets' curb height (cm): the generator's resolved parameters, else its preset's; None when neither
-    can be read."""
+    can be read. With varied curbs (CurbHeightMax > 0) the lowest one, so a low curb still bounds a level."""
     if gen is None:
         return None
     for get in (lambda: gen.get_editor_property("params"), lambda: gen.get_editor_property("preset").get_editor_property("params")):
         try:
-            return float(get().get_editor_property("curb_height"))
+            p = get()
+            ch = float(p.get_editor_property("curb_height"))
+            try:
+                hi = float(p.get_editor_property("curb_height_max"))
+                lo = float(p.get_editor_property("curb_height_min"))
+            except Exception:  # noqa: BLE001 - an engine build without the terrain parameters
+                hi = lo = 0.0
+            return max(min(lo, hi), 0.0) if hi > 0.0 else ch
         except Exception:  # noqa: BLE001
             continue
     return None

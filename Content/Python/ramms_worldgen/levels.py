@@ -23,7 +23,13 @@ EXAMPLES = {
     # palette under /Game/WorldGen rather than among the committed example maps
     "dense_downtown": ("Map_Gen_DenseDowntown", "PRE_DenseDowntown", 11, "Downtown"),
     "store": ("Map_Gen_Store", "PRE_Indoor_Store", 6),
+    # graded and rough ground (presets.GRADED_DOWNTOWN / HILLY_RESIDENTIAL): the downtown and suburban layouts of the
+    # same seeds on a hill, with real surface roughness; built only when asked for (OPT_IN)
+    "graded_downtown": ("Map_Gen_GradedDowntown", "PRE_GradedDowntown", 7),
+    "hilly_residential": ("Map_Gen_HillyResidential", "PRE_HillyResidential", 11),
 }
+# Examples build_all_levels() leaves out unless they are named.
+OPT_IN = {"graded_downtown", "hilly_residential"}
 
 _pending = {}
 
@@ -345,8 +351,8 @@ def _watch(path):
 
 def build_all_levels(kinds=None):
     """Build the example levels one after another (each waits for the previous generation). By default the
-    committed examples: the recipe ones (built from local packs) only when asked for."""
-    kinds = list(kinds or [k for k, v in EXAMPLES.items() if len(v) == 3])
+    committed examples: the recipe ones (built from local packs) and the opt-in ones (OPT_IN) only when asked for."""
+    kinds = list(kinds or [k for k, v in EXAMPLES.items() if len(v) == 3 and k not in OPT_IN])
     if not kinds:
         return []
     done = []
