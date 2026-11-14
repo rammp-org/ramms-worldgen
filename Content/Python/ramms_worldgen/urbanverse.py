@@ -463,7 +463,9 @@ def _mi_params(mi):
 
 def _floor_cutout_roughness(mi, save=True):
     """Cut-outs are leaves and grilles: a glossy one (some leaf exports carry roughness 0) turns into a dark
-    mirror in shade, a black canopy. Returns True when it raised the roughness."""
+    mirror in shade, a black canopy. The glTF roughness factor is held at 0.5 or more; it scales the
+    metallic-roughness texture where there is one, so a dark texture can still read glossy. Returns True when
+    it raised the factor."""
     if float(_mi_params(mi)[0].get("RoughnessFactor", 1.0)) >= 0.5:
         return False
     mel = unreal.MaterialEditingLibrary
@@ -472,6 +474,14 @@ def _floor_cutout_roughness(mi, save=True):
         mel.update_material_instance(mi)
         H.EAL.save_loaded_asset(mi, False)
     return True
+
+
+def _parent_blend(mi):
+    """The blend mode a material instance has from its parent (no override of its own), or None."""
+    try:
+        return mi.get_blend_mode()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _set_blend(mi, blend, alpha_mode):
@@ -590,8 +600,9 @@ def fix_materials(mesh, item):
         blend = bo.get_editor_property("blend_mode") if bo.get_editor_property("override_blend_mode") else None
         kind = _decide(mi, info, item.get("uid", ""))
         if blend not in (unreal.BlendMode.BLEND_TRANSLUCENT, unreal.BlendMode.BLEND_TRANSLUCENT_COLORED_TRANSMITTANCE):
-            if blend == unreal.BlendMode.BLEND_MASKED and _floor_cutout_roughness(mi):
-                done["roughness"] = done.get("roughness", 0) + 1     # masked by an earlier build
+            # Masked by an earlier build, or imported onto a masked parent.
+            if (blend if blend is not None else _parent_blend(mi)) == unreal.BlendMode.BLEND_MASKED and _floor_cutout_roughness(mi):
+                done["roughness"] = done.get("roughness", 0) + 1
             # Opaque as imported (or made opaque by an earlier build): only an override turns it into glass.
             if not (kind in ("glass", "glass_tex") and any(item.get("uid", "").startswith(p) and mi.get_name() in t
                                                            for p, t in MATERIAL_OVERRIDES.items())):

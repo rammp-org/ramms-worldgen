@@ -353,7 +353,8 @@ class _Clearance:
         # Cached at 5 cm, not the 25 cm search grid: a doorway is only ~8 cm wider than a person, and
         # snapping a test point to the grid would close it.
         lvl = self.level_tol
-        key = (int(round(x / 5.0)), int(round(y / 5.0)), int(round(z / 20.0)), int(r), lvl is not None)
+        # A level answer depends on the floor height to within the tolerance, so it is cached on a finer z band.
+        key = (int(round(x / 5.0)), int(round(y / 5.0)), int(round(z / (2.0 if lvl is not None else 20.0))), int(r), lvl is not None)
         hit = self.cache.get(key)
         if hit is None:
             self.calls += 1
@@ -368,9 +369,11 @@ class _Clearance:
             hit = bool(res)
             if not hit and lvl is not None:
                 # The capsule starts 30 cm up, so a curb's 15 cm drop into the road reads as free: on a run that
-                # keeps to one level, ground off that level (or none) blocks too.
-                g = _trace_down(self.world, cx, cy, z)
-                hit = g is None or abs(g - z) > lvl
+                # keeps to one level, ground off that level (or none) blocks too -- under the person's centre, and
+                # a drop at their radius either way (a centre line along the curb edge would put the street-side
+                # lane and its walkers over the road).
+                hit = not _level_at(self.world, cx, cy, z, lvl) or not all(
+                    _level_at(self.world, cx + dx, cy + dy, z, lvl, raised_ok=True) for dx, dy in ((r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)))
             self.cache[key] = hit
         return not hit
 
@@ -399,7 +402,8 @@ class _Clearance:
 
 def _on_level(world, chain, za, zb, step=50.0):
     """Does the run keep to one walking level (a sidewalk, a floor) along its straight line, rather than
-    going down to the road and back (a crossing)?"""
+    going down to the road and back (a crossing)? Only a drop counts: ground above the level on the line is
+    whatever the run is being rerouted around (a planter, a raised tree pit), not another level."""
     total = sum(_len(_sub(chain[i + 1], chain[i])) for i in range(len(chain) - 1)) or 1.0
     done = 0.0
     for i in range(len(chain) - 1):
@@ -410,7 +414,7 @@ def _on_level(world, chain, za, zb, step=50.0):
             t = j / n
             z = za + (zb - za) * ((done + d * t) / total)
             g = _ground_z(world, a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, z)
-            if abs(g - z) > LEVEL_TOL:
+            if g < z - LEVEL_TOL:
                 return False
         done += d
     return True
@@ -641,6 +645,17 @@ def _trace_down(world, x, y, z):
     return None
 
 
+SEAM_OFFSETS = ((2.0, 2.0), (-2.0, -2.0), (2.0, -2.0), (-2.0, 2.0))
+
+
+def _level_at(world, x, y, z, tol, raised_ok=False):
+    """Is there walking ground within tol of z at (x, y) (or, raised_ok, anywhere above z - tol)? A trace on the
+    seam between two slabs can slip through: a miss is retried 2 cm to either side, as _ground_z does."""
+    def ok(g):
+        return g is not None and g >= z - tol and (raised_ok or g <= z + tol)
+    return ok(_trace_down(world, x, y, z)) or any(ok(_trace_down(world, x + dx, y + dy, z)) for dx, dy in SEAM_OFFSETS)
+
+
 def _ground_z(world, x, y, z):
     """Walking surface height at (x, y): the first hit going down from just above the route, ignoring
     anything standing more than 40 cm above it (props, furniture). A line exactly on the seam between two
@@ -649,7 +664,7 @@ def _ground_z(world, x, y, z):
     surface wins."""
     g = _trace_down(world, x, y, z)
     if g is None or g < z - 20.0:
-        alts = [h for h in (_trace_down(world, x + dx, y + dy, z) for dx, dy in ((2.0, 2.0), (-2.0, -2.0), (2.0, -2.0), (-2.0, 2.0))) if h is not None]
+        alts = [h for h in (_trace_down(world, x + dx, y + dy, z) for dx, dy in SEAM_OFFSETS) if h is not None]
         if alts:
             g = max(alts + ([g] if g is not None else []))
     return z if g is None else g

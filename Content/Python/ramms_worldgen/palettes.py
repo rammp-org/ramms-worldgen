@@ -557,7 +557,8 @@ def _ensure_collision(mesh, slot=""):
     physics shape at all (pack props often ship that way): trees get a box around the trunk (so canopies
     do not block), everything else collides against its own triangles (complex as simple). A tree's own
     simple collision is replaced too: imports (UrbanVerse GLBs) can arrive with a hull around the whole crown,
-    which blocks a sidewalk edge to edge. Edits the mesh asset once per build; ground cover is left alone."""
+    which blocks a sidewalk edge to edge. A mesh is edited (and saved) only when it lacks what it should have:
+    once per build at most, never again once it has it. Ground cover is left alone."""
     if mesh is None or slot in NO_COLLISION_SLOTS:
         return
     path = mesh.get_path_name()
@@ -566,24 +567,31 @@ def _ensure_collision(mesh, slot=""):
     _COLLISION_DONE.add(path)
     try:
         tree = slot in TREE_SLOTS
-        if unreal.EditorStaticMeshLibrary.get_simple_collision_count(mesh) > 0:
-            if not tree:
-                return
-            unreal.EditorStaticMeshLibrary.remove_collisions(mesh)
-        bs = mesh.get_editor_property("body_setup")
-        if bs is None:
-            return
         if tree:
+            # Measured before anything is removed: a tree whose trunk cannot be found keeps what it has.
             t = _trunk_xy(mesh)
-            if t is None:
+            bs = mesh.get_editor_property("body_setup")
+            if t is None or bs is None:
                 return
             b = mesh.get_bounds()
             zmin = b.origin.z - b.box_extent.z
             h = min(400.0, b.box_extent.z * 2.0 * 0.45)
+            box = (t[0], t[1], zmin + h * 0.5, h)
+            if _has_only_box(bs, box):
+                return
+            # Unconditionally: get_simple_collision_count does not count convex hulls, which is what a crown
+            # hull is.
+            unreal.EditorStaticMeshLibrary.remove_collisions(mesh)
+            bs = mesh.get_editor_property("body_setup")
             ag = bs.get_editor_property("agg_geom")
-            ag.import_text("(BoxElems=((Center=(X=%.1f,Y=%.1f,Z=%.1f),Rotation=(Pitch=0,Yaw=0,Roll=0),X=50.0,Y=50.0,Z=%.1f)))" % (t[0], t[1], zmin + h * 0.5, h))
+            ag.import_text("(BoxElems=((Center=(X=%.1f,Y=%.1f,Z=%.1f),Rotation=(Pitch=0,Yaw=0,Roll=0),X=50.0,Y=50.0,Z=%.1f)))" % box)
             bs.set_editor_property("agg_geom", ag)
         else:
+            if unreal.EditorStaticMeshLibrary.get_simple_collision_count(mesh) > 0:
+                return
+            bs = mesh.get_editor_property("body_setup")
+            if bs is None:
+                return
             if str(bs.get_editor_property("collision_trace_flag")).find("COMPLEX_AS_SIMPLE") >= 0:
                 return
             bs.set_editor_property("collision_trace_flag", unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE)
@@ -621,6 +629,21 @@ def _is_decal(mat):
     try:
         base = mat.get_base_material()
         return base.get_editor_property("material_domain") == unreal.MaterialDomain.MD_DEFERRED_DECAL
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _has_only_box(bs, box):
+    """Is the body's simple collision exactly the trunk box (cx, cy, cz, height) already, 50 x 50 cm?"""
+    try:
+        ag = bs.get_editor_property("agg_geom")
+        boxes = list(ag.get_editor_property("box_elems"))
+        if len(boxes) != 1 or any(len(ag.get_editor_property(k)) for k in ("sphere_elems", "sphyl_elems", "convex_elems")):
+            return False
+        e = boxes[0]
+        c = e.get_editor_property("center")
+        have = (c.x, c.y, c.z, e.get_editor_property("z"))
+        return all(abs(a - w) < 0.5 for a, w in zip(have, box)) and abs(e.get_editor_property("x") - 50.0) < 0.5 and abs(e.get_editor_property("y") - 50.0) < 0.5
     except Exception:  # noqa: BLE001
         return False
 
