@@ -538,9 +538,33 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 		}
 		return Out;
 	};
+	const TArray<FBox2D> KeepBoxes = RammsPCG::ParseBoxes(S->KeepClear);
+	auto InKeep = [&KeepBoxes](const FVector& P, double Margin)
+	{
+		for (const FBox2D& K : KeepBoxes) { if (K.ExpandBy(Margin).IsInside(FVector2D(P.X, P.Y))) { return true; } }
+		return false;
+	};
 	for (const FSide& Sd : Sides)
 	{
 		const FBlock& B = Blocks[Sd.BlockId];
+		// Curb uses (StreetRules), decided before the parking that leaves room for them: a hydrant a few metres
+		// from one corner (on about one side in three of a short block, more often on long ones: downtown hydrants
+		// stand ~100 m apart), and on a long built side now and then a bus stop zone (a bus length) before its far
+		// corner. The hazard placer puts the hydrant and the stop where they are kept.
+		double HydrantAt = -1.0, Bus0 = -1.0, Bus1 = -1.0;
+		// Right-hand traffic: the lane at this curb runs along the side when the inward normal is to its right.
+		const bool bTrafficAlong = (FVector(-Sd.Dir.Y, Sd.Dir.X, 0.0) | Sd.Inward) > 0.0;
+		if (S->bStreetRules && !B.bPark && Sd.Length > 1500.0)
+		{
+			const double FromCorner = CW + 260.0 + RammsPCG::RandRange(Rng, 300.0, 450.0);
+			if (Rng.FRand() < FMath::Clamp(Sd.Length / 9000.0, 0.25, 0.85)) { HydrantAt = (Sd.Index % 2) == 0 ? FromCorner : Sd.Length - FromCorner; }
+			if (Sd.Length > 4500.0 && Rng.FRand() < 0.35)
+			{
+				Bus1 = Sd.Length - CW - 260.0 - 200.0;
+				Bus0 = Bus1 - 2400.0;
+				if (HydrantAt > Bus0 - 500.0 && HydrantAt < Bus1 + 500.0) { Bus0 = Bus1 = -1.0; }
+			}
+		}
 		// Slab: east/west sides shortened by SW at both ends so corners are covered once.
 		const bool bShort = (Sd.Index == 1 || Sd.Index == 3);
 		const double L0 = bShort ? SW : 0.0;
@@ -611,10 +635,21 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 					a = c1 + Gap;
 					if (Rng.FRand() > FMath::Clamp(S->ParkingDensity, 0.0, 1.0)) { continue; }
 					bool bSkip = false;
-					for (const FVector2D& K : Sd.Clear) { if (c1 > K.X - 60.0 && c0 < K.Y + 60.0) { bSkip = true; break; } }
+					// With the street rules no car stands within 6 m before a crossing in the direction of travel (20 ft:
+					// drivers and the people crossing see each other) or 1.5 m after it, 4.6 m of a hydrant (15 ft), in a
+					// bus stop zone or in a kept-clear area; otherwise just clear of the crossings.
+					const double GapBefore = S->bStreetRules ? (bTrafficAlong ? 600.0 : 150.0) : 60.0;
+					const double GapAfter = S->bStreetRules ? (bTrafficAlong ? 150.0 : 600.0) : 60.0;
+					for (const FVector2D& K : Sd.Clear) { if (c1 > K.X - GapBefore && c0 < K.Y + GapAfter) { bSkip = true; break; } }
+					if (HydrantAt > 0.0 && c1 > HydrantAt - 460.0 && c0 < HydrantAt + 460.0) { bSkip = true; }
+					if (Bus0 >= 0.0 && c1 > Bus0 && c0 < Bus1) { bSkip = true; }
 					if (bSkip) { continue; }
 					const FVector P = Sd.Start + Sd.Dir * ((c0 + c1) * 0.5) - Sd.Inward * (FMath::Max(Pick.Footprint.Y, 160.0) * 0.5 + 25.0) + FVector(0, 0, Zr - Z0);
-					const int32 c = RammsPCG::WritePickedMesh(Props, Pick, P, Sd.Yaw + (Rng.FRand() < 0.5 ? 0.0 : 180.0), NextSeed());
+					if (InKeep(P, 300.0)) { continue; }
+					// Right-hand traffic: a car parked at this curb faces the way its lane runs, the curb on its right.
+					// Otherwise either way.
+					const double CarYaw = S->bStreetRules ? Sd.Yaw + (bTrafficAlong ? 0.0 : 180.0) : Sd.Yaw + (Rng.FRand() < 0.5 ? 0.0 : 180.0);
+					const int32 c = RammsPCG::WritePickedMesh(Props, Pick, P, CarYaw, NextSeed());
 					RammsPCG::WriteManifest(Props, c, FName(TEXT("Vehicle")), FName(TEXT("Parked")), true, ERammsComplianceIssue::None, 0.0, 0.0);
 				}
 			}
@@ -663,6 +698,12 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 		FString Keep;
 		for (const FVector2D& K : Sd.Clear) { Keep += FString::Printf(TEXT("%.0f:%.0f;"), K.X, K.Y); }
 		SidewalksOut.Set(s, FName(TEXT("Keepouts")), Keep);
+		// What the hazard placer needs of the road beside the side: its width and how far below the walk it is
+		// (litter in the gutter, manholes in the lane), and the curb uses kept for it.
+		SidewalksOut.Set(s, FName(TEXT("RoadWidth")), RW);
+		SidewalksOut.Set(s, FName(TEXT("RoadDrop")), Z0 - Zr);
+		if (HydrantAt > 0.0) { SidewalksOut.Set(s, FName(TEXT("HydrantAt")), HydrantAt); }
+		if (Bus0 >= 0.0) { SidewalksOut.Set(s, FName(TEXT("BusZone")), FString::Printf(TEXT("%.0f:%.0f"), Bus0, Bus1)); }
 		SidewalksOut.Set(s, RammsPCG::RouteName, FName(*FString::Printf(TEXT("Block%d_Side%d"), B.Id, Sd.Index)));
 	}
 	for (const FBlock& B : Blocks)

@@ -1,4 +1,5 @@
-"""Camden Market (Fab): its building kits as facade styles, and dirt decals.
+"""Camden Market (Fab): its building kits as facade styles, dirt decals, a pole-mounted traffic signal (heads face -X)
+and utility covers for the sidewalk.
 
 The pack carries 43 object redirectors and a third-person demo folder; only Materials and Buildings are used.
 Its sets run along different axes: the pub's PUB_Main pieces face +X and run along -Y (a quarter turn), the
@@ -7,7 +8,7 @@ quarter turn, moved in by half their thickness), and the Building04 storefronts 
 Nothing of Camden's has a door module: the generator's own door goes on its ground floors. Real scale.
 """
 
-from .base import Kit, Pack, Part
+from .base import Kit, Pack, Part, Ref
 
 DIRT = "Materials/MaterialInstances/DirtDecals/"
 B = "Buildings/"
@@ -33,6 +34,10 @@ PACK = Pack(
     "CamdenMarket",
     ["/Game/CamdenMarket"],
     kits=KITS,
+    meshes={
+        "TrafficSignal": [Ref("Prop/Large/TrafficLights/SM_TrafficLights_LOD0", yaw=180.0, normalise=False, weight=0.35)],
+        "Cover.Utility": ["Buildings/Street/SM_StreetCover*_LOD0"],
+    },
     material_sets={
         "Decal.Stain": [DIRT + n for n in ("MI_Decal_Dirt01", "MI_Decal_Dirt02", "MI_Decal_Dirt03", "MI_Decal_DirtSpot01",
                                            "MI_Decal_DirtSpot02", "MI_Decal_DirtSpot03")],

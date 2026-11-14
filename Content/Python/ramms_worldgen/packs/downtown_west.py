@@ -1,12 +1,12 @@
 """Downtown West Modular Pack (Fab): street furniture, street trees, decals and ground textures.
 
 Its trees are native UE foliage (masked leaves, wind) and replace other packs' in the tree slots. Its street
-light comes in three dressings: only the plain pole is offered - `SM_light_streetlight_complete` carries traffic
-signals (they belong at intersections, not mid-block) and the light posts `light_post_a/b` carry "DOWNTOWN WEST"
-banners. The pack is modelled ~1.3-1.5x real size (6 m storeys); props here are normalised per slot as usual.
+light comes in three dressings: only the plain pole is a street light - `SM_light_streetlight_complete` carries
+traffic signals on a mast arm and is the corner signal (TrafficSignal: heads face +X, the arm runs along +Y), and
+the light posts `light_post_a/b` carry "DOWNTOWN WEST" banners. The pack is modelled ~1.3-1.5x real size (6 m storeys); props here are normalised per slot as usual.
 """
 
-from .base import Kit, Pack
+from .base import Kit, Pack, Ref
 
 A = "Assets/"
 
@@ -57,6 +57,9 @@ PACK = Pack(
         "InfoBoard": [A + "props/prop_poster_stands/SM_prop_poster_pillar_with_posters"],
         "Hazard.Cafe": [A + "props/prop_table/SM_prop_dining_table_a"],
         "Hazard.CafeChair": [A + "props/prop_table/SM_prop_dining_chair_a", A + "props/prop_table/SM_prop_dining_chair_b"],
+        "TrafficSignal": [Ref(A + "props/props_streetlight/SM_light_streetlight_complete", yaw=0.0, scale=DW_SCALE)],
+        # 1.33 m at the pack's scale: ~80 cm covers
+        "Cover.Manhole": [Ref(A + "props/prop_sewer_caps/SM_sewer_cap_*", scale=0.6)],
     },
     material_sets={
         "Decal.Road.Crack": ["Materials/Decals/MI_Decal_Crack_%s" % c for c in "ABC"],

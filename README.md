@@ -364,7 +364,7 @@ runs it at 0.2, the office at 0.1.
 | Group | Parameters |
 |---|---|
 | Site | `SiteSizeX/Y`, `NonCompliance`, `Palette` |
-| Streets | `BlockSizeMin/Max`, `RoadWidth`, `SidewalkWidth`, `FurnitureZoneWidth`, `PlantingStrip` (1 = the furniture zone is a grass strip), `CurbHeight`, `StreetJitter`, `StreetDropout`, `MidblockCrossingChance`, `CrosswalkWidth`, `ParkFraction`, `ParkingDensity`, `DecalDensity` (cracks, potholes, patches, stains per 100 m) |
+| Streets | `BlockSizeMin/Max`, `RoadWidth`, `SidewalkWidth`, `FurnitureZoneWidth`, `PlantingStrip` (1 = the furniture zone is a grass strip), `CurbHeight`, `StreetJitter`, `StreetDropout`, `MidblockCrossingChance`, `CrosswalkWidth`, `ParkFraction`, `ParkingDensity`, `DecalDensity` (cracks, potholes, patches, stains per 100 m), `StreetRules` (hydrants, bus stop zones, clear crossing approaches, cars facing their traffic, corner signals), `LitterDensity` (per 100 m of side), `KeepClear` (world boxes `x0,y0,x1,y1;...` nothing is placed in) |
 | Buildings | `LotWidthMin/Max`, `SetbackMin/Max`, `FloorsMin/Max`, `FloorHeight`, `LotCoverage`, `WholeBuildingChance`, `EntranceStepChance`, `EntranceRampChance`, `WindowSpacing`, `FacadeStyles`, `RearParkingChance` |
 | Hazards | `PropDensity`, `HazardDensity` (per 100 m), `TreeSpacing`, `CanopyChance` (big old trees, closer together), `StreetLightSpacing`, `HazardIntrusionChance` |
 | Accessibility | `MinClearWidth`, `PreferredClearWidth`, `RampMaxSlope`, `MaxCrossSlope`, `CurbRampFlareSlope`, `DoorClearWidth`, `DoorThresholdMax`, `VerticalChangeMax`, `LandingSize`, `DetectableWarningDepth` |
@@ -380,9 +380,12 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   offers, per slot: meshes (`meshes={"Bench": [paths]}`), material sets (`material_sets`, e.g. the decal
   slots) and world-aligned **surfaces** (`surfaces`: a `surfaces.py` spec over the pack's own textures, built
   on demand). Paths are relative to the pack's folder (or absolute; a `*` matches a name pattern), so two
-  packs that ship a mesh of the same name never get mixed up. Known today: American City Packs (decals),
-  Downtown West (street trees, furniture, decals, asphalt and curb), Camden Market and the Restaurant Scene
-  (dirt and stain decals), Megascans (sidewalk, asphalt, concrete, brick, plaster and weathered-concrete walls).
+  packs that ship a mesh of the same name never get mixed up; a `Ref` can also fix a mesh's facing (`yaw`) or
+  its size (`scale`, for a pack modelled at another scale). Known today: American City Packs (decals, street
+  litter, manholes, whole buildings, skyline towers), Downtown West (street trees, furniture, the corner signal
+  mast, manhole covers, decals, asphalt and curb, facade kits), Camden Market (facade kits, a pole signal,
+  utility covers, dirt decals), the Restaurant Scene (stain decals), Megascans (sidewalk, asphalt, concrete,
+  brick, plaster and weathered-concrete walls).
 - **Recipes** (`recipes.py`): a palette is a base (`PAL_Default`'s slots, optionally with UrbanVerse-100K
   furniture, cars and trees on top), slots to clear, pack **layers** that add to or replace the slots they
   offer (with a weight, in order), and `Mat.*` slots pointed at pack surfaces. `Downtown` is the README's hero
@@ -396,8 +399,8 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   skipped. `/Game/WorldGen` holds only what is built from local packs and is not committed.
 - **A level**: `levels.build_level("dense_downtown")` builds the recipe if needed and generates
   `/Game/WorldGen/Maps/Map_Gen_DenseDowntown` with `PRE_DenseDowntown` (shorter blocks, narrow lots to the
-  sidewalk, cars along most curbs, more furniture and wear, no parks). `worldgen_list_packs` shows what is
-  installed.
+  sidewalk, cars along the curbs, more furniture and wear, no parks, the street rules and litter on).
+  `worldgen_list_packs` shows what is installed.
 - **Adding a pack**: a module in `packs/` with `PACK = Pack(name, [folders], meshes=..., material_sets=...,
   surfaces=...)`, listed in `packs.ALL`; then a layer for it in a recipe.
 
@@ -820,6 +823,29 @@ URLab cannot replace-import a Blueprint.
 - **Wear**: `Decal` pieces project cracks, potholes, patches, manholes and
   puddles onto roads and cracks / stains onto sidewalks (`DecalDensity`;
   palette `Decal.*` material sets, deferred-decal materials only).
+- **Street rules** (`StreetRules`, off by default; `PRE_DenseDowntown` has
+  them on): the Street Network keeps curb uses before it parks cars - a
+  hydrant a few metres from one corner of about one side in three (more on
+  long sides) with no parking 4.6 m either side, now and then a bus stop zone
+  on a long side, no car within 6 m before a crossing in the direction of
+  travel (1.5 m after it) - and parks cars facing their traffic (right-hand:
+  the curb on their right). The Hazard Placer puts the hydrant and the bus
+  shelter (a bench where a shelter would narrow the route) where they were
+  kept, places no other hydrants or shelters, and stands a signal at each
+  corner where a crossing meets the side (`TrafficSignal`: the entry's front
+  is where its heads face, a mast arm runs to its +Y over the road; masts are
+  placed by their pole). Off, placement is exactly what it was.
+- **Litter** (`LitterDensity`, per 100 m of side): leaves under the street
+  trees, leaf drifts and trash in the gutter, manholes in the lanes and
+  utility covers on the walk go out on the `Grass` pin (no collision:
+  `Litter.Leaves`, `Litter.Gutter`, `Litter.Trash`, `Cover.Manhole`,
+  `Cover.Utility`); bags and heaps of rubbish at the curb (`Litter.Bags`) are
+  props, solid and in the manifest.
+- **Keep-clear areas** (`KeepClear`, `levels.keep_clear(gen, boxes, tag)`):
+  world XY boxes on which nothing is placed along the streets - no parked
+  car, street tree, furniture, hazard, signal or litter - e.g. a test
+  scenario's start or a robot's path. `keep_clear` takes boxes and the bounds
+  of actors tagged `RammsKeepClear` and sets the generator's override.
 
 ## Indoor furnishing and routes
 

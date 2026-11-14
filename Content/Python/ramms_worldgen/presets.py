@@ -38,7 +38,10 @@ PRESETS = {
              # styles a palette does not have are skipped
              FacadeStyles="dt01,dt02,dt03,dwba,dwbb,dwcafe,dwd,dwe,dwf,cmpub,cmres,cmind",
              # a share of the lots cut to whole buildings when the palette has them (the Downtown recipe's)
-             WholeBuildingChance=0.3),
+             WholeBuildingChance=0.3,
+             # street rules (hydrants with no parking beside them, bus stop zones, clear crossing approaches, cars
+             # facing their traffic, signals at the corners) and street litter
+             StreetRules=True, LitterDensity=8.0),
     ),
     "PRE_Suburban": (
         unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,

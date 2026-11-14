@@ -219,6 +219,14 @@ namespace RammsPaletteSlots
 	inline const FName HazardBox(TEXT("Hazard.Box"));
 	// more street furniture and dressing
 	inline const FName Hydrant(TEXT("Hydrant"));
+	// street rules and litter (StreetRules / LitterDensity)
+	inline const FName TrafficSignal(TEXT("TrafficSignal"));
+	inline const FName LitterLeaves(TEXT("Litter.Leaves"));
+	inline const FName LitterGutter(TEXT("Litter.Gutter"));
+	inline const FName LitterTrash(TEXT("Litter.Trash"));
+	inline const FName LitterBags(TEXT("Litter.Bags"));
+	inline const FName CoverManhole(TEXT("Cover.Manhole"));
+	inline const FName CoverUtility(TEXT("Cover.Utility"));
 	inline const FName ParkingMeter(TEXT("ParkingMeter"));
 	inline const FName NewspaperBox(TEXT("NewspaperBox"));
 	inline const FName Mailbox(TEXT("Mailbox"));

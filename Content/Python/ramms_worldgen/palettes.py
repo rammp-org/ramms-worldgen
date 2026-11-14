@@ -174,7 +174,11 @@ NO_NORMALISE = {"TreeLarge", "GrassClump", "LawnTuft", "Flowers", "FoundationShr
                 "Tree", "TreeSmall", "Shrub", "Hedge", "House", "Car", "Store.Shelf", "Store.Fridge", "Store.ChestFreezer",
                 "Store.Counter", "Store.Register", "Store.Cart", "Store.Display", "Store.Product", "StreetLight", "UtilityPole", "StreetSign", "BusStop",
                 "Stairs", "Curb", "SidewalkCorner", "Railing", "Hazard.Upheaval", "Hazard.Barrier", "RoofUnit",
-                "Flowerbed", "Fence", "TreePit", "Furniture.Picture", "Furniture.Clutter", "Furniture.OfficeProp", "Furniture.Whiteboard", "Furniture.OfficeStorage", "Hazard.Box", "Hazard.AFrame", "InfoBoard", "Bollard"}
+                "Flowerbed", "Fence", "TreePit", "Furniture.Picture", "Furniture.Clutter", "Furniture.OfficeProp", "Furniture.Whiteboard", "Furniture.OfficeStorage", "Hazard.Box", "Hazard.AFrame", "InfoBoard", "Bollard",
+                "TrafficSignal", "Litter.Leaves", "Litter.Gutter", "Litter.Trash", "Litter.Bags", "Cover.Manhole", "Cover.Utility"}
+
+# Slots whose meshes stand on a pole with an arm off it: the pole, not the bounds centre, goes on the point.
+POLE_SLOTS = {"TrafficSignal"}
 
 # Meshes whose "front" the facing heuristic cannot tell (symmetric tops): yaw that turns the front to +X.
 MESH_FACING = {
@@ -720,7 +724,9 @@ def _shelf_heights(mesh, scale):
 
 HEAVY_OK_IF_NANITE = {"TreeLarge"}
 NO_COLLISION_SLOTS = {"GrassClump", "Flowers", "LawnTuft",  # ground cover: wheels and arms pass through it
-                      "Skyline"}  # distant towers outside the site: nothing ever reaches them
+                      "Skyline",  # distant towers outside the site: nothing ever reaches them
+                      # flat street litter and covers (LitterDensity): spawned as ground cover
+                      "Litter.Leaves", "Litter.Gutter", "Litter.Trash", "Cover.Manhole", "Cover.Utility"}
 _COLLISION_DONE = set()
 
 
@@ -857,10 +863,11 @@ def _handle_side(mesh, yaw):
     return 1.0 if pos > neg else -1.0
 
 
-def _mesh_entry(mesh, slot="", yaw=None, normalise=True):
+def _mesh_entry(mesh, slot="", yaw=None, normalise=True, scale=None):
     """Palette entry for a mesh. yaw: the yaw that turns the mesh's front to +X when the source says where
     the front is (UrbanVerse annotations); otherwise it is measured. normalise=False keeps the mesh's own
-    size (metric sources) instead of pulling it toward the slot's expected height."""
+    size (metric sources) instead of pulling it toward the slot's expected height; scale sets the size outright
+    (a pack modelled at another scale)."""
     import math
     _ensure_collision(mesh, slot)
     bounds = mesh.get_bounds()
@@ -873,9 +880,11 @@ def _mesh_entry(mesh, slot="", yaw=None, normalise=True):
     e = unreal.RammsPaletteMesh()
     e.set_editor_property("mesh", mesh)
     e.set_editor_property("weight", 1.0)
-    scale = 1.0
+    fixed, scale = scale, 1.0
     expected = SLOT_HEIGHTS.get(slot)
-    if normalise and expected and slot not in NO_NORMALISE and ext.z > 1.0:
+    if fixed is not None:
+        scale = fixed
+    elif normalise and expected and slot not in NO_NORMALISE and ext.z > 1.0:
         ratio = expected / (ext.z * 2.0)
         if abs(ratio - 1.0) > 0.12:
             scale = max(0.5, min(1.6, ratio))
@@ -894,8 +903,9 @@ def _mesh_entry(mesh, slot="", yaw=None, normalise=True):
     ox = origin.x * math.cos(r) - origin.y * math.sin(r)
     oy = origin.x * math.sin(r) + origin.y * math.cos(r)
     base_z = origin.z - ext.z
-    if slot in TREE_SLOTS:
-        # Put the trunk, not the canopy's centre, on the requested point (tree pits, planting strips).
+    if slot in TREE_SLOTS or slot in POLE_SLOTS:
+        # Put the trunk, not the canopy's centre, on the requested point (tree pits, planting strips); the same
+        # for a pole with an arm (a signal mast).
         t = _trunk_xy(mesh)
         if t is not None:
             tx, ty = t[0] * scale, t[1] * scale

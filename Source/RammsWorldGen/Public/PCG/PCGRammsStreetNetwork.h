@@ -47,6 +47,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (PCG_Overridable)) double LawnLots = 0.0;
 	/** Share of curb-side parking spots that hold a car (0 = none). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (PCG_Overridable)) double ParkingDensity = 0.0;
+	/** Street-design rules for parking, hydrants and bus stops (see FRammsWorldGenParams). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (PCG_Overridable)) bool bStreetRules = false;
+	/** World XY boxes "x0,y0,x1,y1;..." kept clear of parked cars. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (PCG_Overridable)) FString KeepClear;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double CurbRampFlareSlope = 0.1;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double DetectableWarningDepth = 61.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double VerticalChangeMax = 0.64;

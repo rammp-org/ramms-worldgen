@@ -49,6 +49,9 @@ RECIPES = {
             ("AmericanCityPacks", "replace", ["Decal.Road.Patch", "Decal.Road.Pothole"], 1.0),
             ("AmericanCityPacks", "add", ["Decal.Road.Crack", "Decal.Sidewalk.Crack", "Decal.Stain"], 1.0),
             ("AmericanCityPacks", "replace", ["Skyline"], 1.0),
+            # street litter and manholes (LitterDensity); Downtown West and Camden add theirs, and the corner
+            # signals (StreetRules), with their other slots below
+            ("AmericanCityPacks", "add", ["Litter.Leaves", "Litter.Gutter", "Litter.Trash", "Litter.Bags", "Cover.Manhole"], 1.0),
             ("CamdenMarket", "add", None, 1.0),
             ("RestaurantScene", "add", None, 1.0),
         ],
@@ -106,7 +109,7 @@ def _apply_layer(pal, pack, mode, slots, weight, report):
             continue
         entries = []
         for mesh, ref in pack.slot_meshes(slot):
-            e = P._mesh_entry(mesh, slot, yaw=ref.yaw, normalise=ref.normalise)
+            e = P._mesh_entry(mesh, slot, yaw=ref.yaw, normalise=ref.normalise, scale=ref.scale)
             e.set_editor_property("weight", ref.weight * weight)
             entries.append(e)
         if not entries:

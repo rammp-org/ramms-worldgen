@@ -110,6 +110,8 @@ TArray<FPCGPinProperties> UPCGRammsHazardPlacerSettings::OutputPinProperties() c
 	Pins.Emplace(RammsPCG::PinProps, EPCGDataType::Point);
 	Pins.Emplace(RammsPCG::PinPieces, EPCGDataType::Point);
 	Pins.Emplace(RammsPCG::PinRoutes, EPCGDataType::Point);
+	// litter and covers: flat, no collision (the grass spawner)
+	Pins.Emplace(RammsPCG::PinGrass, EPCGDataType::Point);
 	return Pins;
 }
 
@@ -131,9 +133,15 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 	const FString MatMetal = RammsPCG::Mat(Palette, RammsPaletteSlots::MatMetal);
 	const double Intrude = S->NonCompliance <= 0.0 ? 0.0 : FMath::Clamp(S->HazardIntrusionChance * (0.5 + 2.0 * S->NonCompliance), 0.0, 1.0);
 
-	FRammsPointWriter Props, Pieces, Routes;
+	FRammsPointWriter Props, Pieces, Routes, Litter;
 	int32 Counter = 0;
 	auto NextSeed = [&]() { return RammsPCG::SubSeed(Seed, 4000 + (++Counter)); };
+	const TArray<FBox2D> KeepBoxes = RammsPCG::ParseBoxes(S->KeepClear);
+	auto InKeep = [&KeepBoxes](const FVector& P)
+	{
+		for (const FBox2D& K : KeepBoxes) { if (K.IsInside(FVector2D(P.X, P.Y))) { return true; } }
+		return false;
+	};
 
 	int32 SideIndex = 0;
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinIn))
@@ -164,6 +172,22 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				const double Gate = R.GetD(i, FName(TEXT("ParkPathWidth")), 180.0) * 0.5 + 60.0;
 				Occ.Take(Length * 0.5 - Gate, Length * 0.5 + Gate);
 			}
+			const double RoadW = R.GetD(i, FName(TEXT("RoadWidth")), 0.0);
+			const double RoadDrop = R.GetD(i, FName(TEXT("RoadDrop")), 15.0);
+			// Kept-clear areas (KeepClear): nothing is placed on the stretch of this side a box covers, from the
+			// middle of the road to the back of the walk.
+			for (const FBox2D& Kb : KeepBoxes)
+			{
+				double A0 = 1e18, A1 = -1e18, C0 = 1e18, C1 = -1e18;
+				for (int32 c = 0; c < 4; ++c)
+				{
+					const FVector L = Xf.InverseTransformPosition(FVector((c & 1) ? Kb.Max.X : Kb.Min.X, (c & 2) ? Kb.Max.Y : Kb.Min.Y, Xf.GetLocation().Z));
+					A0 = FMath::Min(A0, L.X); A1 = FMath::Max(A1, L.X); C0 = FMath::Min(C0, L.Y); C1 = FMath::Max(C1, L.Y);
+				}
+				if (A1 > 0.0 && A0 < Length && C1 > -RoadW * 0.5 && C0 < SW) { Occ.Take(A0, A1); }
+			}
+			const bool bRules = S->bStreetRules && !bPark;
+			TArray<double> TreeAlong;
 			const int32 PropsBefore = Props.Num();
 			double MinClear = RouteW;
 			bool bRouteCompliant = RouteW >= S->MinClearWidth;
@@ -189,6 +213,66 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				bRouteCompliant = bRouteCompliant && OutClear >= S->MinClearWidth;
 			};
 
+			// --- curb uses (StreetRules): the hydrant and the bus stop where the street network kept room for them,
+			// and a signal post at each corner where a crossing meets this side -------------------------
+			if (bRules && Palette)
+			{
+				const double Yc = FZ >= 40.0 ? FMath::Min(FZ * 0.5, 45.0) : 30.0;
+				const double HydrantAt = R.GetD(i, FName(TEXT("HydrantAt")), -1.0);
+				FRammsPaletteMesh Hm;
+				if (HydrantAt > 0.0 && Occ.Free(HydrantAt - 40.0, HydrantAt + 40.0) && Palette->PickMesh(RammsPaletteSlots::Hydrant, Rng, Hm))
+				{
+					Occ.Take(HydrantAt - 60.0, HydrantAt + 60.0);
+					const int32 p = RammsPCG::WritePickedMesh(Props, Hm, ToWorld(HydrantAt, Yc, 0.0), Yaw, NextSeed());
+					RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), RammsPaletteSlots::Hydrant, true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth);
+				}
+				FString BusA, BusB;
+				if (R.GetS(i, FName(TEXT("BusZone"))).Split(TEXT(":"), &BusA, &BusB))
+				{
+					// The shelter near the front of the zone, where a stopped bus has its front door (right-hand: the
+					// zone's far end when this side's traffic runs along it), facing the walk -- or, where a shelter
+					// would narrow the route, a bench.
+					FRammsPaletteMesh Bm;
+					const bool bShelter = Palette->PickMesh(RammsPaletteSlots::BusStop, Rng, Bm) && Bm.Footprint.X <= SW - S->MinClearWidth;
+					if (bShelter || Palette->PickMesh(RammsPaletteSlots::Bench, Rng, Bm))
+					{
+						const double fx = FMath::Max(Bm.Footprint.Y, 20.0), fy = FMath::Max(Bm.Footprint.X, 20.0);
+						const FVector RightOfDir(-Xf.GetUnitAxis(EAxis::X).Y, Xf.GetUnitAxis(EAxis::X).X, 0.0);
+						const double A0 = (RightOfDir | Xf.GetUnitAxis(EAxis::Y)) > 0.0 ? FCString::Atod(*BusB) - 250.0 - fx : FCString::Atod(*BusA) + 250.0;
+						if (Occ.Free(A0, A0 + fx) && fy <= SW - S->MinClearWidth)
+						{
+							Occ.Take(A0 - 20.0, A0 + fx + 20.0);
+							const double y0 = FMath::Max(0.0, FMath::Min((FZ - fy) * 0.5, SW - S->MinClearWidth - fy));
+							const int32 p = RammsPCG::WritePickedMesh(Props, Bm, ToWorld(A0 + fx * 0.5, y0 + fy * 0.5, 0.0), Yaw + 90.0, NextSeed());
+							RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), bShelter ? RammsPaletteSlots::BusStop : RammsPaletteSlots::Bench, true, ERammsComplianceIssue::None, SW - (y0 + fy), S->MinClearWidth);
+						}
+					}
+				}
+				// Signals: one post per corner, at the start of each side whose start meets a crossing, just past the
+				// crossing in the furniture zone. It is the far-side signal for the traffic in this side's half of the
+				// road (right-hand: that traffic runs along the side): the heads (the entry's front, +X) face back
+				// across the intersection, a mast arm (the entry's +Y) reaches out over the road.
+				// (A crossing leaves overlapping spans -- the crossing, its ramp and flares: the post goes past them all.)
+				TArray<FString> Spans;
+				R.GetS(i, FName(TEXT("Keepouts"))).ParseIntoArray(Spans, TEXT(";"), true);
+				double CrossingEnd = -1.0;
+				for (const FString& Sp : Spans)
+				{
+					FString Ka, Kb;
+					if (Sp.Split(TEXT(":"), &Ka, &Kb) && FCString::Atod(*Ka) < 900.0) { CrossingEnd = FMath::Max(CrossingEnd, FCString::Atod(*Kb)); }
+				}
+				const double At = CrossingEnd + 60.0;
+				FRammsPaletteMesh Sm;
+				if (CrossingEnd > 0.0 && At < Length - 400.0 && Occ.Free(At - 30.0, At + 30.0) && !InKeep(ToWorld(At, Yc, 0.0)) && Palette->PickMesh(RammsPaletteSlots::TrafficSignal, Rng, Sm))
+				{
+					Occ.Take(At - 50.0, At + 50.0);
+					const FVector RightOfDir(-Xf.GetUnitAxis(EAxis::X).Y, Xf.GetUnitAxis(EAxis::X).X, 0.0);
+					const bool bTrafficAlong = (RightOfDir | Xf.GetUnitAxis(EAxis::Y)) > 0.0;
+					const int32 p = RammsPCG::WritePickedMesh(Props, Sm, ToWorld(At, Yc, 0.0), Yaw + (bTrafficAlong ? 180.0 : 0.0), NextSeed());
+					RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), RammsPaletteSlots::TrafficSignal, true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth);
+				}
+			}
+
 			// --- trees in the furniture zone -----------------------------------------------
 			// In tree pits on paved streets (the grate scaled to fit the zone, the trunk on its centre), straight
 			// into the grass on planting-strip streets. A canopy street has large old trees closer together.
@@ -204,6 +288,7 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 					const double A = a + Jit;
 					if (!Occ.Free(A - 70.0, A + 70.0)) { continue; }
 					Occ.Take(A - 90.0, A + 90.0);
+					TreeAlong.Add(A);
 					const FVector Base = ToWorld(A, FZ * 0.5, 0.0);
 					if (!bStrip)
 					{
@@ -266,6 +351,9 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				else if (Roll < 0.88) { Slot = RammsPaletteSlots::Bollard; }
 				else if (Roll < 0.95 || Length < 2500.0) { Slot = bResidential ? RammsPaletteSlots::Flowerbed : RammsPaletteSlots::InfoBoard; }
 				else { Slot = RammsPaletteSlots::BusStop; }
+				// With the street rules hydrants and bus stops go where the curb was kept for them, not at random.
+				if (bRules && Slot == RammsPaletteSlots::Hydrant) { Slot = RammsPaletteSlots::TrashBin; }
+				if (bRules && Slot == RammsPaletteSlots::BusStop) { Slot = RammsPaletteSlots::Bench; }
 				// Park paths get park furniture only (no hydrants, meters or bus stops), and it stands on the lawn
 				// beside the path, never on it.
 				if (bPark)
@@ -392,6 +480,59 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				}
 			}
 
+			// --- litter (LitterDensity): flat, no collision ---------------------------------------------
+			if (S->LitterDensity > 0.0 && Palette && !bPark)
+			{
+				auto PutFlat = [&](FName LSlot, double A, double Y, double Z, double LYaw, double Scale)
+				{
+					if (A < 30.0 || A > Length - 30.0) { return; }
+					const FVector P = ToWorld(A, Y, Z);
+					FRammsPaletteMesh Lm;
+					if (InKeep(P) || !Palette->PickMesh(LSlot, Rng, Lm)) { return; }
+					RammsPCG::WritePickedMesh(Litter, Lm, P, LYaw, NextSeed(), Scale);
+				};
+				// a tree's own leaves around its pit
+				for (double At : TreeAlong)
+				{
+					for (int32 k = Rng.RandRange(1, 2); k > 0; --k)
+					{
+						const double R0 = RammsPCG::RandRange(Rng, 50.0, 140.0), Ang = RammsPCG::RandRange(Rng, 0.0, 2.0 * PI);
+						PutFlat(RammsPaletteSlots::LitterLeaves, At + R0 * FMath::Cos(Ang), FMath::Clamp(FZ * 0.5 + R0 * FMath::Sin(Ang), 5.0, SW - 5.0), 0.0,
+							RammsPCG::RandRange(Rng, 0.0, 360.0), RammsPCG::RandRange(Rng, 0.8, 1.2));
+					}
+				}
+				// along the curb: leaf drifts and litter in the gutter (in the road, just off the curb face), now and
+				// then bags of rubbish on the walk at the curb (those are obstacles: props, with collision)
+				const int32 NumLitter = FMath::RoundToInt(S->LitterDensity * Length / 10000.0 + RammsPCG::RandRange(Rng, -0.4, 0.4));
+				for (int32 n = 0; n < NumLitter; ++n)
+				{
+					const double A = RammsPCG::RandRange(Rng, 100.0, Length - 100.0), Roll = Rng.FRand();
+					if (Roll < 0.4) { PutFlat(RammsPaletteSlots::LitterGutter, A, -RammsPCG::RandRange(Rng, 25.0, 45.0), -RoadDrop, Yaw + RammsPCG::RandRange(Rng, -20.0, 20.0), RammsPCG::RandRange(Rng, 0.7, 1.1)); }
+					else if (Roll < 0.85) { PutFlat(RammsPaletteSlots::LitterTrash, A, -RammsPCG::RandRange(Rng, 20.0, 45.0), -RoadDrop, RammsPCG::RandRange(Rng, 0.0, 360.0), 1.0); }
+					else if (Occ.Free(A - 50.0, A + 50.0))
+					{
+						const FVector P = ToWorld(A, RammsPCG::RandRange(Rng, 30.0, FMath::Max(31.0, FMath::Min(50.0, FZ - 30.0))), 0.0);
+						FRammsPaletteMesh Bg;
+						if (InKeep(P) || !Palette->PickMesh(RammsPaletteSlots::LitterBags, Rng, Bg)) { continue; }
+						Occ.Take(A - 60.0, A + 60.0);
+						const int32 p = RammsPCG::WritePickedMesh(Props, Bg, P, RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed());
+						RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), RammsPaletteSlots::LitterBags, true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth);
+					}
+				}
+				// covers: a manhole in this side's half of the road every 16-26 m, a utility cover on the walk now and then
+				if (RoadW > 400.0)
+				{
+					for (double a = RammsPCG::RandRange(Rng, 600.0, 1200.0); a < Length - 600.0; a += RammsPCG::RandRange(Rng, 1600.0, 2600.0))
+					{
+						PutFlat(RammsPaletteSlots::CoverManhole, a, -RoadW * 0.25, -RoadDrop + 0.2, Yaw, 1.0);
+					}
+				}
+				for (double a = RammsPCG::RandRange(Rng, 400.0, 1500.0); a < Length - 400.0; a += RammsPCG::RandRange(Rng, 1500.0, 3500.0))
+				{
+					PutFlat(RammsPaletteSlots::CoverUtility, a, RammsPCG::RandRange(Rng, FMath::Min(FZ + 20.0, SW - 60.0), SW - 50.0), 0.2, Yaw, 1.0);
+				}
+			}
+
 			// Everything placed along this side records the route it stands on.
 			for (int32 k = PropsBefore; k < Props.Num(); ++k) { Props.Set(k, RammsPCG::RouteName, RouteName); }
 
@@ -409,6 +550,7 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 	Props.Emit(Context, RammsPCG::PinProps, { TEXT("Hazards") });
 	Pieces.Emit(Context, RammsPCG::PinPieces, { TEXT("Hazards") });
 	Routes.Emit(Context, RammsPCG::PinRoutes);
+	Litter.Emit(Context, RammsPCG::PinGrass, { TEXT("Litter") });
 	return true;
 }
 

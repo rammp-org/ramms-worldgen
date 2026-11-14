@@ -215,6 +215,23 @@ int32 RammsPCG::WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& P
 	return i;
 }
 
+TArray<FBox2D> RammsPCG::ParseBoxes(const FString& Text)
+{
+	TArray<FBox2D> Out;
+	TArray<FString> Parts;
+	Text.ParseIntoArray(Parts, TEXT(";"), true);
+	for (const FString& Part : Parts)
+	{
+		TArray<FString> V;
+		if (Part.ParseIntoArray(V, TEXT(","), true) == 4)
+		{
+			const double X0 = FCString::Atod(*V[0]), Y0 = FCString::Atod(*V[1]), X1 = FCString::Atod(*V[2]), Y1 = FCString::Atod(*V[3]);
+			Out.Add(FBox2D(FVector2D(FMath::Min(X0, X1), FMath::Min(Y0, Y1)), FVector2D(FMath::Max(X0, X1), FMath::Max(Y0, Y1))));
+		}
+	}
+	return Out;
+}
+
 int32 RammsPCG::WriteComposite(FRammsPointWriter& Modules, const FRammsPaletteMesh& Picked, const FVector& Location, double YawDeg, int32 Seed)
 {
 	const FRotator Rot = (FRotator(0.0, YawDeg, 0.0).Quaternion() * Picked.RotationOffset.Quaternion()).Rotator();

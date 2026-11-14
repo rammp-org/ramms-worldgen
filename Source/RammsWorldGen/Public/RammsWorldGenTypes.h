@@ -237,6 +237,19 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	/** Chance a lot is cut to a whole building from the palette (Building.Downtown, and Building.CornerNeg / CornerPos
 	 *  at a row's corner), placed as it was modelled, instead of a massing with facade modules. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (ClampMin = 0, ClampMax = 1)) double WholeBuildingChance = 0.0;
+
+	// --- street rules ----------------------------------------------------------
+	/** Street-design rules for the curb: a hydrant near a corner with no parking beside it, bus stop zones, no
+	 *  parking at crossing approaches, parked cars facing their traffic (right-hand), signal posts at the corners
+	 *  where crossings meet a side (palette TrafficSignal). Off: the original placement. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets") bool bStreetRules = false;
+	/** Street litter per 100 m of sidewalk side: leaf drifts and litter in the gutter, bags at the curb, leaves under
+	 *  the street trees, manholes in the lanes, utility covers on the walk (palette Litter.* / Cover.* slots; no
+	 *  collision). 0: none. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets", meta = (ClampMin = 0)) double LitterDensity = 0.0;
+	/** Areas kept clear of everything placed along the streets (parked cars, trees, furniture, hazards, signals,
+	 *  litter): world XY boxes "x0,y0,x1,y1;...", e.g. a test scenario's spot. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Streets") FString KeepClear;
 	/** Probability an entrance has a step rather than being level or ramped. Scaled by NonCompliance. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (ClampMin = 0, ClampMax = 1)) double EntranceStepChance = 0.35;
 	/** Probability a stepped entrance also gets a compliant ramp beside it. */

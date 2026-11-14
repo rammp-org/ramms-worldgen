@@ -225,6 +225,28 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     return path
 
 
+def keep_clear(gen, boxes=None, tag="RammsKeepClear", margin=0.0):
+    """Keep areas of a level clear of what the street dressing places (parked cars, street trees, furniture,
+    hazards, signals, litter): `boxes` [(x0, y0, x1, y1)] in world cm, plus the XY bounds (grown by `margin`) of
+    every actor in the level tagged `tag` -- a test scenario's start, a robot's path marker. Sets the generator's
+    KeepClear override (the preset's own boxes are replaced); Regenerate to apply. Returns the KeepClear text."""
+    boxes = [tuple(b) for b in (boxes or [])]
+    if tag:
+        eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+        for a in eas.get_all_level_actors():
+            if a != gen and unreal.Name(tag) in list(a.get_editor_property("tags")):
+                o, e = a.get_actor_bounds(False)
+                boxes.append((o.x - e.x - margin, o.y - e.y - margin, o.x + e.x + margin, o.y + e.y + margin))
+    text = ";".join("%.0f,%.0f,%.0f,%.0f" % (min(b[0], b[2]), min(b[1], b[3]), max(b[0], b[2]), max(b[1], b[3])) for b in boxes)
+    po = gen.get_editor_property("param_overrides")
+    po.set_editor_property("keep_clear", text)
+    gen.set_editor_property("param_overrides", po)
+    keys = gen.get_editor_property("override_keys")
+    keys.add(unreal.Name("KeepClear"))
+    gen.set_editor_property("override_keys", keys)
+    return text
+
+
 def finish_level(gen):
     """After generation: PlayerStart on the suggested start, pedestrian lanes and a crowd (RammsCrowd)
     along the routes. The caller saves the level. Returns the crowd summary (or the error text)."""

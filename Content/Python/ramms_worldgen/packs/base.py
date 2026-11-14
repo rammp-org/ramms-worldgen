@@ -26,13 +26,15 @@ class Ref:
     weight: how often a node picks it relative to the slot's other meshes (palette `Weight`).
     normalise: pull the mesh toward the slot's real-world height (palettes.SLOT_HEIGHTS); False keeps its size.
     yaw: the yaw that turns its front to +X when the heuristic gets it wrong (None: measured).
+    scale: a fixed scale for a pack modelled at another size (e.g. Downtown West's ~1.4x); overrides normalise.
     """
 
-    def __init__(self, path, weight=1.0, normalise=True, yaw=None):
+    def __init__(self, path, weight=1.0, normalise=True, yaw=None, scale=None):
         self.path = path
         self.weight = weight
         self.normalise = normalise
         self.yaw = yaw
+        self.scale = scale
 
     def __repr__(self):
         return "Ref(%r)" % self.path

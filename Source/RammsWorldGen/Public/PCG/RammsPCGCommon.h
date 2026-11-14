@@ -194,6 +194,9 @@ namespace RammsPCG
 	constexpr double PlaceEps = 0.05;
 
 	/** True when A and B overlap by more than PlaceEps on both axes (touching does not count). */
+	/** World XY boxes from "x0,y0,x1,y1;..." (KeepClear, RampCuts). */
+	RAMMSWORLDGEN_API TArray<FBox2D> ParseBoxes(const FString& Text);
+
 	inline bool Overlaps(const FBox2D& A, const FBox2D& B, double Eps = PlaceEps)
 	{
 		return A.Min.X < B.Max.X - Eps && B.Min.X < A.Max.X - Eps && A.Min.Y < B.Max.Y - Eps && B.Min.Y < A.Max.Y - Eps;
