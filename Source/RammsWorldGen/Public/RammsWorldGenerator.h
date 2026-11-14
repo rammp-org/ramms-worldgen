@@ -174,7 +174,8 @@ public:
 
 private:
 	void EnsureBound();
-	/** Set the palette's material parameter collection values (URammsWorldPalette::CollectionValues) in this world. */
+	/** Set the palette's material parameter collection values (URammsWorldPalette::CollectionValues) in this world:
+	 *  on construction, Regenerate, SetPalette and BeginPlay. The last generator to apply wins; nothing is reverted. */
 	void ApplyCollectionValues();
 	void HandleGenerated(UPCGComponent* Component);
 	void HandleCancelled(UPCGComponent* Component);

@@ -462,11 +462,14 @@ with the same packs, and a pack that is not installed only leaves its slots to t
   inside the front's ground floor) stretched or squeezed by at most `MaxStretch` to fill the face exactly, a
   knapsack over the kit's widths. Only the street faces are dressed -- the front, a corner lot's side on the
   cross street (`StreetSideNeg` / `StreetSidePos` from Subdivide Lots), the back of a one-row block
-  (`StreetBack`) -- over the massing shell; the cornice is the style's own `Facade.<style>.Top`; a module's
+  (`StreetBack`) -- over the massing shell; the cornice is the upper floors' style's `Facade.<style>.Top`
+  (the style itself, or with `UpperMixChance` another of its family), on every dressed face or none; a module's
   material slots keep the pack's materials unless the kit maps a slot to `Facade.<style>.Mat.<Category>`
   (the glass slots of Downtown West and Camden take the built-in `M_RammsWindowGlass`: their own fake-interior
-  glass renders as flat panels without reflection captures). The massing shell stands back from the street
-  faces by the kit's deepest module, so recessed window panes are not behind its wall.
+  glass renders as flat panels without reflection captures). Each module is stretched to fill its slot exactly.
+  The massing shell stands back from the dressed faces by the deepest inward reach of the modules placed (read
+  from their meshes; at most a quarter of the building's width or depth), so recessed window panes are not
+  behind its wall, and stays on the building line on the faces left bare.
   Each entry carries the yaw, offset and scale that bring the pack's pieces to the convention (measured from
   the bounds, so centred and end pivots both work). A style that cannot tile a building gives way to another
   (up to four) before the cube dressing. Today: Downtown West's buildings a, b (two storefront lines), d, e and
@@ -833,9 +836,11 @@ URLab cannot replace-import a Blueprint.
   the curb on their right). The Hazard Placer puts the hydrant and the bus
   shelter (a bench where a shelter would narrow the route) where they were
   kept, places no other hydrants or shelters, and stands a signal at each
-  corner where a crossing meets the side (`TrafficSignal`: the entry's front
-  is where its heads face, a mast arm runs to its +Y over the road; masts are
-  placed by their pole). Off, placement is exactly what it was.
+  corner where an intersection crossing (not a mid-block one) meets the side
+  (`TrafficSignal`: the entry's front is where its heads face, a mast arm
+  runs to its +Y over the road; masts are placed by their pole). None of
+  these is placed where it would narrow the route below `MinClearWidth`.
+  Off, placement is exactly what it was.
 - **Lit signals**: a composite signal entry (parts carrying their own
   materials) goes out with the facade modules, its manifest record (the pole)
   with the features. The Downtown recipe's Downtown West mast is one: its pack
@@ -849,8 +854,10 @@ URLab cannot replace-import a Blueprint.
   Market's pole signal cycles on its own timer, so the recipe leaves it out.
 - **Pack look controls** (palette `CollectionValues`): scalars of a pack's
   material parameter collections, set in the world by the generator (on
-  construction, Regenerate and BeginPlay: collection values live in the
-  world, not in assets). Packs declare them (`collection_values`); the default
+  construction, Regenerate, `SetPalette` and BeginPlay: collection values live
+  in the world, not in assets; with several generators in a world the last
+  one wins, and nothing is reverted; a collection whose pack is not installed
+  is skipped). Packs declare them (`collection_values`); the default
   palette and recipes carry their packs'. American City Packs' windows and
   background towers glow by `MPC_Emissive`'s `Building Emissive Intensity`,
   shipped at 800 (night: every window blown out in daylight); its daylight

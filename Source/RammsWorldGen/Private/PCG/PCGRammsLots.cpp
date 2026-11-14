@@ -4,6 +4,7 @@
 #include "PCGContext.h"
 #include "PCGPin.h"
 #include "Data/PCGBasePointData.h"
+#include "Engine/StaticMesh.h"
 #include "Metadata/PCGMetadata.h"
 #include "Metadata/PCGMetadataAttribute.h"
 
@@ -272,7 +273,9 @@ namespace
 		Kit.Info = Palette->FacadeKit(Kit.Style);
 		if (Kit.Info)
 		{
-			// Upper floors from another style of the same pack, now and then; tops and materials are the style's own.
+			// The upper floors -- window floors, their top-floor variant and the cornice (Top) -- come from another style
+			// of the same family now and then (UpperMixChance), else from the style itself. The materials are always
+			// the style's own (PickKitMaterials(Kit.Style)).
 			Kit.UpperStyle = Kit.Style;
 			if (Rng.FRand() < Kit.Info->UpperMixChance)
 			{
@@ -396,6 +399,25 @@ namespace
 		}
 		return i;
 	}
+
+	// How far a module reaches behind its facade line (the run's frame: exterior toward +y), its mesh's bounds under
+	// the entry's transform: a pack module's recessed window panes. The palette keeps only the larger reach either
+	// side (Footprint.Y, which counts awnings and balconies out front), so the mesh is read here; it is about to be
+	// spawned anyway. 0 when it cannot be loaded.
+	double ModuleInwardDepth(const FRammsPaletteMesh& M)
+	{
+		const UStaticMesh* SM = M.Mesh.LoadSynchronous();
+		if (!SM) { return 0.0; }
+		const FBox B = SM->GetBoundingBox();
+		const FTransform Entry(M.RotationOffset, M.LocationOffset, FVector(M.Scale));
+		double MinY = 0.0;
+		for (int32 c = 0; c < 8; ++c)
+		{
+			const FVector Corner((c & 1) ? B.Max.X : B.Min.X, (c & 2) ? B.Max.Y : B.Min.Y, (c & 4) ? B.Max.Z : B.Min.Z);
+			MinY = FMath::Min(MinY, Entry.TransformPosition(Corner).Y);
+		}
+		return -MinY;
+	}
 }
 
 // --- Subdivide Lots ----------------------------------------------------------------
@@ -478,8 +500,9 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 							for (int32 k = 0; k < Bs->Num(); ++k)
 							{
 								const FRammsPaletteMesh& B = (*Bs)[k];
+								// Deep enough for the building behind the least setback the lot can draw, 1.5 m kept at its back.
 								const double Rest = xEnd - x - B.Footprint.Y - 30.0;
-								if (B.IsComposite() && B.Footprint.X <= RowDepth - 150.0 && Rest > -30.0 && (Rest < 60.0 || Rest >= S->LotWidthMin * 0.6)) { Fit.Add(k); }
+								if (B.IsComposite() && B.Footprint.X <= RowDepth - 150.0 - FMath::Max(S->SetbackMin, 0.0) && Rest > -30.0 && (Rest < 60.0 || Rest >= S->LotWidthMin * 0.6)) { Fit.Add(k); }
 							}
 							if (Fit.Num() > 0)
 							{
@@ -497,7 +520,11 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 					Lots.SetInt(l, RammsPCG::BlockId, BlockId);
 					Lots.Set(l, RammsPCG::Width, W);
 					Lots.Set(l, RammsPCG::Depth, RowDepth);
-					Lots.Set(l, RammsPCG::Setback, RammsPCG::RandRange(Rng, S->SetbackMin, S->SetbackMax));
+					double LotSetback = RammsPCG::RandRange(Rng, S->SetbackMin, S->SetbackMax);
+					// A whole building stands back no further than keeps it 1.5 m inside the lot's back line (Building
+					// Massing puts its front on the setback line).
+					if (WholeIdx != INDEX_NONE) { LotSetback = FMath::Min(LotSetback, RowDepth - 150.0 - (*Palette->GetMeshes(WholeSlot))[WholeIdx].Footprint.X); }
+					Lots.Set(l, RammsPCG::Setback, LotSetback);
 					Lots.SetInt(l, RammsPCG::Side, Row == 0 ? 0 : 2);
 					Lots.Set(l, FName(TEXT("RampCuts")), R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
 					(void)FaceSign;
@@ -570,6 +597,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 	FRammsPointWriter Primitives, Pieces, Props, Modules, Features, Grass;
 	int32 Counter = 0;
 	auto NextSeed = [&]() { return RammsPCG::SubSeed(Seed, 2000 + (++Counter)); };
+	const TArray<FBox2D> KeepBoxes = RammsPCG::ParseBoxes(S->KeepClear);
 
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinIn))
 	{
@@ -587,23 +615,19 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			const double Yaw = Xf.Rotator().Yaw;
 			auto ToWorld = [&](double lx, double ly, double lz) { return Xf.TransformPosition(FVector(lx, ly, lz - Z0)); };
 			// Curb ramps in front of the lot (from the street network): nothing is planted or paved over them.
-			TArray<FBox2D> RampCuts;
-			{
-				TArray<FString> Parts;
-				R.Get<FString>(i, FName(TEXT("RampCuts")), FString()).ParseIntoArray(Parts, TEXT(";"), true);
-				for (const FString& Part : Parts)
-				{
-					TArray<FString> V;
-					if (Part.ParseIntoArray(V, TEXT(","), true) == 4)
-					{
-						RampCuts.Add(FBox2D(FVector2D(FCString::Atod(*V[0]), FCString::Atod(*V[1])), FVector2D(FCString::Atod(*V[2]), FCString::Atod(*V[3]))));
-					}
-				}
-			}
+			const TArray<FBox2D> RampCuts = RammsPCG::ParseBoxes(R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
 			auto OnRamp = [&](double lx, double ly, double Margin)
 			{
 				const FVector W = ToWorld(lx, ly, Z0);
 				for (const FBox2D& Bx : RampCuts) { if (Bx.ExpandBy(Margin).IsInside(FVector2D(W.X, W.Y))) { return true; } }
+				return false;
+			};
+			// Kept-clear areas (KeepClear): the planting strip's street trees, lights and grass stay off them.
+			auto InKeep = [&](double lx, double ly, double Margin)
+			{
+				if (KeepBoxes.Num() == 0) { return false; }
+				const FVector W = ToWorld(lx, ly, Z0);
+				for (const FBox2D& Bx : KeepBoxes) { if (Bx.ExpandBy(Margin).IsInside(FVector2D(W.X, W.Y))) { return true; } }
 				return false;
 			};
 
@@ -719,9 +743,11 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			// cornice, corner pieces, and one material pick per category for the whole building. The plan
 			// snaps to the kit's 100 cm grid; the cube shell stays inside as the building's body.
 			bool bModules = false, bDoorModule = false;
-			// How far the massing shell stands back from the facade line on each side (the original kits' modules are
-			// at most ~30 cm deep; a pack kit's, measured: its windows must not be behind the shell's wall).
-			double ShellSetBack = 30.0;
+			// How far the massing shell stands back from the building line at the front, the back and the lot's -Y and
+			// +Y sides. The original kits dress every face, with modules at most ~30 cm deep. A pack kit dresses its
+			// street faces only: the shell stands back from those by the modules' inward reach (its windows must not be
+			// behind the shell's wall) and stays on the line elsewhere (below).
+			double ShellFront = 30.0, ShellBack = 30.0, ShellNeg = 30.0, ShellPos = 30.0;
 			FString RoofMat;
 			FFacadeKit Kit;
 			bool bKit = S->bFacadeModules && !bHouse && !bHouseMesh && Palette && BuildKit(Palette, S->FacadeStyles, Rng, Kit);
@@ -754,28 +780,35 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 						const double Lead = (f == 0 && bHaveDoor && !DoorMesh.Mesh.IsNull()) ? DoorMesh.Footprint.X : 0.0;
 						bOk = TileRunStretch(Fc.Len, GfL, Stretch, Lead, Rng, Fc.Gf.L, Fc.Gf.Scale, &Fc.DoorIdx);
 						if (!bOk && Lead > 0.0) { bOk = TileRunStretch(Fc.Len, GfL, Stretch, 0.0, Rng, Fc.Gf.L, Fc.Gf.Scale); }
-						bOk = bOk && TileRunStretch(Fc.Len, WinL, Stretch, 0.0, Rng, Fc.Win.L, Fc.Win.Scale);
+						// (A one-storey building has no window floor to tile.)
+						bOk = bOk && (Floors < 2 || TileRunStretch(Fc.Len, WinL, Stretch, 0.0, Rng, Fc.Win.L, Fc.Win.Scale));
 						if (bOk && Kit.Top && !TileRunStretch(Fc.Len, TopL, Stretch, 0.0, Rng, Fc.Top.L, Fc.Top.Scale)) { Fc.Top.L.Reset(); }
 					}
 				}
 				if (bOk)
 				{
 					bModules = true;
-					for (const TArray<FRammsPaletteMesh>* Set : { Kit.GF, Kit.GFDoor, Kit.Win, Kit.WinTop })
-					{
-						if (Set) { for (const FRammsPaletteMesh& Mm : *Set) { ShellSetBack = FMath::Max(ShellSetBack, Mm.Footprint.Y + 8.0); } }
-					}
+					// The cornice goes on every dressed face or on none (a face without one would show the shell's top
+					// band), and the building is only that much taller when it does.
+					bool bTops = Kit.Top != nullptr;
+					for (const FKitFace& Fc : KFaces) { bTops = bTops && Fc.Top.L.Num() > 0; }
+					if (!bTops) { for (FKitFace& Fc : KFaces) { Fc.Top.L.Reset(); } }
 					const double Rise = EntranceRise;
 					const double Zb = Z0 + Rise;
-					H = Rise + Kit.GFHeight + (Floors - 1) * Kit.WinHeight + Kit.TopHeight;
+					H = Rise + Kit.GFHeight + (Floors - 1) * Kit.WinHeight + (bTops ? Kit.TopHeight : 0.0);
 					const TMap<FName, FString> Mats = PickKitMaterials(Palette, Kit.Style, Rng);
 					RoofMat = RammsPCG::Mat(Palette, RammsPaletteSlots::MatAsphalt);
+					// The deepest any ground-floor or window module placed reaches behind its facade line.
+					double Inward = 0.0;
 					for (const FKitFace& Fc : KFaces)
 					{
-						auto Place = [&](double Along, double Z)
+						// A module at Along on this face, stretched to fill its slot (SlotLen) exactly: the runs are tiled in
+						// whole centimetres and a slot takes any module within PickModule's tolerance of its length.
+						auto Put = [&](const FRammsPaletteMesh& Mm, double Along, double Z, double SlotLen, bool bBody)
 						{
 							const FVector2D P = Fc.Start + Fc.Dir * Along;
-							return FTransform(FRotator(0.0, Yaw + Fc.LocalYaw, 0.0), ToWorld(P.X, P.Y, Z));
+							WriteModule(Modules, Mm, FTransform(FRotator(0.0, Yaw + Fc.LocalYaw, 0.0), ToWorld(P.X, P.Y, Z)), Mats, NextSeed(), SlotLen / FMath::Max(Mm.Footprint.X, 1.0), true);
+							if (bBody) { Inward = FMath::Max(Inward, ModuleInwardDepth(Mm)); }
 						};
 						FRammsPaletteMesh M;
 						double a = 0.0;
@@ -786,9 +819,9 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 							{
 								bDoorModule = true;
 								EntranceY = (Fc.Start + Fc.Dir * (a + L * 0.5)).Y;
-								WriteModule(Modules, DoorMesh, Place(a, Zb), Mats, NextSeed(), Fc.Gf.Scale, true);
+								Put(DoorMesh, a, Zb, L, true);
 							}
-							else if (PickModule(Kit.GF, Fc.Gf.L[g], Rng, M)) { WriteModule(Modules, M, Place(a, Zb), Mats, NextSeed(), Fc.Gf.Scale, true); }
+							else if (PickModule(Kit.GF, Fc.Gf.L[g], Rng, M)) { Put(M, a, Zb, L, true); }
 							a += L;
 						}
 						for (int32 Floor = 1; Floor < Floors; ++Floor)
@@ -798,7 +831,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 							a = 0.0;
 							for (double L : Fc.Win.L)
 							{
-								if ((bLast && PickModule(Kit.WinTop, L, Rng, M)) || PickModule(Kit.Win, L, Rng, M)) { WriteModule(Modules, M, Place(a, Zf), Mats, NextSeed(), Fc.Win.Scale, true); }
+								if ((bLast && PickModule(Kit.WinTop, L, Rng, M)) || PickModule(Kit.Win, L, Rng, M)) { Put(M, a, Zf, L * Fc.Win.Scale, true); }
 								a += L * Fc.Win.Scale;
 							}
 						}
@@ -808,11 +841,19 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 							a = 0.0;
 							for (double L : Fc.Top.L)
 							{
-								if (PickModule(Kit.Top, L, Rng, M)) { WriteModule(Modules, M, Place(a, Zt), Mats, NextSeed(), Fc.Top.Scale, true); }
+								if (PickModule(Kit.Top, L, Rng, M)) { Put(M, a, Zt, L * Fc.Top.Scale, false); }
 								a += L * Fc.Top.Scale;
 							}
 						}
 					}
+					// The shell stands back from the dressed faces by that reach (a little more, so no pane is behind or
+					// flush with its wall; at most a quarter of the building's width or depth, so it keeps a body) and
+					// stays on the building line on the faces left bare (party walls), so the facade's ends meet it.
+					const double SetBack = FMath::Min(Inward + 3.0, 0.25 * FMath::Min(BW, BD));
+					ShellFront = SetBack;
+					ShellNeg = R.Get<bool>(i, StreetSideNeg, false) ? SetBack : 0.0;
+					ShellPos = R.Get<bool>(i, StreetSidePos, false) ? SetBack : 0.0;
+					ShellBack = R.Get<bool>(i, StreetBack, false) ? SetBack : 0.0;
 					if (Rise > 0.0)
 					{
 						RammsPCG::WriteCube(Primitives, ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + Rise * 0.5), FVector(BD + 70.0, BW + 70.0, Rise), Yaw, MatConcrete, NextSeed());
@@ -927,11 +968,13 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				}
 			}
 
-			const FVector ShellCentre = ToWorld((FrontX + BackX) * 0.5, 0.0, Z0 + H * 0.5);
 			if (!bHouseMesh)
 			{
-				const double Inset = bModules ? 2.0 * ShellSetBack : 0.0;
-				RammsPCG::WriteCube(Primitives, ShellCentre, FVector(BD - Inset, BW - Inset, H), Yaw, Rng.FRand() < 0.5 ? MatFacade : MatFacadeAlt, NextSeed());
+				// Inset from each face the modules dress (none without modules): centred for the original kits, shifted
+				// toward the faces a pack kit leaves bare.
+				const double InF = bModules ? ShellFront : 0.0, InB = bModules ? ShellBack : 0.0, InN = bModules ? ShellNeg : 0.0, InP = bModules ? ShellPos : 0.0;
+				const FVector ShellCentre = ToWorld((FrontX + BackX) * 0.5 + (InB - InF) * 0.5, (InN - InP) * 0.5, Z0 + H * 0.5);
+				RammsPCG::WriteCube(Primitives, ShellCentre, FVector(BD - (InF + InB), BW - (InN + InP), H), Yaw, Rng.FRand() < 0.5 ? MatFacade : MatFacadeAlt, NextSeed());
 			}
 			if (bHouse && !bHouseMesh)
 			{
@@ -1400,7 +1443,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 						for (int32 k = 0; k < NT; ++k)
 						{
 							const double Ty = -Width * 0.5 + Width * (k + 0.5) / NT + RammsPCG::RandRange(Rng, -60.0, 60.0);
-							if (!ClearOfDrive(Ty, 90.0) || FMath::Abs(Ty) > Width * 0.5 - 80.0 || OnRamp(StripX, Ty, 90.0)) { continue; }
+							if (!ClearOfDrive(Ty, 90.0) || FMath::Abs(Ty) > Width * 0.5 - 80.0 || OnRamp(StripX, Ty, 90.0) || InKeep(StripX, Ty, 90.0)) { continue; }
 							FRammsPaletteMesh Tm;
 							if (bCanopy ? (Palette->PickMesh(RammsPaletteSlots::TreeLarge, Rng, Tm) || Palette->PickMesh(RammsPaletteSlots::Tree, Rng, Tm)) : Palette->PickMesh(RammsPaletteSlots::Tree, Rng, Tm))
 							{
@@ -1413,7 +1456,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					if (S->StreetLightSpacing > 300.0 && (LotId % FMath::Max(1, FMath::RoundToInt(S->StreetLightSpacing / FMath::Max(Width, 100.0)))) == 0)
 					{
 						const double Ly = (LotId % 2 == 0 ? -1.0 : 1.0) * (Width * 0.5 - 70.0);
-						if (ClearOfDrive(Ly, 40.0) && !OnRamp(StripX, Ly, 50.0))
+						if (ClearOfDrive(Ly, 40.0) && !OnRamp(StripX, Ly, 50.0) && !InKeep(StripX, Ly, 50.0))
 						{
 							const int32 l = RammsPCG::WritePaletteMesh(Props, Palette, RammsPaletteSlots::StreetLight, Rng, ToWorld(StripX, Ly, Z0), Yaw + 90.0, NextSeed());
 							RammsPCG::WriteManifest(Props, l, FName(TEXT("Prop")), RammsPaletteSlots::StreetLight, true, ERammsComplianceIssue::None, 0.0, 0.0);
@@ -1427,7 +1470,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 							for (double gx = StripX - FZs * 0.5 + 25.0; gx < StripX + FZs * 0.5 - 20.0; gx += Step)
 							{
 								const double Py = gy + RammsPCG::RandRange(Rng, -Step * 0.4, Step * 0.4);
-								if (!ClearOfDrive(Py, 30.0) || OnRamp(gx, Py, 20.0)) { continue; }
+								if (!ClearOfDrive(Py, 30.0) || OnRamp(gx, Py, 20.0) || InKeep(gx, Py, 20.0 + Step * 0.3)) { continue; }
 								FRammsPaletteMesh G; if (!Palette->PickMesh(RammsPaletteSlots::GrassClump, Rng, G)) { break; }
 								RammsPCG::WritePickedMesh(Grass, G, ToWorld(FMath::Clamp(gx + RammsPCG::RandRange(Rng, -Step * 0.3, Step * 0.3), StripX - FZs * 0.5 + 20.0, StripX + FZs * 0.5 - 20.0), Py, Z0),
 									RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(), RammsPCG::RandRange(Rng, 0.6, 1.0));

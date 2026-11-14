@@ -293,7 +293,9 @@ TArray<FName> URammsSegmentationLabels::ClassesForPalette(const URammsWorldPalet
 		for (const FName& N : Names)
 		{
 			const FString S = N.ToString();
-			if (S.StartsWith(TEXT("Mat.")) || S.StartsWith(RammsPaletteSlots::FacadeMatPrefix) || S.StartsWith(TEXT("Decal.")))
+			// Material sets are surfaces, not classes: Mat.*, Facade.Mat.* and a pack kit's Facade.<style>.Mat.*.
+			if (S.StartsWith(TEXT("Mat.")) || S.StartsWith(RammsPaletteSlots::FacadeMatPrefix) || S.StartsWith(TEXT("Decal."))
+				|| (S.StartsWith(RammsPaletteSlots::FacadePrefix) && S.Contains(TEXT(".Mat."))))
 			{
 				continue;
 			}

@@ -113,8 +113,9 @@ struct RAMMSWORLDGEN_API FRammsPaletteMesh
  * with one is tiled from any module widths -- each run of modules (a floor of a face) stretched or squeezed by
  * at most MaxStretch to fill the face exactly -- dresses only the building's street faces (the front, a corner
  * lot's side on the cross street, the back of a one-row block; the rest is the massing shell, the party walls),
- * takes its cornice from its own "Facade.<style>.Top" slot and its materials from its own
- * "Facade.<style>.Mat.<Category>" sets (a module slot with none keeps the mesh's own material). Modules keep their palette transform
+ * takes its cornice from a "Facade.<style>.Top" slot (the upper floors' style: itself, or with UpperMixChance
+ * another of its family) and its materials from its own "Facade.<style>.Mat.<Category>" sets (a module slot
+ * with none keeps the mesh's own material). Modules keep their palette transform
  * (RotationOffset / LocationOffset / Scale: a pack's pivot and size brought to the convention). A style
  * without one is the original kit: a 100 cm grid, every face, corner pieces, global tops and material sets.
  */
@@ -143,7 +144,9 @@ struct RAMMSWORLDGEN_API FRammsFacadeKitInfo
 /** A value for a scalar of a material parameter collection, set in the world when a level generates or loads: a
  *  pack's global look controls, e.g. American City Packs' "Building Emissive Intensity" (its lit windows: 800 is
  *  night; daylight wants ~10). Collection values live in the world, not in any asset, so the generator applies
- *  them on construction, on Regenerate and at BeginPlay. */
+ *  them on construction, on Regenerate, when its palette is set and at BeginPlay. A collection whose package is
+ *  not installed is skipped. With several generators in one world the last one to apply wins; nothing reverts a
+ *  value when the palette changes. */
 USTRUCT(BlueprintType)
 struct RAMMSWORLDGEN_API FRammsCollectionValue
 {
@@ -403,7 +406,7 @@ public:
 
 	/** Describe (or replace) a style's kit. Used by the Python palette builder. */
 	UFUNCTION(BlueprintCallable, Category = "Ramms|WorldGen")
-	void SetFacadeKit(const FString& Style, const FRammsFacadeKitInfo& Info) { FacadeKits.Add(Style, Info); }
+	void SetFacadeKit(const FString& Style, const FRammsFacadeKitInfo& Info) { Modify(); FacadeKits.Add(Style, Info); }
 
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
 	bool HasSlot(FName Slot) const;

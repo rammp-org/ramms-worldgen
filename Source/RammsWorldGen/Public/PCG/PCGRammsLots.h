@@ -73,6 +73,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double TreeSpacing = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double CanopyChance = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double StreetLightSpacing = 0.0;
+	/** World XY boxes "x0,y0,x1,y1;..." kept clear of the planting strip's street trees, lights and grass (see FRammsWorldGenParams). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) FString KeepClear;
 	/** House lots: probability of a driveway beside the house (sometimes with a car on it). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double DrivewayChance = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Buildings", meta = (PCG_Overridable)) double DrivewayWidth = 360.0;
