@@ -59,6 +59,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
   - [At runtime](#at-runtime)
 - [The manifest](#the-manifest)
 - [Segmentation labels](#segmentation-labels)
+- [Collision shapes](#collision-shapes)
 - [Parameters](#parameters)
 - [Packs and palette recipes](#packs-and-palette-recipes)
 - [Extending](#extending)
@@ -352,6 +353,54 @@ config: RAMMS lists them in `Config/DefaultGame.ini` under
 `[/Script/CameraCapture.CameraCaptureSegmentationSettings]`.
 `URammsSegmentationLabels::ClassesForPalette` lists every class a palette can
 produce, for keeping that list complete when slots are added.
+
+## Collision shapes
+
+A generated world's collision is also available as plain shapes
+(`RammsCollisionShapes.h`, no engine types beyond Core), so another physics engine can
+build the same world: RammsMujocoSupport turns them into MuJoCo world geoms.
+`ARammsWorldGenerator::GatherCollisionShapes(Shapes[, Filter])` returns them in
+world space; `DescribeCollisionShapes()` counts them by type and surface. A
+`FRammsCollisionShapeFilter` limits them to a box or to a radius in plan.
+
+The shapes are exactly what Chaos collides with, so a curb face stays a vertical
+step and a 6 mm lip stays 6 mm:
+
+| Source | Shapes |
+|---|---|
+| Slab, curb, column, steps, ramp (slab, landing, lips), wall (around its openings, frames, glass), door (leaf, handles, threshold), planter, roof soffit, warning strip | one box per part |
+| Bollard, tree trunk and branches, tree and shrub canopy blobs, gable roof, the ramp of a curb ramp | one convex hull per part, of the part's own vertices |
+| Curb ramp flares (their top is twisted), mounds and hollows | a height grid over the mesh's own vertices |
+| Patch | the slab under the disc (its top is the disc) |
+| Decal | none |
+| Instanced and static meshes the generator made | per instance, the mesh's simple collision as Chaos builds it (`FK*Elem::GetFinalScaled`): boxes, spheres, capsules, convex hulls; a complex-as-simple mesh as the hull of its triangles (coarser where it is concave; logged once per asset) |
+
+Foliage and anything without physics collision is skipped, as are articulated
+stand-ins (they simulate as articulations) and pawns.
+
+**One code path.** `ARammsProcPiece::AppendCollisionShapes` runs the kind's own
+builder into a scratch mesh with a capture open: every box the builder appends
+reports itself as a box, every other convex primitive as the hull of the vertices
+it appended, every lifted grid as a height grid. The mesh and the shapes cannot
+drift apart, and a new builder part is exported without extra code. A kind added
+later reports its shapes from its own case in `AppendCollisionShapes`.
+
+**Height grids** split each cell along the diagonal from sample (i+1, j) to
+(i, j+1), which is how MuJoCo's height fields split theirs once Unreal's Y is
+mirrored. A mesh drawn from a grid must split its cells the same way, or the
+two agree only at the samples: `RammsCollisionShapes::MatchHeightGridDiagonals`
+flips a grid mesh's edges to match (flares and mounds use it, so their meshes
+changed by that flip).
+
+**Surfaces** come from the segmentation label (`Road` is `Asphalt`, `Sidewalk`
+`Concrete`, `Curb` `Curb`, `Lawn` `Grass`, `Hazard.Mud` `Mud` ...,
+`RammsCollisionShapes::SurfaceForClass`), else from a physical material's name,
+else from the piece kind; anything else is `Default`.
+
+`Ramms.WorldGen.CollisionShapes.ProcPieces` checks every kind (and pitched,
+rolled pieces) against its mesh: bounds within 1 mm, vertical probes within
+2 mm of Chaos's trace. `Ramms.WorldGen.CollisionShapes.InstancedMeshes` checks
+scaled, rotated instances against Chaos's simple collision.
 
 ## Parameters
 
@@ -1064,8 +1113,9 @@ and saved there (the example levels), not with runtime regeneration.
     (`levels.build_level` does) before `crowd.build_crowd`.
 
   Generated geometry is Unreal collision. The Chaos backend drives on it
-  directly; the MuJoCo / Newton backends only know what URLab has imported, so
-  a generated world is not yet visible to them.
+  directly; MuJoCo gets the same world through the [collision shapes](#collision-shapes)
+  (RammsMujocoSupport exports them as world geoms). The Newton backend does not
+  read them yet.
 - Pieces are one actor each (walls, ramps, doors, trees). A dense downtown
   spawns a few hundred; fine in the editor, and `Collapse` in the Spawn Actor
   node is the lever if it ever matters.

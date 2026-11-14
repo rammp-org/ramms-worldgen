@@ -132,6 +132,9 @@ public:
 	 *  physics engines that build their own world from it (MuJoCo). */
 	void GatherCollisionShapes(TArray<FRammsCollisionShape>& Out) const;
 
+	/** The same, limited to a region (FRammsCollisionShapeFilter): pieces and instances outside it are not built. */
+	void GatherCollisionShapes(TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter) const;
+
 	/** GatherCollisionShapes, counted by type and surface, as one line of text (for scripts and checks). */
 	UFUNCTION(BlueprintCallable, Category = "World Generator")
 	FString DescribeCollisionShapes() const;
