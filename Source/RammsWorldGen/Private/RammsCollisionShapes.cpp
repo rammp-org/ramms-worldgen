@@ -153,6 +153,111 @@ namespace RammsCollisionShapes
 		AddConvex(Out, Frame, MoveTemp(Points), Surface, Source);
 	}
 
+	int32 MergeFlushBoxes(TArray<FRammsCollisionShape>& Shapes, int32 FirstIndex, double Tolerance)
+	{
+		// A box in the frame of its own orientation: there, two boxes of one orientation merge along an axis when their
+		// other two axes agree, so each axis is a sort over buckets of boxes that agree on the other two.
+		struct FBoxRef
+		{
+			int32 Index;
+			FQuat Rotation;
+			FVector Local;
+		};
+		const double Tol = FMath::Max(Tolerance, 1.0e-6);
+		auto Quantized = [Tol](double V) { return GetTypeHash(FMath::RoundToInt64(V / Tol)); };
+		TArray<bool> Dead;
+		Dead.Init(false, Shapes.Num());
+		int32 Merged = 0;
+		for (int32 Pass = 0; Pass < 2; ++Pass) // a second pass joins rows the first one made
+		{
+			for (int32 Axis = 0; Axis < 3; ++Axis)
+			{
+				TMap<uint32, TArray<FBoxRef>> Buckets;
+				for (int32 i = FMath::Max(FirstIndex, 0); i < Shapes.Num(); ++i)
+				{
+					const FRammsCollisionShape& S = Shapes[i];
+					if (Dead[i] || S.Type != ERammsCollisionShapeType::Box)
+					{
+						continue;
+					}
+					FQuat R = S.Transform.GetRotation().GetNormalized();
+					if (R.W < 0.0)
+					{
+						R = FQuat(-R.X, -R.Y, -R.Z, -R.W);
+					}
+					const FVector L = R.UnrotateVector(S.Transform.GetLocation());
+					uint32 Hash = HashCombine(GetTypeHash(S.Surface), GetTypeHash(Axis));
+					const double Components[4] = { R.X, R.Y, R.Z, R.W };
+					for (const double C : Components)
+					{
+						Hash = HashCombine(Hash, GetTypeHash(FMath::RoundToInt64(C * 1.0e6)));
+					}
+					for (int32 k = 0; k < 3; ++k)
+					{
+						if (k != Axis)
+						{
+							Hash = HashCombine(Hash, Quantized(L[k]));
+							Hash = HashCombine(Hash, Quantized(S.HalfExtents[k]));
+						}
+					}
+					Buckets.FindOrAdd(Hash).Add({ i, R, L });
+				}
+				for (TPair<uint32, TArray<FBoxRef>>& Bucket : Buckets)
+				{
+					TArray<FBoxRef>& B = Bucket.Value;
+					if (B.Num() < 2)
+					{
+						continue;
+					}
+					B.Sort([Axis](const FBoxRef& X, const FBoxRef& Y) { return X.Local[Axis] < Y.Local[Axis]; });
+					int32 Cur = 0;
+					for (int32 n = 1; n < B.Num(); ++n)
+					{
+						FRammsCollisionShape& A = Shapes[B[Cur].Index];
+						const FRammsCollisionShape& Next = Shapes[B[n].Index];
+						// The bucket is a hash: check what it stands for.
+						bool bAligned = A.Surface == Next.Surface && FMath::Abs(B[Cur].Rotation | B[n].Rotation) > 1.0 - 1.0e-9;
+						for (int32 k = 0; bAligned && k < 3; ++k)
+						{
+							bAligned = k == Axis || (FMath::Abs(B[Cur].Local[k] - B[n].Local[k]) <= Tol && FMath::Abs(A.HalfExtents[k] - Next.HalfExtents[k]) <= Tol);
+						}
+						const double Lo = B[Cur].Local[Axis] - A.HalfExtents[Axis];
+						const double End = B[Cur].Local[Axis] + A.HalfExtents[Axis];
+						const double Start = B[n].Local[Axis] - Next.HalfExtents[Axis];
+						if (!bAligned || FMath::Abs(End - Start) > Tol)
+						{
+							Cur = n; // a gap, an overlap or a lip: they stay two
+							continue;
+						}
+						const double Hi = B[n].Local[Axis] + Next.HalfExtents[Axis];
+						B[Cur].Local[Axis] = (Lo + Hi) * 0.5;
+						A.HalfExtents[Axis] = (Hi - Lo) * 0.5;
+						A.Transform.SetLocation(B[Cur].Rotation.RotateVector(B[Cur].Local));
+						Dead[B[n].Index] = true;
+						++Merged;
+					}
+				}
+			}
+		}
+		if (Merged > 0)
+		{
+			int32 Write = FMath::Max(FirstIndex, 0);
+			for (int32 i = Write; i < Shapes.Num(); ++i)
+			{
+				if (!Dead[i])
+				{
+					if (Write != i)
+					{
+						Shapes[Write] = MoveTemp(Shapes[i]);
+					}
+					++Write;
+				}
+			}
+			Shapes.SetNum(Write);
+		}
+		return Merged;
+	}
+
 	int32 AppendComponentHulls(const TArray<FVector3f>& Vertices, const TArray<FIntVector>& Triangles, TArray<TArray<FVector>>& OutHulls, int32 MaxHulls)
 	{
 		const int32 NumV = Vertices.Num();

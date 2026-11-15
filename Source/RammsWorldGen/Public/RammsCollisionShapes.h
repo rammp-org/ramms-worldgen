@@ -82,6 +82,10 @@ struct RAMMSWORLDGEN_API FRammsCollisionShapeFilter
 	/** Actors whose collision another engine already has (MuJoCo quick-convert components): skipped whole. */
 	TSet<const AActor*> ExcludedActors;
 
+	/** Merge flush neighbouring boxes into one (RammsCollisionShapes::MergeFlushBoxes): paving and road cubes that tile
+	 *  a flat area, slabs side by side. Off keeps one shape per source part. */
+	bool bMergeFlushBoxes = true;
+
 	/** Whether the region keeps everything (ExcludedActors are skipped either way). */
 	bool IsEverything() const { return !Region.IsValid && Radius <= 0.0; }
 
@@ -105,6 +109,15 @@ namespace RammsCollisionShapes
 	 * where a height grid or a single hull cannot describe it. A triangle seen edge-on from above adds nothing.
 	 */
 	RAMMSWORLDGEN_API void AddTrianglePrism(TArray<FRammsCollisionShape>& Out, const FTransform& Frame, const FVector& Scale, const FVector& A, const FVector& B, const FVector& C, double BottomZ, FName Surface, FName Source);
+
+	/**
+	 * Merge flush neighbouring boxes, from FirstIndex on, wherever two of them make one box exactly: the same surface and
+	 * orientation, the same extent on two axes, touching along the third (all within Tolerance, cm). Two geoms meeting
+	 * at a seam give a body crossing it a contact on the far one's edge, a sideways push a flat surface does not have;
+	 * one box has no seam. Boxes offset by a lip, or with a gap, stay apart. Order is kept otherwise. Returns how many
+	 * boxes were merged away.
+	 */
+	RAMMSWORLDGEN_API int32 MergeFlushBoxes(TArray<FRammsCollisionShape>& Shapes, int32 FirstIndex = 0, double Tolerance = 0.01);
 
 	/** AppendComponentHulls' default cap on hulls per mesh. */
 	constexpr int32 DefaultMaxComponentHulls = 64;

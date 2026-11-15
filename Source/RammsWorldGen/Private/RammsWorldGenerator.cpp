@@ -1133,7 +1133,13 @@ void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& O
 
 void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter) const
 {
+	const int32 First = Out.Num();
 	GatherGenerated(*this, Out, Filter, /*bStopAtFirst=*/false);
+	if (Filter.bMergeFlushBoxes)
+	{
+		// Paving and road cubes tiling a flat area, slabs side by side: one box each run, no seams between them.
+		RammsCollisionShapes::MergeFlushBoxes(Out, First);
+	}
 }
 
 bool ARammsWorldGenerator::HasCollisionShapes(const FRammsCollisionShapeFilter& Filter) const
