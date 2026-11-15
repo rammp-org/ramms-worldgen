@@ -828,7 +828,8 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 					RammsGround::FPrisms Pp(FVector(Mid2.X, Mid2.Y, BaseZ(Mid2)));
 					for (const TArray<FVector2D>& Pg : Polys) { Pp.AddPoly(Pg, [&](const FVector2D& Q) { return BaseZ(Q) + 0.4; }, 0, bUneven ? FName(TEXT("Cobble")) : FName(TEXT("Path"))); }
 					FRammsPieceDesc D = Pp.Desc(20.0);
-					D.MaterialPath = bUneven ? MatCobble : MatPath;
+					// (A recipe palette without cobbles: the path's own surface.)
+					D.MaterialPath = bUneven ? MatOr(RammsPaletteSlots::MatCobble, MatPath) : MatPath;
 					D.UVScale = 200.0;
 					D.ManifestSubtype = RammsGround::GroundSubtype;
 					D.Seed = NextSeed();

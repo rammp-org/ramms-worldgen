@@ -66,6 +66,10 @@ RECIPES = {
             # Downtown West's curb texture is a curb's (edge lines): on curbs only, plain concrete on slabs
             "Mat.Asphalt": "Downtown_West:Asphalt", "Mat.Curb": "Downtown_West:Curb", "Mat.Concrete": "Megascans:Concrete",
             "Mat.Facade": ["Megascans:Brick"], "Mat.FacadeAlt": ["Megascans:Plaster", "Megascans:ConcreteWall"],
+            # utility covers and metal trim: the signal arm's dark grey paint (no installed pack ships a cast-iron
+            # surface; PAL_Default's Mat.Metal comes from a pack that need not be here). No pack ships a sett /
+            # cobble surface either: without Mat.Cobble the Street Network lays setts in Mat.Concrete.
+            "Mat.Metal": "Downtown_West:SignalPaint",
         },
         puddles=True,
         kits=["Downtown_West", "CamdenMarket"],

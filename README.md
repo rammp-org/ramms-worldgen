@@ -993,7 +993,9 @@ world of the same seed on a hill.
   setts with 1.5 cm joints, `RootHeaveChance` lifts the walk beside a street tree in a pit (0.5-4.5 cm). In the road,
   `PotholeDensity` cuts real holes 2.5-9 cm deep (the road is open under them) and `SpeedHumpChance` puts a sinusoidal
   hump (7-10 cm over 3.6-4.2 m) or a table (7.5-9 cm, flat top) across a segment, clear of its crossings. Every
-  non-compliant feature carries its own manifest record.
+  non-compliant feature carries its own manifest record. Surfaces: bricks `Mat.Brick`, else `Mat.Facade`; setts
+  `Mat.Cobble`, else `Mat.Concrete`; covers `Mat.Metal`, else `Mat.Asphalt` (a recipe palette need not have them; the
+  Downtown recipe gives `Mat.Metal` Downtown West's dark grey paint).
 - **Exact collision.** Every ground piece describes itself to `ARammsProcPiece::AppendCollisionShapes`: a
   `GroundPrisms` part is a box when it is a level rectangle, else a convex hull (its top polygon and the same footprint
   `SizeZ` below its lowest vertex); a hump is a height grid along its profile (2 cm spacing, constant across). Lips are
@@ -1124,8 +1126,11 @@ rather than one height: a nudged run end keeps to the plane through it, a rerout
 run to its own grade and the walk's cross slope across it, and the level audit
 measures the walkers' edges against the cross slope at each sample (slopes are
 medians of 20 cm steps over 80 cm, so a curb edge or a panel's lip does not tilt
-them). A curb is still a drop off that plane; the tolerance uses the lowest curb
-(`CurbHeightMin`). On flat streets the tests are the original ones.
+them). Planes are fitted to the ground along each run, the manifest's curb ramps
+count as the walk (a graded ramp, sized for its real slope, can reach under the
+route's centre line, so a crossing's end stands on it), and a rerouted run's points
+take the plane's heights. A curb is still a drop off that plane; the tolerance uses
+the lowest curb (`CurbHeightMin`). On flat streets the tests are the original ones.
 
 Branch nodes become polygon `ZoneShape` junctions, the runs between them
 spline `ZoneShape`s on the `PedestrianLanesSidewalk` profile (2 x 60 cm)
