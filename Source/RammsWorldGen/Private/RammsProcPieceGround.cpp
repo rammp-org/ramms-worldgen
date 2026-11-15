@@ -147,6 +147,144 @@ namespace
 		}
 		return true;
 	}
+
+	/** How far apart (cm) flush neighbours' tops may be and still be one solid: the text form's rounding, never a lip
+	 *  (the smallest generated lip is millimetres). */
+	constexpr double FlushTolerance = 0.01;
+
+	/** A polygon's plane, Normal . p = Offset with Normal facing up (Newell's normal); false when it has no area. */
+	bool PlaneOf(const TArray<FVector>& Top, FVector& OutNormal, double& OutOffset)
+	{
+		const int32 N = Top.Num();
+		FVector Normal = FVector::ZeroVector, Mean = FVector::ZeroVector;
+		for (int32 k = 0; k < N; ++k)
+		{
+			const FVector& A = Top[k];
+			const FVector& B = Top[(k + 1) % N];
+			Normal.X += (A.Y - B.Y) * (A.Z + B.Z);
+			Normal.Y += (A.Z - B.Z) * (A.X + B.X);
+			Normal.Z += (A.X - B.X) * (A.Y + B.Y);
+			Mean += A;
+		}
+		if (N < 3 || !Normal.Normalize())
+		{
+			return false;
+		}
+		Mean /= N;
+		if (Normal.Z < 0.0)
+		{
+			Normal = -Normal;
+		}
+		OutNormal = Normal;
+		OutOffset = FVector::DotProduct(Normal, Mean);
+		return true;
+	}
+
+	/** A polygon's area in plan. */
+	double PlanArea(const TArray<FVector>& Top)
+	{
+		double A2 = 0.0;
+		for (int32 k = 0; k < Top.Num(); ++k)
+		{
+			const FVector& P = Top[k];
+			const FVector& Q = Top[(k + 1) % Top.Num()];
+			A2 += P.X * Q.Y - Q.X * P.Y;
+		}
+		return FMath::Abs(A2) * 0.5;
+	}
+
+	/** The convex hull in plan of Points, their heights kept, counter-clockwise from above; a point within
+	 *  FlushTolerance of the line through its neighbours is dropped (Andrew's monotone chain). */
+	TArray<FVector> PlanHull(TArray<FVector> Points)
+	{
+		Points.Sort([](const FVector& A, const FVector& B) { return A.X < B.X || (A.X == B.X && A.Y < B.Y); });
+		auto Turns = [](const FVector& O, const FVector& A, const FVector& B)
+		{
+			// Left of O->B by more than the tolerance (cross product over the base length).
+			const double Cross = (A.X - O.X) * (B.Y - O.Y) - (A.Y - O.Y) * (B.X - O.X);
+			return Cross > FlushTolerance * FMath::Max(FVector::Dist2D(O, B), 1.0e-6);
+		};
+		const int32 N = Points.Num();
+		TArray<FVector> H;
+		H.SetNum(2 * N + 1);
+		int32 K = 0;
+		for (int32 i = 0; i < N; ++i)
+		{
+			while (K >= 2 && !Turns(H[K - 2], H[K - 1], Points[i]))
+			{
+				--K;
+			}
+			H[K++] = Points[i];
+		}
+		for (int32 i = N - 2, Lower = K + 1; i >= 0; --i)
+		{
+			while (K >= Lower && !Turns(H[K - 2], H[K - 1], Points[i]))
+			{
+				--K;
+			}
+			H[K++] = Points[i];
+		}
+		H.SetNum(FMath::Max(K - 1, 0));
+		return H;
+	}
+
+	/** A GroundPrisms part on its way to being exported, or several flush parts merged into one solid. */
+	struct FGroundSolid
+	{
+		TArray<FVector> Top;
+		double Bottom = 0.0;
+		double Area = 0.0;
+		FName Surface;
+		FVector Normal = FVector::UpVector;
+		double Offset = 0.0;
+		FBox2D Plan = FBox2D(ForceInit);
+		bool bPlanarConvex = false;
+		int32 Parts = 1;
+		bool bAlive = true;
+	};
+
+	/** Whether two solids' tops are flush: the same surface, one plane (each top within FlushTolerance of the other's
+	 *  plane), touching in plan. A lip of any height keeps them apart. */
+	bool AreFlush(const FGroundSolid& A, const FGroundSolid& B)
+	{
+		if (!A.bPlanarConvex || !B.bPlanarConvex || A.Surface != B.Surface || !A.Plan.ExpandBy(FlushTolerance).Intersect(B.Plan))
+		{
+			return false;
+		}
+		auto Within = [](const FGroundSolid& S, const TArray<FVector>& Points)
+		{
+			for (const FVector& V : Points)
+			{
+				if (FMath::Abs(FVector::DotProduct(S.Normal, V) - S.Offset) > FlushTolerance)
+				{
+					return false;
+				}
+			}
+			return true;
+		};
+		return Within(A, B.Top) && Within(B, A.Top);
+	}
+
+	/** Merge B into A when their union is convex (its hull's area is the sum of theirs): one solid with no seam. */
+	bool MergeIfConvex(FGroundSolid& A, FGroundSolid& B)
+	{
+		TArray<FVector> Points = A.Top;
+		Points.Append(B.Top);
+		TArray<FVector> Hull = PlanHull(MoveTemp(Points));
+		const double Sum = A.Area + B.Area;
+		if (Hull.Num() < 3 || FMath::Abs(PlanArea(Hull) - Sum) > FMath::Max(1.0, Sum * 1.0e-6))
+		{
+			return false; // the union is not convex (an L, a gap between them): two solids
+		}
+		A.Top = MoveTemp(Hull);
+		A.Area = Sum;
+		A.Bottom = FMath::Min(A.Bottom, B.Bottom);
+		A.Plan += B.Plan;
+		A.Parts += B.Parts;
+		PlaneOf(A.Top, A.Normal, A.Offset);
+		B.bAlive = false;
+		return true;
+	}
 }
 
 void ARammsProcPiece::BuildGroundPrisms(UDynamicMesh* M)
@@ -204,19 +342,57 @@ void ARammsProcPiece::AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out)
 	const FVector Sc = ToWorld.GetScale3D();
 	const FTransform Xf = NoScale(ToWorld);
 	const FName Source = GetFName();
+
+	// Flush neighbours (the same surface, tops in one plane, no lip between them) whose union is convex become one
+	// solid: two geoms meeting at a seam give a body crossing it a contact on the far one's edge, a sideways push the
+	// level surface does not have. A real lip keeps its two solids, and its step.
+	TArray<FGroundSolid> Solids;
+	Solids.Reserve(Ps.Num());
 	for (const RammsGround::FPart& P : Ps)
 	{
-		const double Bottom = MinTopZ(P.Top) - Depth;
-		const FName Surface = P.Surface.IsNone() ? FName(TEXT("Default")) : P.Surface;
+		FGroundSolid& S = Solids.AddDefaulted_GetRef();
+		S.Top = P.Top;
+		S.Bottom = MinTopZ(P.Top) - Depth;
+		S.Area = PlanArea(P.Top);
+		S.Surface = P.Surface.IsNone() ? FName(TEXT("Default")) : P.Surface;
+		S.bPlanarConvex = IsPlanarConvex(P.Top, PrismPlanarTolerance) && PlaneOf(P.Top, S.Normal, S.Offset);
+		for (const FVector& V : P.Top)
+		{
+			S.Plan += FVector2D(V.X, V.Y);
+		}
+	}
+	for (bool bMerged = true; bMerged;)
+	{
+		bMerged = false;
+		for (int32 i = 0; i < Solids.Num(); ++i)
+		{
+			for (int32 j = i + 1; Solids[i].bAlive && j < Solids.Num(); ++j)
+			{
+				if (Solids[j].bAlive && AreFlush(Solids[i], Solids[j]) && MergeIfConvex(Solids[i], Solids[j]))
+				{
+					bMerged = true;
+				}
+			}
+		}
+	}
+
+	for (const FGroundSolid& S : Solids)
+	{
+		if (!S.bAlive)
+		{
+			continue;
+		}
+		const TArray<FVector>& Top = S.Top;
+		const double Bottom = S.Bottom;
 		// A level rectangle along the actor's axes is a box (pavers, setts, panels on level ground); a planar convex top
 		// the hull of it and its footprint; anything else (twisted, not convex) the mesh's own fan, prism by prism.
-		bool bBox = P.Top.Num() == 4;
-		double TopZ = P.Top[0].Z;
+		bool bBox = Top.Num() == 4;
+		const double TopZ = Top[0].Z;
 		FBox2D Plan(ForceInit);
 		for (int32 k = 0; bBox && k < 4; ++k)
 		{
-			const FVector& A = P.Top[k];
-			const FVector& B = P.Top[(k + 1) % 4];
+			const FVector& A = Top[k];
+			const FVector& B = Top[(k + 1) % 4];
 			bBox = FMath::Abs(A.Z - TopZ) < 0.005 && (FMath::Abs(A.X - B.X) < 0.005 || FMath::Abs(A.Y - B.Y) < 0.005);
 			Plan += FVector2D(A.X, A.Y);
 		}
@@ -225,19 +401,19 @@ void ARammsProcPiece::AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out)
 			// Scaled along the actor's axes (mirrored too), a box along them stays one.
 			const FVector2D C = Plan.GetCenter(), E = Plan.GetExtent();
 			const FVector Centre(C.X, C.Y, (TopZ + Bottom) * 0.5);
-			RammsCollisionShapes::AddBox(Out, FTransform(Xf.GetRotation(), Xf.TransformPosition(Centre * Sc)), FVector(E.X, E.Y, (TopZ - Bottom) * 0.5) * Sc.GetAbs(), Surface, Source);
+			RammsCollisionShapes::AddBox(Out, FTransform(Xf.GetRotation(), Xf.TransformPosition(Centre * Sc)), FVector(E.X, E.Y, (TopZ - Bottom) * 0.5) * Sc.GetAbs(), S.Surface, Source);
 			continue;
 		}
-		if (IsPlanarConvex(P.Top, PrismPlanarTolerance))
+		if (S.bPlanarConvex)
 		{
 			TArray<FVector3f> Points;
-			Points.Reserve(P.Top.Num() * 2);
-			for (const FVector& V : P.Top)
+			Points.Reserve(Top.Num() * 2);
+			for (const FVector& V : Top)
 			{
 				Points.Add(FVector3f(V * Sc));
 				Points.Add(FVector3f(FVector(V.X, V.Y, Bottom) * Sc));
 			}
-			RammsCollisionShapes::AddConvex(Out, Xf, MoveTemp(Points), Surface, Source);
+			RammsCollisionShapes::AddConvex(Out, Xf, MoveTemp(Points), S.Surface, Source);
 			continue;
 		}
 		static TSet<FName> Reported;
@@ -246,10 +422,10 @@ void ARammsProcPiece::AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out)
 			Reported.Add(Source);
 			UE_LOG(LogRammsWorldGen, Log, TEXT("%s: a ground prism's top is not planar and convex; exported as the mesh's own triangles, one prism each"), *Source.ToString());
 		}
-		for (int32 k = 1; k + 1 < P.Top.Num(); ++k)
+		for (int32 k = 1; k + 1 < Top.Num(); ++k)
 		{
-			// AppendPrism's top fan, triangle for triangle.
-			RammsCollisionShapes::AddTrianglePrism(Out, Xf, Sc, P.Top[0], P.Top[k + 1], P.Top[k], Bottom, Surface, Source);
+			// AppendPrism's top fan, triangle for triangle (a solid that is not planar and convex is never merged).
+			RammsCollisionShapes::AddTrianglePrism(Out, Xf, Sc, Top[0], Top[k + 1], Top[k], Bottom, S.Surface, Source);
 		}
 	}
 }
