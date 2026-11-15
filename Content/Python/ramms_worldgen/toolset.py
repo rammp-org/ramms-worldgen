@@ -233,8 +233,9 @@ class RammsWorldGenToolset(unreal.ToolsetDefinition):
         """Create an example level with lights, ground, a generator and a PlayerStart, and generate it.
 
         Args:
-            kind: downtown, suburban, park, indoor, office, mainstreet, or dense_downtown (built with the
-                Downtown palette recipe from the packs installed here, saved under /Game/WorldGen/Maps).
+            kind: downtown, suburban, park, indoor, office, mainstreet, store, or dense_downtown / traffic (built
+                with the Downtown palette recipe from the packs installed here, saved under /Game/WorldGen/Maps;
+                traffic adds moving cars, signals and vehicle lanes).
             seed: Seed; -1 uses the example's default.
 
         Returns:
