@@ -357,6 +357,48 @@ bool FRammsProcPieceCollisionShapesTest::RunTest(const FString& Parameters)
 		C.Boxes = 0; C.Convex = 2;
 	}
 	{
+		// Flush pavers (one surface, one plane, no lip) are one solid: no seams for a wheel to catch.
+		FCase& C = Add(TEXT("GroundPrisms flush pavers"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P)
+		{
+			P.SizeZ = 10.0;
+			TArray<FPrismSpec> Pavers;
+			for (int32 i = 0; i < 3; ++i)
+			{
+				for (int32 j = 0; j < 2; ++j)
+				{
+					Pavers.Add({ TEXT("Concrete"), PrismRect(50.0 * i, 50.0 * j, 50.0 * (i + 1), 50.0 * (j + 1), 0.0) });
+				}
+			}
+			P.Parts = PrismParts(Pavers);
+		}, FRotator(0.0, 35.0, 0.0));
+		C.Boxes = 1; C.Convex = 0;
+	}
+	{
+		// A paver 6 mm proud keeps its own solid, and its step, on both sides.
+		FCase& C = Add(TEXT("GroundPrisms pavers with a lip"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P)
+		{
+			P.SizeZ = 10.0;
+			P.Parts = PrismParts({
+				{ TEXT("Concrete"), PrismRect(0.0, 0.0, 50.0, 50.0, 0.0) },
+				{ TEXT("Concrete"), PrismRect(50.0, 0.0, 100.0, 50.0, 0.6) },
+				{ TEXT("Concrete"), PrismRect(100.0, 0.0, 150.0, 50.0, 0.0) },
+			});
+		});
+		C.Boxes = 3; C.Convex = 0;
+	}
+	{
+		// Two sloped prisms in one plane, side by side: one hull.
+		FCase& C = Add(TEXT("GroundPrisms flush sloped pair, pitched"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P)
+		{
+			P.SizeZ = 15.0;
+			P.Parts = PrismParts({
+				{ TEXT("Asphalt"), { FVector(0.0, 0.0, 0.0), FVector(150.0, 0.0, -6.0), FVector(150.0, 200.0, -6.0), FVector(0.0, 200.0, 0.0) } },
+				{ TEXT("Asphalt"), { FVector(150.0, 0.0, -6.0), FVector(300.0, 0.0, -12.0), FVector(300.0, 200.0, -12.0), FVector(150.0, 200.0, -6.0) } },
+			});
+		}, FRotator(2.0, -15.0, 1.0));
+		C.Boxes = 0; C.Convex = 1;
+	}
+	{
 		FCase& C = Add(TEXT("GroundPrisms pothole, scaled"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P) { P.SizeZ = 20.0; P.Parts = PotholeParts(); }, FRotator(0.0, 10.0, 0.0));
 		C.Scale = FVector(1.5, 0.8, 1.25); C.Boxes = 5;
 	}
@@ -788,6 +830,54 @@ bool FRammsComponentHullsTest::RunTest(const FString& Parameters)
 		}
 		return TOptional<double>();
 	}, 0.2, 0.02, Rs);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRammsMergeFlushBoxesTest, "Ramms.WorldGen.CollisionShapes.MergeFlushBoxes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRammsMergeFlushBoxesTest::RunTest(const FString& Parameters)
+{
+	// Boxes laid in a frame turned 30 degrees, as paving cubes on a turned street are.
+	const FQuat R(FRotator(0.0, 30.0, 0.0));
+	auto At = [&R](double X, double Y, double Z) { return FTransform(R, R.RotateVector(FVector(X, Y, Z)) + FVector(1000.0, -500.0, 20.0)); };
+	const FName Concrete(TEXT("Concrete")), Asphalt(TEXT("Asphalt"));
+	const FVector Half(25.0, 25.0, 10.0);
+
+	// A 3 x 2 field of flush pavers is one box.
+	TArray<FRammsCollisionShape> Field;
+	for (int32 i = 0; i < 3; ++i)
+	{
+		for (int32 j = 0; j < 2; ++j)
+		{
+			RammsCollisionShapes::AddBox(Field, At(50.0 * i, 50.0 * j, 0.0), Half, Concrete, NAME_None);
+		}
+	}
+	TestEqual(TEXT("five pavers merged away"), RammsCollisionShapes::MergeFlushBoxes(Field), 5);
+	if (TestEqual(TEXT("a flush field is one box"), Field.Num(), 1))
+	{
+		TestTrue(*FString::Printf(TEXT("the field's extents (%s)"), *Field[0].HalfExtents.ToString()), Field[0].HalfExtents.Equals(FVector(75.0, 50.0, 10.0), 1.0e-6));
+		TestTrue(TEXT("the field's centre"), Field[0].Transform.GetLocation().Equals(At(50.0, 25.0, 0.0).GetLocation(), 1.0e-6));
+		TestTrue(TEXT("the field's orientation"), Field[0].Transform.GetRotation().Equals(R, 1.0e-9));
+	}
+
+	// Neighbours that are not flush stay apart: a 6 mm lip, a 1 cm gap, another surface, another thickness.
+	TArray<FRammsCollisionShape> Apart;
+	RammsCollisionShapes::AddBox(Apart, At(0.0, 0.0, 0.0), Half, Concrete, NAME_None);
+	RammsCollisionShapes::AddBox(Apart, At(50.0, 0.0, 0.6), Half, Concrete, NAME_None);
+	RammsCollisionShapes::AddBox(Apart, At(0.0, 51.0, 0.0), Half, Concrete, NAME_None);
+	RammsCollisionShapes::AddBox(Apart, At(-50.0, 0.0, 0.0), Half, Asphalt, NAME_None);
+	RammsCollisionShapes::AddBox(Apart, At(0.0, -50.0, 0.0), FVector(25.0, 25.0, 12.0), Concrete, NAME_None);
+	TestEqual(TEXT("nothing merges across a lip, a gap, a surface or a thickness"), RammsCollisionShapes::MergeFlushBoxes(Apart), 0);
+	TestEqual(TEXT("all five stay"), Apart.Num(), 5);
+
+	// Only from FirstIndex on.
+	TArray<FRammsCollisionShape> Tail;
+	RammsCollisionShapes::AddBox(Tail, At(0.0, 0.0, 0.0), Half, Concrete, NAME_None);
+	RammsCollisionShapes::AddBox(Tail, At(50.0, 0.0, 0.0), Half, Concrete, NAME_None);
+	RammsCollisionShapes::AddBox(Tail, At(100.0, 0.0, 0.0), Half, Concrete, NAME_None);
+	TestEqual(TEXT("the first box is left alone"), RammsCollisionShapes::MergeFlushBoxes(Tail, 1), 1);
+	TestEqual(TEXT("two remain"), Tail.Num(), 2);
 	return true;
 }
 

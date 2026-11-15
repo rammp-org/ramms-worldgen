@@ -396,6 +396,18 @@ piece's scale mirrors or turns over (its cells would split the other way), or a
 grid whose mesh does not match it, is exported as one prism per upward-facing
 triangle of the mesh instead: still exact, and never a hole.
 
+**Flush neighbours are one solid.** Two geoms meeting at a seam give a body that
+crosses it a contact on the far one's edge, whose normal leans sideways (MuJoCo
+measured it: up to 0.28 of a sphere's contact normal, 0.19 of a wheel's, all of a
+roller pad's, 2 mm into the surface), a bump the flat surface does not have. So a
+GroundPrisms piece merges parts with the same surface whose tops lie in one plane
+(within 0.1 mm) and whose union is convex into one box or hull, and
+`GatherCollisionShapes` merges flush neighbouring boxes (`MergeFlushBoxes`: paving
+and road cubes tiling a flat area, slabs side by side; `bMergeFlushBoxes` on the
+filter turns it off). A real lip (a paver 6 mm proud, a panel's heave), a gap or
+another surface keeps its solids apart, and its step. The Chaos mesh keeps its
+parts as built.
+
 Anything without physics collision is skipped (PCG foliage is `NoCollision`), as
 are articulated stand-ins (they simulate as articulations), pawns, the filter's
 excluded actors, and actors or components tagged `RammsDynamic`: tag whatever
@@ -430,13 +442,16 @@ changed by that flip), and reports a mesh it cannot match.
 else from the piece kind; anything else is `Default`.
 
 `Ramms.WorldGen.CollisionShapes.ProcPieces` checks every kind, ground prisms
-(a level rectangle, sloped and level hulls, a pothole, a twisted top) and humps
-(with and without a table top) included, pitched, rolled, scaled and mirrored
+(a level rectangle, sloped and level hulls, a pothole, a twisted top, flush
+pavers as one box, a lipped paver kept apart, a flush sloped pair as one hull) and
+humps (with and without a table top) included, pitched, rolled, scaled and mirrored
 pieces too, against its mesh: bounds within 1 mm, vertical probes within 2 mm of
 Chaos's trace (not for mirrored pieces). `Ramms.WorldGen.CollisionShapes.InstancedMeshes`
 checks scaled, rotated instances against Chaos's simple collision, and the
 exclusions. `Ramms.WorldGen.CollisionShapes.ComponentHulls` checks that a table
 exports as its five parts, open between the legs where Chaos is.
+`Ramms.WorldGen.CollisionShapes.MergeFlushBoxes` checks that a field of flush boxes
+is one box and that a lip, a gap, another surface or another thickness is not.
 
 ## Parameters
 

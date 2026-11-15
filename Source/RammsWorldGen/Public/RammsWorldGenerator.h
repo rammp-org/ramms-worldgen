@@ -134,7 +134,8 @@ public:
 
 	/** The same, limited to a region (FRammsCollisionShapeFilter): pieces and instances outside it are not built.
 	 *  Both skip pawns, articulated stand-ins, actors or components tagged RammsDynamic (whatever moves after
-	 *  generation, such as traffic) and the filter's ExcludedActors. */
+	 *  generation, such as traffic) and the filter's ExcludedActors, and both merge flush neighbouring boxes into one
+	 *  (RammsCollisionShapes::MergeFlushBoxes) unless the filter turns that off. */
 	void GatherCollisionShapes(TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter) const;
 
 	/** Whether GatherCollisionShapes(Filter) would give any shape, found cheaply: it stops at the first piece or mesh
