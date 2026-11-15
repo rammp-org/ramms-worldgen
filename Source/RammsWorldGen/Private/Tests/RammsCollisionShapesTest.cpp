@@ -441,10 +441,17 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 	{
 		// Probe where Chaos's own body is (a sphere scaled (2, 0.5, 0.3) is a 15 cm ball in a 2 m render box), a centimetre
 		// beyond it each way so a shape that reached past it would show.
+		// (UE 5.8 keeps instance bodies behind GetBodyInstance(..., Index); the old InstanceBodies array stays empty.)
 		FBox Region = P.Region;
-		if (P.Instances && P.Instances->InstanceBodies.IsValidIndex(P.Index) && P.Instances->InstanceBodies[P.Index])
+		const FBodyInstance* Body = P.Instances ? P.Instances->GetBodyInstance(NAME_None, /*bGetWelded=*/true, P.Index) : nullptr;
+		const FBox BodyBounds = Body ? Body->GetBodyBounds() : FBox(ForceInit);
+		if (BodyBounds.IsValid && BodyBounds.GetSize().GetMin() > 0.0)
 		{
-			Region = P.Instances->InstanceBodies[P.Index]->GetBodyBounds().ExpandBy(1.0);
+			Region = BodyBounds.ExpandBy(1.0);
+		}
+		else
+		{
+			AddWarning(FString::Printf(TEXT("%s: no Chaos body bounds for the instance; probing its render bounds"), *P.Name));
 		}
 		auto InBody = [&Region](FRandomStream& R) { return FVector2D(FMath::Lerp(Region.Min.X, Region.Max.X, R.FRand()), FMath::Lerp(Region.Min.Y, Region.Max.Y, R.FRand())); };
 		Probe(*this, P.Name, Region, InBody, Shapes, [World](const FVector& From, const FVector& To) -> TOptional<double>
