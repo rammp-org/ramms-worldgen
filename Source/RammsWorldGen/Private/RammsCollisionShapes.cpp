@@ -83,6 +83,31 @@ namespace
 		}
 		return Low;
 	}
+
+	/** Only the points on the hull of Points (in their original order), or all of them when they span no volume. */
+	TArray<FVector> HullPoints(TArray<FVector>&& Points)
+	{
+		UE::Geometry::FConvexHull3d Hull;
+		if (Points.Num() < 4 || !Hull.Solve(Points.Num(), [&Points](int32 Index) { return Points[Index]; }))
+		{
+			return MoveTemp(Points);
+		}
+		TArray<bool> Used;
+		Used.Init(false, Points.Num());
+		for (const UE::Geometry::FIndex3i& T : Hull.GetTriangles())
+		{
+			Used[T.A] = Used[T.B] = Used[T.C] = true;
+		}
+		TArray<FVector> Out;
+		for (int32 i = 0; i < Points.Num(); ++i)
+		{
+			if (Used[i])
+			{
+				Out.Add(Points[i]);
+			}
+		}
+		return Out;
+	}
 }
 
 namespace RammsCollisionShapes
@@ -107,6 +132,149 @@ namespace RammsCollisionShapes
 		S.Surface = Surface;
 		S.Source = Source;
 		return S;
+	}
+
+	void AddTrianglePrism(TArray<FRammsCollisionShape>& Out, const FTransform& Frame, const FVector& Scale, const FVector& A, const FVector& B, const FVector& C, double BottomZ, FName Surface, FName Source)
+	{
+		const double Area2 = (B.X - A.X) * (C.Y - A.Y) - (C.X - A.X) * (B.Y - A.Y);
+		const double Top = FMath::Max3(A.Z, B.Z, C.Z);
+		if (FMath::Abs(Area2) < 1.0e-6 || Top - BottomZ < 1.0e-3)
+		{
+			return; // edge-on from above, or no height above the bottom: no solid
+		}
+		const FVector Corners[3] = { A, B, C };
+		TArray<FVector3f> Points;
+		Points.Reserve(6);
+		for (const FVector& P : Corners)
+		{
+			Points.Add(FVector3f(P * Scale));
+			Points.Add(FVector3f(FVector(P.X, P.Y, BottomZ) * Scale));
+		}
+		AddConvex(Out, Frame, MoveTemp(Points), Surface, Source);
+	}
+
+	int32 AppendComponentHulls(const TArray<FVector3f>& Vertices, const TArray<FIntVector>& Triangles, TArray<TArray<FVector>>& OutHulls, int32 MaxHulls)
+	{
+		const int32 NumV = Vertices.Num();
+		// Connected parts: union-find over the vertices each triangle joins (vertices no triangle uses are dropped).
+		TArray<int32> Parent;
+		Parent.SetNumUninitialized(NumV);
+		for (int32 i = 0; i < NumV; ++i)
+		{
+			Parent[i] = i;
+		}
+		auto Find = [&Parent](int32 X)
+		{
+			while (Parent[X] != X)
+			{
+				Parent[X] = Parent[Parent[X]];
+				X = Parent[X];
+			}
+			return X;
+		};
+		auto Union = [&Parent, &Find](int32 X, int32 Y)
+		{
+			X = Find(X);
+			Y = Find(Y);
+			if (X != Y)
+			{
+				Parent[Y] = X;
+			}
+		};
+		TArray<bool> Used;
+		Used.Init(false, NumV);
+		for (const FIntVector& T : Triangles)
+		{
+			if (!Vertices.IsValidIndex(T.X) || !Vertices.IsValidIndex(T.Y) || !Vertices.IsValidIndex(T.Z))
+			{
+				continue;
+			}
+			Used[T.X] = Used[T.Y] = Used[T.Z] = true;
+			Union(T.X, T.Y);
+			Union(T.X, T.Z);
+		}
+
+		struct FPart
+		{
+			TArray<FVector> Points;
+			FBox Box = FBox(ForceInit);
+			bool bAlive = true;
+		};
+		TArray<FPart> Parts;
+		TMap<int32, int32> PartOfRoot;
+		for (int32 i = 0; i < NumV; ++i)
+		{
+			if (!Used[i])
+			{
+				continue;
+			}
+			const int32 Root = Find(i);
+			int32* Index = PartOfRoot.Find(Root);
+			if (!Index)
+			{
+				Index = &PartOfRoot.Add(Root, Parts.Num());
+				Parts.AddDefaulted();
+			}
+			FPart& P = Parts[*Index];
+			const FVector V(Vertices[i]);
+			P.Points.Add(V);
+			P.Box += V;
+		}
+		const int32 NumParts = Parts.Num();
+
+		// Largest first (by the bounds' diagonal, which a flat part has too).
+		Parts.Sort([](const FPart& A, const FPart& B) { return A.Box.GetSize().SizeSquared() > B.Box.GetSize().SizeSquared(); });
+		auto Merge = [&Parts](int32 From, int32 Into)
+		{
+			Parts[Into].Points.Append(MoveTemp(Parts[From].Points));
+			Parts[Into].Box += Parts[From].Box;
+			Parts[From].bAlive = false;
+		};
+		// A part inside a larger part's bounds (a centimetre of slack) joins it: details on a surface, not open space.
+		for (int32 i = 1; i < Parts.Num(); ++i)
+		{
+			for (int32 j = 0; j < i; ++j)
+			{
+				if (Parts[j].bAlive && Parts[j].Box.ExpandBy(1.0).IsInsideOrOn(Parts[i].Box))
+				{
+					Merge(i, j);
+					break;
+				}
+			}
+		}
+		// Beyond the cap the smallest parts join whichever kept part's bounds are nearest.
+		TArray<int32> Kept;
+		for (int32 i = 0; i < Parts.Num(); ++i)
+		{
+			if (Parts[i].bAlive)
+			{
+				if (Kept.Num() < FMath::Max(MaxHulls, 1))
+				{
+					Kept.Add(i);
+					continue;
+				}
+				int32 Best = Kept[0];
+				double BestD = TNumericLimits<double>::Max();
+				for (const int32 k : Kept)
+				{
+					const double D = Parts[k].Box.ComputeSquaredDistanceToBox(Parts[i].Box);
+					if (D < BestD)
+					{
+						BestD = D;
+						Best = k;
+					}
+				}
+				Merge(i, Best);
+			}
+		}
+		for (const int32 k : Kept)
+		{
+			if (Parts[k].Points.Num() >= 3)
+			{
+				OutHulls.Add(HullPoints(MoveTemp(Parts[k].Points)));
+			}
+		}
+		return NumParts;
 	}
 
 	FBox GetBounds(const FRammsCollisionShape& S)
@@ -338,6 +506,7 @@ namespace RammsCollisionShapes
 			}
 		}
 		int32 Flips = 0;
+		bool bMatched = true;
 		for (int32 j = 0; j + 1 < NumY; ++j)
 		{
 			for (int32 i = 0; i + 1 < NumX; ++i)
@@ -351,16 +520,21 @@ namespace RammsCollisionShapes
 				const int32 Edge = Mesh.FindEdge(V00, V11);
 				if (Edge == FDynamicMesh3::InvalidID)
 				{
-					continue; // not a quad of two triangles: nothing to choose
+					bMatched = false; // not two triangles sharing a diagonal: the cell is not the grid's
+					continue;
 				}
 				FDynamicMesh3::FEdgeFlipInfo Info;
 				if (Mesh.FlipEdge(Edge, Info) == UE::Geometry::EMeshResult::Ok)
 				{
 					++Flips;
 				}
+				else
+				{
+					bMatched = false;
+				}
 			}
 		}
-		return Flips;
+		return bMatched ? Flips : -1;
 	}
 
 	FName SurfaceForClass(FName SegmentationClass)

@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 
 namespace UE::Geometry { class FDynamicMesh3; }
+class AActor;
 
 /**
  * Backend-neutral collision of generated geometry: what Chaos collides with, as primitive shapes in world
@@ -78,6 +79,10 @@ struct RAMMSWORLDGEN_API FRammsCollisionShapeFilter
 	FVector Centre = FVector::ZeroVector;
 	double Radius = 0.0;
 
+	/** Actors whose collision another engine already has (MuJoCo quick-convert components): skipped whole. */
+	TSet<const AActor*> ExcludedActors;
+
+	/** Whether the region keeps everything (ExcludedActors are skipped either way). */
 	bool IsEverything() const { return !Region.IsValid && Radius <= 0.0; }
 
 	/** Whether a shape (or a whole source) with these world bounds is kept. */
@@ -92,6 +97,27 @@ namespace RammsCollisionShapes
 
 	/** A convex hull of Points (cm, in Frame; any scale on Frame is ignored). */
 	RAMMSWORLDGEN_API FRammsCollisionShape& AddConvex(TArray<FRammsCollisionShape>& Out, const FTransform& Frame, TArray<FVector3f>&& Points, FName Surface, FName Source);
+
+	/**
+	 * The solid under one triangle of a surface: the triangle (A, B, C) and its drop straight down to BottomZ, in a
+	 * local space that Scale (any sign) and then Frame (its rotation and location) take to the world. A triangulated
+	 * surface described as one prism per triangle is exact whatever its shape and whatever the scale: the fallback
+	 * where a height grid or a single hull cannot describe it. A triangle seen edge-on from above adds nothing.
+	 */
+	RAMMSWORLDGEN_API void AddTrianglePrism(TArray<FRammsCollisionShape>& Out, const FTransform& Frame, const FVector& Scale, const FVector& A, const FVector& B, const FVector& C, double BottomZ, FName Surface, FName Source);
+
+	/** AppendComponentHulls' default cap on hulls per mesh. */
+	constexpr int32 DefaultMaxComponentHulls = 64;
+
+	/**
+	 * The convex hulls of a triangle mesh's connected parts: the closest convex description of a mesh Chaos collides
+	 * with as its triangles. A table is its top and its legs, open between them, where one hull of the whole mesh is a
+	 * solid block. A part whose bounds lie inside a larger part's (a sill on a wall) joins that part; beyond MaxHulls
+	 * the smallest parts join the part nearest them. A part that is itself concave is still solid inside its hull.
+	 * Each hull keeps only its points on the hull (all of them when they span no volume; parts under 3 points are
+	 * dropped). Returns the number of connected parts found.
+	 */
+	RAMMSWORLDGEN_API int32 AppendComponentHulls(const TArray<FVector3f>& Vertices, const TArray<FIntVector>& Triangles, TArray<TArray<FVector>>& OutHulls, int32 MaxHulls = DefaultMaxComponentHulls);
 
 	/** World-space bounds of a shape. */
 	RAMMSWORLDGEN_API FBox GetBounds(const FRammsCollisionShape& Shape);
@@ -109,8 +135,9 @@ namespace RammsCollisionShapes
 	 * Mesh vertices from FirstVertex on that sit on the grid are matched to samples (GridFrame maps grid space, as in
 	 * HeightGrid, into mesh space), the highest at each sample when a solid's bottom lies under it; each cell whose two
 	 * triangles share the other diagonal has that edge flipped (attributes follow). OutHeights gets the samples'
-	 * heights in grid space. Returns the number of edges flipped, or -1 when some sample has no vertex (the mesh is not
-	 * that grid).
+	 * heights in grid space. Returns the number of edges flipped, or -1 when the mesh is not that grid: some sample has
+	 * no vertex, or some cell is not two triangles sharing one of its diagonals, or its edge would not flip. Every cell
+	 * that can be matched still is, so a caller that falls back to the mesh's own triangles describes the mesh as built.
 	 */
 	RAMMSWORLDGEN_API int32 MatchHeightGridDiagonals(UE::Geometry::FDynamicMesh3& Mesh, int32 FirstVertex, const FTransform& GridFrame, int32 NumX, int32 NumY, const FVector2D& Spacing, TArray<float>& OutHeights);
 
