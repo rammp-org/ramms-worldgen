@@ -6,6 +6,7 @@
 #include "Components/BillboardComponent.h"
 #include "UDynamicMesh.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "GeometryScript/MeshPrimitiveFunctions.h"
 #include "GeometryScript/MeshMaterialFunctions.h"
 #include "GeometryScript/MeshNormalsFunctions.h"
@@ -109,12 +110,63 @@ namespace
 		}
 	}
 
-	// Append one convex primitive (Append adds it to M) and report its hull when capturing.
+	// Points in convex position (a sphere-box's lie on an ellipsoid) are their own hull only when every edge between them
+	// folds outward, and the sphere-box splits some of its quads the other way, a dent of up to a few centimetres on a
+	// canopy blob. Flip those edges (Lawson's flips, which end at the hull) so that the mesh Chaos collides with is the
+	// hull the shapes report. A primitive already convex (a cylinder, a frustum, a prism) has none to flip. UV and normal
+	// seams are left alone; the box projection and normal pass after the builders redo both anyway.
+	void FoldOutward(UDynamicMesh* M, int32 Start)
+	{
+		M->EditMesh([&](UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			using UE::Geometry::FDynamicMesh3;
+			using UE::Geometry::FIndex2i;
+			FVector Centre = FVector::ZeroVector;
+			int32 Count = 0;
+			for (const int32 Vid : Mesh.VertexIndicesItr())
+			{
+				if (Vid >= Start) { Centre += Mesh.GetVertex(Vid); ++Count; }
+			}
+			if (Count < 4) { return; }
+			Centre /= Count;
+			const UE::Geometry::FDynamicMeshAttributeSet* Attributes = Mesh.HasAttributes() ? Mesh.Attributes() : nullptr;
+			for (int32 Pass = 0; Pass < 32; ++Pass)
+			{
+				int32 Flips = 0;
+				for (const int32 Eid : Mesh.EdgeIndicesItr())
+				{
+					const FIndex2i V = Mesh.GetEdgeV(Eid);
+					if (V.A < Start || V.B < Start || Mesh.IsBoundaryEdge(Eid) || (Attributes && Attributes->IsSeamEdge(Eid))) { continue; }
+					const FIndex2i O = Mesh.GetEdgeOpposingV(Eid);
+					if (O.A == FDynamicMesh3::InvalidID || O.B == FDynamicMesh3::InvalidID || Mesh.FindEdge(O.A, O.B) != FDynamicMesh3::InvalidID) { continue; }
+					const FVector A = Mesh.GetVertex(V.A), B = Mesh.GetVertex(V.B), C = Mesh.GetVertex(O.A), D = Mesh.GetVertex(O.B);
+					const FVector Normal = FVector::CrossProduct(B - A, C - A);
+					const double SideD = FVector::DotProduct(Normal, D - A);
+					const double SideCentre = FVector::DotProduct(Normal, Centre - A);
+					const double Scale = Normal.Size() * FMath::Max((D - A).Size(), (Centre - A).Size());
+					if (Scale <= 0.0 || FMath::Abs(SideD) <= 1.0e-9 * Scale || FMath::Abs(SideCentre) <= 1.0e-9 * Scale)
+					{
+						continue; // flat across the edge: either split is the hull
+					}
+					if (SideD * SideCentre > 0.0)
+					{
+						continue; // D is inside the face across the edge: the edge folds outward
+					}
+					FDynamicMesh3::FEdgeFlipInfo Info;
+					if (Mesh.FlipEdge(Eid, Info) == UE::Geometry::EMeshResult::Ok) { ++Flips; }
+				}
+				if (Flips == 0) { break; }
+			}
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown);
+	}
+
+	// Append one convex primitive (Append adds it to M), make its mesh its hull, and report that hull when capturing.
 	void Hull(UDynamicMesh* M, int32 Mat, TFunctionRef<void()> Append, TOptional<double> FloorZ = TOptional<double>())
 	{
 		int32 Start = 0;
 		M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh) { Start = Mesh.MaxVertexID(); });
 		Append();
+		FoldOutward(M, Start);
 		CaptureHull(M, Start, Mat, FloorZ);
 	}
 

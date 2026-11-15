@@ -19,6 +19,7 @@
 #include "Engine/World.h"
 #include "Math/RandomStream.h"
 #include "Misc/Paths.h"
+#include "PhysicsEngine/BodyInstance.h"
 #include "RammsCollisionShapes.h"
 #include "RammsProcPiece.h"
 #include "RammsWorldGenerator.h"
@@ -91,12 +92,51 @@ namespace RammsCollisionShapesTest
 		return B;
 	}
 
+	/** The mesh's bounds in the piece's own frame: probes are drawn there, so a thin piece turned 45 degrees is not
+	 *  probed mostly beside it. */
+	FBox LocalMeshBounds(const ARammsProcPiece& Piece)
+	{
+		FBox B(ForceInit);
+		Piece.MeshComponent->GetDynamicMesh()->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			for (const int32 Vid : Mesh.VertexIndicesItr())
+			{
+				B += Mesh.GetVertex(Vid);
+			}
+		});
+		return B;
+	}
+
 	FBox ShapeBounds(const TArray<FRammsCollisionShape>& Shapes)
 	{
 		FBox B(ForceInit);
 		for (const FRammsCollisionShape& S : Shapes)
 		{
 			B += RammsCollisionShapes::GetBounds(S);
+		}
+		return B;
+	}
+
+	/** Bounds of the shapes' upper surfaces: a height grid's samples, without the solid it stands on. A sheet mesh (a
+	 *  mound) is compared with this: the grid's walls are square to the grid, so under a tilted grid its base reaches
+	 *  out past the sheet's edge, below the ground the sheet's rim is buried in. */
+	FBox SurfaceBounds(const TArray<FRammsCollisionShape>& Shapes)
+	{
+		FBox B(ForceInit);
+		for (const FRammsCollisionShape& S : Shapes)
+		{
+			if (S.Type != ERammsCollisionShapeType::HeightGrid)
+			{
+				B += RammsCollisionShapes::GetBounds(S);
+				continue;
+			}
+			for (int32 j = 0; j < S.NumY; ++j)
+			{
+				for (int32 i = 0; i < S.NumX; ++i)
+				{
+					B += S.Transform.TransformPosition(FVector(i * S.Spacing.X, j * S.Spacing.Y, S.Heights[j * S.NumX + i]));
+				}
+			}
 		}
 		return B;
 	}
@@ -125,9 +165,11 @@ namespace RammsCollisionShapesTest
 		return N;
 	}
 
-	/** Compare vertical probes over Region: Trace gives what Chaos sees, the shapes what was exported. */
-	void Probe(FAutomationTestBase& Test, const FString& Name, const FBox& Region, const TArray<FRammsCollisionShape>& Shapes,
-		TFunctionRef<TOptional<double>(const FVector&, const FVector&)> Trace, double Tolerance, double MissFraction, FRandomStream& Rs)
+	/** Compare vertical probes at the plan points Sample draws, between Region's top and bottom: Trace gives what Chaos
+	 *  sees, the shapes what was exported. */
+	void Probe(FAutomationTestBase& Test, const FString& Name, const FBox& Region, TFunctionRef<FVector2D(FRandomStream&)> Sample,
+		const TArray<FRammsCollisionShape>& Shapes, TFunctionRef<TOptional<double>(const FVector&, const FVector&)> Trace, double Tolerance,
+		double MissFraction, FRandomStream& Rs)
 	{
 		constexpr int32 Probes = 300;
 		int32 Misses = 0, Compared = 0;
@@ -135,8 +177,9 @@ namespace RammsCollisionShapesTest
 		FVector WorstAt = FVector::ZeroVector;
 		for (int32 p = 0; p < Probes; ++p)
 		{
-			const double X = FMath::Lerp(Region.Min.X, Region.Max.X, Rs.FRand());
-			const double Y = FMath::Lerp(Region.Min.Y, Region.Max.Y, Rs.FRand());
+			const FVector2D At = Sample(Rs);
+			const double X = At.X;
+			const double Y = At.Y;
 			const TOptional<double> ChaosTop = Trace(FVector(X, Y, Region.Max.Z + 50.0), FVector(X, Y, Region.Min.Z - 50.0));
 			const TOptional<double> Exported = ShapesTop(Shapes, X, Y);
 			if (ChaosTop.IsSet() != Exported.IsSet())
@@ -209,15 +252,9 @@ bool FRammsProcPieceCollisionShapesTest::RunTest(const FString& Parameters)
 	});
 	Add(TEXT("Door"), ERammsProcPieceKind::Door, [](ARammsProcPiece& P) { P.SizeX = 90.0; P.SizeY = 4.0; P.SizeZ = 210.0; P.Rise = 2.0; }).Boxes = 6;
 	Add(TEXT("Bollard"), ERammsProcPieceKind::Bollard, [](ARammsProcPiece& P) { P.SizeX = 20.0; P.SizeZ = 90.0; }).Convex = 1;
-	{
-		// Each canopy blob is a sphere-box: its hull covers the facets' slight dents.
-		FCase& C = Add(TEXT("Tree"), ERammsProcPieceKind::Tree, [](ARammsProcPiece& P) { P.SizeX = 300.0; P.SizeZ = 600.0; });
-		C.Tolerance = 3.0; C.MissFraction = 0.1;
-	}
-	{
-		FCase& C = Add(TEXT("Shrub"), ERammsProcPieceKind::Shrub, [](ARammsProcPiece& P) { P.SizeX = 80.0; P.SizeZ = 60.0; });
-		C.Tolerance = 3.0; C.MissFraction = 0.1; C.Convex = 4;
-	}
+	// Canopy blobs are sphere-boxes folded outward (FoldOutward), so each blob's mesh is its hull: exact like the rest.
+	Add(TEXT("Tree"), ERammsProcPieceKind::Tree, [](ARammsProcPiece& P) { P.SizeX = 300.0; P.SizeZ = 600.0; });
+	Add(TEXT("Shrub"), ERammsProcPieceKind::Shrub, [](ARammsProcPiece& P) { P.SizeX = 80.0; P.SizeZ = 60.0; }).Convex = 4;
 	{
 		FCase& C = Add(TEXT("Roof"), ERammsProcPieceKind::Roof, [](ARammsProcPiece& P) { P.SizeX = 600.0; P.SizeY = 800.0; P.SizeZ = 150.0; }, FRotator(0.0, 40.0, 0.0));
 		C.Boxes = 1; C.Convex = 1;
@@ -283,9 +320,11 @@ bool FRammsProcPieceCollisionShapesTest::RunTest(const FString& Parameters)
 			TestEqual(*FString::Printf(TEXT("%s: height grids"), *Case.Name), CountOf(Shapes, ERammsCollisionShapeType::HeightGrid), Case.Grids);
 		}
 
-		// Bounds: a millimetre either way (a sheet's bottom is not the solid's).
+		// Bounds: a millimetre either way. A closed mesh is a solid like the shapes; a sheet (a mound, a patch's disc) is
+		// compared with the shapes' upper surfaces, its solid only checked to reach below it.
 		const FBox Mesh = MeshBounds(*Piece);
-		const FBox Exported = ShapeBounds(Shapes);
+		const FBox Solid = ShapeBounds(Shapes);
+		const FBox Exported = Case.bClosedMesh ? Solid : SurfaceBounds(Shapes);
 		constexpr double Mm = 0.1;
 		const bool bPlan = FMath::Abs(Mesh.Min.X - Exported.Min.X) <= Mm && FMath::Abs(Mesh.Max.X - Exported.Max.X) <= Mm
 			&& FMath::Abs(Mesh.Min.Y - Exported.Min.Y) <= Mm && FMath::Abs(Mesh.Max.Y - Exported.Max.Y) <= Mm;
@@ -297,11 +336,18 @@ bool FRammsProcPieceCollisionShapesTest::RunTest(const FString& Parameters)
 		}
 		else
 		{
-			TestTrue(*FString::Printf(TEXT("%s: the solid reaches below the sheet"), *Case.Name), Exported.Min.Z <= Mesh.Min.Z + Mm);
+			TestTrue(*FString::Printf(TEXT("%s: the solid reaches below the sheet"), *Case.Name), Solid.Min.Z <= Mesh.Min.Z + Mm);
 		}
 
 		UDynamicMeshComponent* Component = Piece->MeshComponent;
-		Probe(*this, Case.Name, Mesh, Shapes, [Component](const FVector& From, const FVector& To) -> TOptional<double>
+		const FBox Local = LocalMeshBounds(*Piece);
+		const FTransform PieceXf = Component->GetComponentTransform();
+		auto InPiece = [&Local, &PieceXf](FRandomStream& R)
+		{
+			const FVector W = PieceXf.TransformPosition(FVector(FMath::Lerp(Local.Min.X, Local.Max.X, R.FRand()), FMath::Lerp(Local.Min.Y, Local.Max.Y, R.FRand()), Local.Max.Z));
+			return FVector2D(W.X, W.Y);
+		};
+		Probe(*this, Case.Name, Mesh, InPiece, Shapes, [Component](const FVector& From, const FVector& To) -> TOptional<double>
 		{
 			FHitResult Hit;
 			FCollisionQueryParams Params(SCENE_QUERY_STAT(RammsShapeProbe), /*bTraceComplex=*/true);
@@ -357,6 +403,8 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 	{
 		FString Name;
 		FBox Region;
+		UInstancedStaticMeshComponent* Instances = nullptr;
+		int32 Index = INDEX_NONE;
 	};
 	TArray<FPlaced> Placed;
 	for (int32 m = 0; m < static_cast<int32>(UE_ARRAY_COUNT(Paths)); ++m)
@@ -376,8 +424,8 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 		{
 			FTransform Xf = Placements[p];
 			Xf.SetLocation(FVector(800.0 * p, 1000.0 * (m + 1), 200.0));
-			Instances->AddInstance(Xf, /*bWorldSpace=*/true);
-			Placed.Add({ FString::Printf(TEXT("%s placement %d"), *FPaths::GetBaseFilename(Paths[m]), p), Mesh->GetBoundingBox().TransformBy(Xf) });
+			const int32 Index = Instances->AddInstance(Xf, /*bWorldSpace=*/true);
+			Placed.Add({ FString::Printf(TEXT("%s placement %d"), *FPaths::GetBaseFilename(Paths[m]), p), Mesh->GetBoundingBox().TransformBy(Xf), Instances, Index });
 		}
 	}
 
@@ -391,7 +439,15 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 	UWorld* World = Scratch.World;
 	for (const FPlaced& P : Placed)
 	{
-		Probe(*this, P.Name, P.Region, Shapes, [World](const FVector& From, const FVector& To) -> TOptional<double>
+		// Probe where Chaos's own body is (a sphere scaled (2, 0.5, 0.3) is a 15 cm ball in a 2 m render box), a centimetre
+		// beyond it each way so a shape that reached past it would show.
+		FBox Region = P.Region;
+		if (P.Instances && P.Instances->InstanceBodies.IsValidIndex(P.Index) && P.Instances->InstanceBodies[P.Index])
+		{
+			Region = P.Instances->InstanceBodies[P.Index]->GetBodyBounds().ExpandBy(1.0);
+		}
+		auto InBody = [&Region](FRandomStream& R) { return FVector2D(FMath::Lerp(Region.Min.X, Region.Max.X, R.FRand()), FMath::Lerp(Region.Min.Y, Region.Max.Y, R.FRand())); };
+		Probe(*this, P.Name, Region, InBody, Shapes, [World](const FVector& From, const FVector& To) -> TOptional<double>
 		{
 			FHitResult Hit;
 			FCollisionQueryParams Params(SCENE_QUERY_STAT(RammsShapeProbe), /*bTraceComplex=*/false);
