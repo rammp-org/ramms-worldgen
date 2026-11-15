@@ -1057,12 +1057,16 @@ lane keeps to its sidewalk.
 
 Every run is sampled about every 50 cm onto the surface below it, so lanes
 follow curb ramps, the drop to the road, path slopes and thresholds instead
-of floating in a straight line between their ends. On graded ground each node
-takes its height from its route's ground-following polyline, and a run is cut
-where the route's grade bends, so a straight run keeps to one slope; the level
-tolerance uses the lowest curb (`CurbHeightMin`). With low curbs and steep cross
-slopes the level audit can count lane samples at the walk's curb edge whose drop
-is the cross slope, not a curb.
+of floating in a straight line between their ends. On graded ground (any terrain
+or roughness parameter above 0) each node takes its height from its route's
+ground-following polyline, a run is cut where the route's grade bends (so a
+straight run keeps to one slope), and "one walking level" is the walk's plane
+rather than one height: a nudged run end keeps to the plane through it, a rerouted
+run to its own grade and the walk's cross slope across it, and the level audit
+measures the walkers' edges against the cross slope at each sample (slopes are
+medians of 20 cm steps over 80 cm, so a curb edge or a panel's lip does not tilt
+them). A curb is still a drop off that plane; the tolerance uses the lowest curb
+(`CurbHeightMin`). On flat streets the tests are the original ones.
 
 Branch nodes become polygon `ZoneShape` junctions, the runs between them
 spline `ZoneShape`s on the `PedestrianLanesSidewalk` profile (2 x 60 cm)
