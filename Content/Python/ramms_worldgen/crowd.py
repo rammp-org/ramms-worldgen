@@ -1006,13 +1006,14 @@ def _on_plane_level(world, chain, plane, tol, ramps=(), step=50.0):
 
 
 def _graded_ground(gen):
-    """Was the level generated on graded or rough ground (any terrain or roughness parameter above 0)? Its level tests
-    then follow the walk's plane; on flat streets they keep to one height, as they always have."""
+    """Was the level generated on graded or rough ground (any parameter that switches the Street Network to its ground
+    model above 0)? Its level tests then follow the walk's plane; on flat streets they keep to one height, as they
+    always have. RootHeaveChance on its own lays its heaves on the flat walk: not graded."""
     if gen is None:
         return False
     names = ("max_street_grade", "road_crown", "sidewalk_cross_slope", "non_compliant_cross_slope_chance", "curb_height_max",
              "surface_roughness", "heave_density", "crack_density", "cover_density", "paving_patch_density",
-             "pothole_density", "speed_hump_chance", "root_heave_chance")
+             "pothole_density", "speed_hump_chance")
     for get in (lambda: gen.get_editor_property("params"), lambda: gen.get_editor_property("preset").get_editor_property("params")):
         try:
             p = get()
@@ -1241,9 +1242,13 @@ def check_lanes(world=None):
 OFF_LEVEL = []     # (shape, sample) of the first lane samples the last check_lane_levels() found off their level
 
 
+CURB_FLOOR = 2.0   # the lowest curb the Street Network draws when curbs vary (cm; PCGRammsStreetNetwork.cpp)
+
+
 def _curb_height(gen):
     """The streets' curb height (cm): the generator's resolved parameters, else its preset's; None when neither
-    can be read. With varied curbs (CurbHeightMax > 0) the lowest one, so a low curb still bounds a level."""
+    can be read. With varied curbs (CurbHeightMax > 0) the lowest one, so a low curb still bounds a level:
+    CurbHeightMin, never under the Street Network's floor (CURB_FLOOR)."""
     if gen is None:
         return None
     for get in (lambda: gen.get_editor_property("params"), lambda: gen.get_editor_property("preset").get_editor_property("params")):
@@ -1255,7 +1260,7 @@ def _curb_height(gen):
                 lo = float(p.get_editor_property("curb_height_min"))
             except Exception:  # noqa: BLE001 - an engine build without the terrain parameters
                 hi = lo = 0.0
-            return max(min(lo, hi), 0.0) if hi > 0.0 else ch
+            return max(min(lo, hi), CURB_FLOOR) if hi > 0.0 else ch
         except Exception:  # noqa: BLE001
             continue
     return None

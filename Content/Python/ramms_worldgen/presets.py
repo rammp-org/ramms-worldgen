@@ -160,15 +160,16 @@ PRESETS["PRE_GradedTraffic"] = (
     "'graded_traffic').",
     dict(PRESETS["PRE_DowntownTraffic"][3], **GRADED_DOWNTOWN),
 )
-# Steeper still: the same streets on a real hill (with seed 21 they climb 2-7 %, the walks falling 9-10 % toward the
-# curb where the hill runs across them), for clips and tests that need the slopes to show.
+# Steeper still: the same streets on a real hill (with seed 21 they climb 2-7 %; the walks keep their own cross slope,
+# the lots and the corners take up the hill), for clips and tests that need the slopes to show.
 HILLY_DOWNTOWN = dict(GRADED_DOWNTOWN, MaxStreetGrade=0.12, RoadCrown=0.025, SidewalkCrossSlope=0.035,
                       NonCompliantCrossSlopeChance=0.35)
 PRESETS["PRE_HillyDowntown"] = (
     unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
     "PRE_DowntownTraffic on a steep hill: streets up to 12 % allowed between intersections (2-7 % with seed 21), "
-    "crowned 2.5 %, walks falling up to 3.5 % toward the curb (some steeper) on top of the hill's own slope across "
-    "them, curbs from 5 to 20 cm, the graded downtown's wear, and traffic (levels 'hilly_downtown').",
+    "crowned 2.5 %, walks falling up to 3.5 % toward the curb (some steeper) whatever the hill does across them (the "
+    "lots and the corners take it up), curbs from 5 to 20 cm, the graded downtown's wear, and traffic (levels "
+    "'hilly_downtown').",
     dict(PRESETS["PRE_DowntownTraffic"][3], **HILLY_DOWNTOWN),
 )
 
