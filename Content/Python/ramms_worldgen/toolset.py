@@ -234,9 +234,11 @@ class RammsWorldGenToolset(unreal.ToolsetDefinition):
 
         Args:
             kind: downtown, suburban, park, indoor, office, mainstreet, store, graded_downtown and
-                hilly_residential (graded, rough ground), or dense_downtown / traffic (built with the Downtown
-                palette recipe from the packs installed here, saved under /Game/WorldGen/Maps; traffic adds moving
-                cars, signals and vehicle lanes).
+                hilly_residential (graded, rough ground), or the Downtown-recipe levels (built with the Downtown
+                palette recipe from the packs installed here, saved under /Game/WorldGen/Maps): dense_downtown, and
+                with moving traffic (vehicle lanes, signals, a signal clock and cars, traffic.build_traffic) traffic
+                (level streets), graded_traffic (graded, worn streets up to 5 %) and hilly_downtown (a steep hill,
+                streets up to 12 %).
             seed: Seed; -1 uses the example's default.
 
         Returns:
