@@ -169,7 +169,7 @@ namespace RammsCollisionShapesTest
 	 *  sees, the shapes what was exported. */
 	void Probe(FAutomationTestBase& Test, const FString& Name, const FBox& Region, TFunctionRef<FVector2D(FRandomStream&)> Sample,
 		const TArray<FRammsCollisionShape>& Shapes, TFunctionRef<TOptional<double>(const FVector&, const FVector&)> Trace, double Tolerance,
-		double MissFraction, FRandomStream& Rs)
+		double MissFraction, FRandomStream& Rs, const bool bRequireTops = true)
 	{
 		constexpr int32 Probes = 300;
 		int32 Misses = 0, Compared = 0;
@@ -199,7 +199,10 @@ namespace RammsCollisionShapesTest
 				WorstAt = FVector(X, Y, ChaosTop.GetValue());
 			}
 		}
-		Test.TestTrue(FString::Printf(TEXT("%s: probes find a top (%d of %d)"), *Name, Compared, Probes), Compared > Probes / 10);
+		if (bRequireTops)
+		{
+			Test.TestTrue(FString::Printf(TEXT("%s: probes find a top (%d of %d)"), *Name, Compared, Probes), Compared > Probes / 10);
+		}
 		Test.TestTrue(FString::Printf(TEXT("%s: %d probes hit on one side only (allowed %d)"), *Name, Misses, FMath::CeilToInt(Probes * MissFraction)),
 			Misses <= FMath::CeilToInt(Probes * MissFraction));
 		Test.TestTrue(FString::Printf(TEXT("%s: probe tops within %.1f mm (worst %.2f mm at %s)"), *Name, Tolerance * 10.0, Worst * 10.0, *WorstAt.ToString()),
@@ -453,8 +456,7 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 		{
 			AddWarning(FString::Printf(TEXT("%s: no Chaos body bounds for the instance; probing its render bounds"), *P.Name));
 		}
-		auto InBody = [&Region](FRandomStream& R) { return FVector2D(FMath::Lerp(Region.Min.X, Region.Max.X, R.FRand()), FMath::Lerp(Region.Min.Y, Region.Max.Y, R.FRand())); };
-		Probe(*this, P.Name, Region, InBody, Shapes, [World](const FVector& From, const FVector& To) -> TOptional<double>
+		auto ChaosTrace = [World](const FVector& From, const FVector& To) -> TOptional<double>
 		{
 			FHitResult Hit;
 			FCollisionQueryParams Params(SCENE_QUERY_STAT(RammsShapeProbe), /*bTraceComplex=*/false);
@@ -463,7 +465,27 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 				return Hit.ImpactPoint.Z;
 			}
 			return TOptional<double>();
-		}, 0.2, 0.02, Rs);
+		};
+		// Chaos's body bounds can be far larger than the body (a non-uniformly scaled sphere: bounds from the largest
+		// scale, the ball from the smallest), so: (1) over the body's bounds, nothing either side has that the other has
+		// not (no top count asked); (2) over what was exported for this instance, a centimetre beyond it, the tops agree.
+		auto InBody = [&Region](FRandomStream& R) { return FVector2D(FMath::Lerp(Region.Min.X, Region.Max.X, R.FRand()), FMath::Lerp(Region.Min.Y, Region.Max.Y, R.FRand())); };
+		Probe(*this, P.Name + TEXT(" (body bounds)"), Region, InBody, Shapes, ChaosTrace, 0.2, 0.02, Rs, /*bRequireTops=*/false);
+		FBox Exported(ForceInit);
+		for (const FRammsCollisionShape& S : Shapes)
+		{
+			const FBox B = RammsCollisionShapes::GetBounds(S);
+			if (B.Intersect(P.Region))
+			{
+				Exported += B;
+			}
+		}
+		if (TestTrue(*FString::Printf(TEXT("%s: exported shapes found"), *P.Name), Exported.IsValid != 0))
+		{
+			const FBox Near = Exported.ExpandBy(1.0);
+			auto InExported = [&Near](FRandomStream& R) { return FVector2D(FMath::Lerp(Near.Min.X, Near.Max.X, R.FRand()), FMath::Lerp(Near.Min.Y, Near.Max.Y, R.FRand())); };
+			Probe(*this, P.Name, Near, InExported, Shapes, ChaosTrace, 0.2, 0.02, Rs);
+		}
 	}
 
 	// A region keeps only what is near it.
