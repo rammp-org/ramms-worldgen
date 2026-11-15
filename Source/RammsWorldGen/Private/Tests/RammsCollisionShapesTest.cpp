@@ -111,7 +111,7 @@ namespace RammsCollisionShapesTest
 	}
 
 	/** A counter-clockwise (from above) level rectangle at height Z. */
-	TArray<FVector> Rect(double X0, double Y0, double X1, double Y1, double Z)
+	TArray<FVector> PrismRect(double X0, double Y0, double X1, double Y1, double Z)
 	{
 		return { FVector(X0, Y0, Z), FVector(X1, Y0, Z), FVector(X1, Y1, Z), FVector(X0, Y1, Z) };
 	}
@@ -120,11 +120,11 @@ namespace RammsCollisionShapesTest
 	FString PotholeParts()
 	{
 		return PrismParts({
-			{ TEXT("Asphalt"), Rect(0.0, 0.0, 400.0, 100.0, 0.0) },
-			{ TEXT("Asphalt"), Rect(0.0, 200.0, 400.0, 300.0, 0.0) },
-			{ TEXT("Asphalt"), Rect(0.0, 100.0, 150.0, 200.0, 0.0) },
-			{ TEXT("Asphalt"), Rect(250.0, 100.0, 400.0, 200.0, 0.0) },
-			{ TEXT("Asphalt"), Rect(150.0, 100.0, 250.0, 200.0, -6.0) },
+			{ TEXT("Asphalt"), PrismRect(0.0, 0.0, 400.0, 100.0, 0.0) },
+			{ TEXT("Asphalt"), PrismRect(0.0, 200.0, 400.0, 300.0, 0.0) },
+			{ TEXT("Asphalt"), PrismRect(0.0, 100.0, 150.0, 200.0, 0.0) },
+			{ TEXT("Asphalt"), PrismRect(250.0, 100.0, 400.0, 200.0, 0.0) },
+			{ TEXT("Asphalt"), PrismRect(150.0, 100.0, 250.0, 200.0, -6.0) },
 		});
 	}
 
@@ -333,7 +333,7 @@ bool FRammsProcPieceCollisionShapesTest::RunTest(const FString& Parameters)
 		{ TEXT("Asphalt"), { FVector(300.0, 0.0, -12.0), FVector(450.0, 0.0, -12.0), FVector(500.0, 100.0, -12.0), FVector(450.0, 200.0, -12.0), FVector(300.0, 200.0, -12.0) } },
 	});
 	{
-		FCase& C = Add(TEXT("GroundPrisms level rectangle"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P) { P.SizeZ = 20.0; P.Parts = PrismParts({ { TEXT("Concrete"), Rect(0.0, 0.0, 200.0, 150.0, 0.0) } }); }, FRotator(0.0, 25.0, 0.0));
+		FCase& C = Add(TEXT("GroundPrisms level rectangle"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P) { P.SizeZ = 20.0; P.Parts = PrismParts({ { TEXT("Concrete"), PrismRect(0.0, 0.0, 200.0, 150.0, 0.0) } }); }, FRotator(0.0, 25.0, 0.0));
 		C.Boxes = 1; C.Convex = 0; C.Grids = 0;
 	}
 	{
