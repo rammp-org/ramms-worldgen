@@ -207,33 +207,57 @@ bool FRammsGradedGroundModelTest::RunTest(const FString& Parameters)
 	}
 
 	// Roads: continuous across the crown, between a segment and its intersection squares, and across the squares'
-	// diagonals and half-edges, and at the gutter where it meets each curb (checked above).
+	// diagonals and half-edges. A square's edge with no road arm (the site's outer edge, a dropped street) is a curb:
+	// there the square meets the gutter, and what lies beyond is the block's (or nothing), not road -- so it is not
+	// sampled for continuity. Segments of a dropped street are not road either.
 	{
-		double Worst = 0.0;
+		double Worst = 0.0, WorstGutter = 0.0;
+		FVector2D WorstAt = FVector2D::ZeroVector, WorstGutterAt = FVector2D::ZeroVector;
+		const TCHAR* WorstWhat = TEXT("-");
 		const double H = M.RoadWidth * 0.5;
-		auto Jump = [&](const FVector2D& P, const FVector2D& D)
+		auto Jump = [&](const FVector2D& P, const FVector2D& D, const TCHAR* What)
 		{
-			Worst = FMath::Max(Worst, FMath::Abs(M.RoadZ(P.X + D.X, P.Y + D.Y) - M.RoadZ(P.X - D.X, P.Y - D.Y)));
+			const double J = FMath::Abs(M.RoadZ(P.X + D.X, P.Y + D.Y) - M.RoadZ(P.X - D.X, P.Y - D.Y));
+			if (J > Worst) { Worst = J; WorstAt = P; WorstWhat = What; }
 		};
+		const uint8 Bits[4] = { FRammsGroundModel::ArmE, FRammsGroundModel::ArmN, FRammsGroundModel::ArmW, FRammsGroundModel::ArmS };
+		const FVector2D Dirs[4] = { FVector2D(1.0, 0.0), FVector2D(0.0, 1.0), FVector2D(-1.0, 0.0), FVector2D(0.0, -1.0) };
 		for (int32 j = 0; j < M.Y.Num(); ++j)
 		{
 			for (int32 i = 0; i < M.X.Num(); ++i)
 			{
 				const FVector2D N(M.X[i], M.Y[j]);
+				const uint8 A = M.Arms[j * M.X.Num() + i];
 				for (const double F : { 0.25, 0.5, 0.75 })
 				{
-					Jump(N + FVector2D(H * F, H * F), FVector2D(0.005, -0.005));      // a diagonal
-					Jump(N + FVector2D(-H * F, H * F), FVector2D(0.005, 0.005));
-					Jump(N + FVector2D(H * F, 0.0), FVector2D(0.0, 0.005));          // a half-edge (the crown line)
-					Jump(N + FVector2D(0.0, H * F), FVector2D(0.005, 0.0));
-					Jump(N + FVector2D(H, H * F * 0.9), FVector2D(0.005, 0.0));      // the square's edge onto a segment
-					Jump(N + FVector2D(H * F * 0.9, H), FVector2D(0.0, 0.005));
+					for (int32 k = 0; k < 4; ++k)
+					{
+						const FVector2D U = Dirs[k], V(-Dirs[k].Y, Dirs[k].X);
+						Jump(N + (U + V) * (H * F), (U - V) * 0.005, TEXT("a square's diagonal"));
+						Jump(N + U * (H * F), V * 0.005, TEXT("a square's half-edge (the crown line)"));
+						for (const double Sg : { -1.0, 1.0 })
+						{
+							const FVector2D P = N + U * H + V * (Sg * H * F * 0.9);
+							if (A & Bits[k])
+							{
+								Jump(P, U * 0.005, TEXT("a square's edge onto its segment"));
+							}
+							else
+							{
+								// A curb: the square comes down to the gutter there.
+								const FVector2D Q = P - U * 0.0001;
+								const double G = FMath::Abs(M.RoadZ(Q.X, Q.Y) - (M.Base(Q.X, Q.Y) - M.CurbHeight));
+								if (G > WorstGutter) { WorstGutter = G; WorstGutterAt = Q; }
+							}
+						}
+					}
 				}
-				if (i + 1 < M.X.Num()) { Jump(FVector2D((M.X[i] + M.X[i + 1]) * 0.5, M.Y[j]), FVector2D(0.0, 0.005)); }
-				if (j + 1 < M.Y.Num()) { Jump(FVector2D(M.X[i], (M.Y[j] + M.Y[j + 1]) * 0.5), FVector2D(0.005, 0.0)); }
+				if (i + 1 < M.X.Num() && (A & FRammsGroundModel::ArmE)) { Jump(FVector2D((M.X[i] + M.X[i + 1]) * 0.5, M.Y[j]), FVector2D(0.0, 0.005), TEXT("a segment's crown")); }
+				if (j + 1 < M.Y.Num() && (A & FRammsGroundModel::ArmN)) { Jump(FVector2D(M.X[i], (M.Y[j] + M.Y[j + 1]) * 0.5), FVector2D(0.005, 0.0), TEXT("a segment's crown")); }
 			}
 		}
-		TestTrue(*FString::Printf(TEXT("roads: continuous across crowns, squares and diagonals (worst %.5f cm over 0.1 mm)"), Worst), Worst < 0.002);
+		TestTrue(*FString::Printf(TEXT("roads: continuous across crowns, squares and diagonals (worst %.5f cm over 0.1 mm, across %s at %s)"), Worst, WorstWhat, *WorstAt.ToString()), Worst < 0.002);
+		TestTrue(*FString::Printf(TEXT("roads: a square's edge with no arm is at the gutter (worst %.5f cm off, at %s)"), WorstGutter, *WorstGutterAt.ToString()), WorstGutter < 0.001);
 	}
 
 	// The text: exact both ways (17 digits), a second parse builds the same facets, and a text that does not parse
