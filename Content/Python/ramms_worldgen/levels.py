@@ -29,13 +29,15 @@ EXAMPLES = {
     # same seeds on a hill, with real surface roughness; built only when asked for (OPT_IN)
     "graded_downtown": ("Map_Gen_GradedDowntown", "PRE_GradedDowntown", 7),
     "hilly_residential": ("Map_Gen_HillyResidential", "PRE_HillyResidential", 11),
+    # both: the traffic level's streets graded and worn, its cars on the grades (recipe-built like traffic)
+    "graded_traffic": ("Map_Gen_GradedTraffic", "PRE_GradedTraffic", 21, "Downtown"),
 }
 # Examples build_all_levels() leaves out unless they are named.
-OPT_IN = {"graded_downtown", "hilly_residential"}
+OPT_IN = {"graded_downtown", "hilly_residential", "graded_traffic"}
 
 # Levels that get traffic after generation (vehicle lanes, signal clock, cars: traffic.build_traffic). Any other
 # level gets it with build_level(kind, traffic=True).
-TRAFFIC_KINDS = {"traffic"}
+TRAFFIC_KINDS = {"traffic", "graded_traffic"}
 
 _pending = {}
 

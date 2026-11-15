@@ -153,6 +153,13 @@ PRESETS["PRE_HillyResidential"] = (
     "and the odd pothole.",
     dict(PRESETS["PRE_Suburban"][3], **HILLY_RESIDENTIAL),
 )
+PRESETS["PRE_GradedTraffic"] = (
+    unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+    "PRE_DowntownTraffic on the graded downtown's hill and wear: moving cars on streets climbing up to 5 % between "
+    "intersections, crowned roads, curbs from 5 to 20 cm, a rough walk, potholes and speed humps (levels "
+    "'graded_traffic').",
+    dict(PRESETS["PRE_DowntownTraffic"][3], **GRADED_DOWNTOWN),
+)
 
 
 def build_profile(path=PROFILE_ADA):
