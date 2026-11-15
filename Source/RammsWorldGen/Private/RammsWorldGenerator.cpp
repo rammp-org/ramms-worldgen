@@ -6,6 +6,7 @@
 #include "Components/BoxComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SplineMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -710,8 +711,8 @@ void ARammsWorldGenerator::CollectProcPieces()
 // instanced meshes PCG spawns, and the meshes of actors it spawned) are described by their simple collision as Chaos
 // builds it, instance by instance, through the engine's own scaling rules (FK*Elem::GetFinalScaled: a box keeps its
 // axes and scales its extents, a sphere takes the smallest scale). A mesh that collides as its triangles (complex as
-// simple) is described by their convex hull, coarser than what Chaos sees wherever it is concave; that is said once
-// per asset.
+// simple) is described by the convex hulls of its connected parts (RammsCollisionShapes::AppendComponentHulls),
+// coarser than what Chaos sees wherever a part is concave; that is said once per asset.
 
 namespace
 {
@@ -722,7 +723,7 @@ namespace
 		TArray<FKBoxElem> Boxes;
 		TArray<FKSphereElem> Spheres;
 		TArray<FKSphylElem> Capsules;
-		/** Convex elements (their element transform applied) or the hull of a triangle mesh. */
+		/** Convex elements (their element transform applied), or the hulls of a triangle mesh's connected parts. */
 		TArray<TArray<FVector>> Hulls;
 
 		bool IsEmpty() const { return Boxes.Num() == 0 && Spheres.Num() == 0 && Capsules.Num() == 0 && Hulls.Num() == 0; }
@@ -738,31 +739,6 @@ namespace
 			GMeshCollisionReported.Add(Key);
 			UE_LOG(LogRammsWorldGen, Log, TEXT("Collision shapes: %s %s"), *Mesh.GetPathName(), What);
 		}
-	}
-
-	/** Only the points on the hull of Points (in their original order), or all of them when they span no volume. */
-	TArray<FVector> HullPoints(TArray<FVector>&& Points)
-	{
-		UE::Geometry::FConvexHull3d Hull;
-		if (Points.Num() < 4 || !Hull.Solve(Points.Num(), [&Points](int32 Index) { return Points[Index]; }))
-		{
-			return MoveTemp(Points);
-		}
-		TArray<bool> Used;
-		Used.Init(false, Points.Num());
-		for (const UE::Geometry::FIndex3i& T : Hull.GetTriangles())
-		{
-			Used[T.A] = Used[T.B] = Used[T.C] = true;
-		}
-		TArray<FVector> Out;
-		for (int32 i = 0; i < Points.Num(); ++i)
-		{
-			if (Used[i])
-			{
-				Out.Add(Points[i]);
-			}
-		}
-		return Out;
 	}
 
 	const FMeshCollision* MeshCollisionOf(const UStaticMesh* Mesh)
@@ -785,25 +761,45 @@ namespace
 			{
 				Body->CreatePhysicsMeshes();
 			}
-			TArray<FVector> Points;
+			// One hull per connected part of the cooked triangles (a table's top and each of its legs), all of the mesh's
+			// triangle meshes together.
+			TArray<FVector3f> Vertices;
+			TArray<FIntVector> Triangles;
 			for (const Chaos::FTriangleMeshImplicitObjectPtr& Tri : Body->TriMeshGeometries)
 			{
 				if (!Tri)
 				{
 					continue;
 				}
+				const int32 Base = Vertices.Num();
 				const auto& Particles = Tri->Particles();
 				const int32 Count = static_cast<int32>(Particles.Size());
 				for (int32 i = 0; i < Count; ++i)
 				{
 					const FVector3f V = Particles.X(i);
-					Points.Add(FVector(V));
+					Vertices.Add(V);
+				}
+				const Chaos::FTrimeshIndexBuffer& Elements = Tri->Elements();
+				if (Elements.RequiresLargeIndices())
+				{
+					for (const auto& T : Elements.GetLargeIndexBuffer())
+					{
+						Triangles.Add(FIntVector(Base + static_cast<int32>(T[0]), Base + static_cast<int32>(T[1]), Base + static_cast<int32>(T[2])));
+					}
+				}
+				else
+				{
+					for (const auto& T : Elements.GetSmallIndexBuffer())
+					{
+						Triangles.Add(FIntVector(Base + static_cast<int32>(T[0]), Base + static_cast<int32>(T[1]), Base + static_cast<int32>(T[2])));
+					}
 				}
 			}
-			if (Points.Num() >= 4)
+			const int32 NumParts = RammsCollisionShapes::AppendComponentHulls(Vertices, Triangles, Slot->Hulls);
+			if (Slot->Hulls.Num() > 0)
 			{
-				Slot->Hulls.Add(HullPoints(MoveTemp(Points)));
-				ReportMeshOnce(*Mesh, TEXT("collides as its triangles: exported as their convex hull (solid wherever the mesh is concave)"));
+				ReportMeshOnce(*Mesh, *FString::Printf(TEXT("collides as its triangles: exported as %d convex hulls of its %d connected parts (a part is solid wherever it is concave)"),
+					Slot->Hulls.Num(), NumParts));
 			}
 			else
 			{
@@ -1043,6 +1039,91 @@ namespace
 
 	/** What moves after generation (traffic, anything animated) is tagged RammsDynamic: not static scenery. */
 	const FName DynamicTag(TEXT("RammsDynamic"));
+
+	/** A colliding component the export does not describe, said once per class and reason. */
+	void ReportUnexportedOnce(const UPrimitiveComponent& C, const TCHAR* Why)
+	{
+		const FString Key = C.GetClass()->GetName() + Why;
+		if (!GMeshCollisionReported.Contains(Key))
+		{
+			GMeshCollisionReported.Add(Key);
+			UE_LOG(LogRammsWorldGen, Log, TEXT("Collision shapes: %s components %s (%s.%s, and any others): not exported"), *C.GetClass()->GetName(), Why,
+				C.GetOwner() ? *C.GetOwner()->GetName() : TEXT("None"), *C.GetName());
+		}
+	}
+
+	/** The shapes of what Generator made that Filter keeps, added to Out. With bStopAtFirst it stops at the first piece
+	 *  or mesh component that adds any. Returns whether any were added. */
+	bool GatherGenerated(const ARammsWorldGenerator& Generator, TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter, bool bStopAtFirst)
+	{
+		const int32 First = Out.Num();
+		TArray<AActor*> Actors;
+		CollectGeneratedActors(Generator, Actors);
+		TArray<FRammsCollisionShape> PieceShapes;
+		for (AActor* A : Actors)
+		{
+			if (!A || A->IsA<APawn>() || IsArticulatedStandIn(*A) || A->ActorHasTag(DynamicTag) || Filter.ExcludedActors.Contains(A))
+			{
+				continue;
+			}
+			if (const ARammsProcPiece* Piece = Cast<ARammsProcPiece>(A))
+			{
+				if (!Filter.IsEverything() && Piece->MeshComponent)
+				{
+					const FBox Bounds = Piece->MeshComponent->Bounds.GetBox();
+					if (Bounds.IsValid && Bounds.GetSize().SizeSquared() > 1.0 && !Filter.Accepts(Bounds.ExpandBy(100.0)))
+					{
+						continue; // well clear of the region (the mesh's bounds, with room for a piece whose mesh lags its properties)
+					}
+				}
+				PieceShapes.Reset();
+				Piece->AppendCollisionShapes(PieceShapes);
+				for (FRammsCollisionShape& S : PieceShapes)
+				{
+					if (Filter.IsEverything() || Filter.Accepts(RammsCollisionShapes::GetBounds(S)))
+					{
+						Out.Add(MoveTemp(S));
+					}
+				}
+				if (bStopAtFirst && Out.Num() > First)
+				{
+					return true;
+				}
+				continue;
+			}
+			TInlineComponentArray<UPrimitiveComponent*> Primitives(A);
+			for (const UPrimitiveComponent* C : Primitives)
+			{
+				if (!C || C->ComponentHasTag(DynamicTag))
+				{
+					continue;
+				}
+				if (C->IsA<USplineMeshComponent>())
+				{
+					// A static mesh bent along a spline: its simple collision is the straight mesh's, which is not what Chaos has.
+					if (C->IsRegistered() && BlocksBodies(*C))
+					{
+						ReportUnexportedOnce(*C, TEXT("collide as their mesh bent along a spline, which the export does not follow"));
+					}
+					continue;
+				}
+				if (const UStaticMeshComponent* Smc = Cast<UStaticMeshComponent>(C))
+				{
+					EmitStaticMeshComponent(*Smc, Filter, Out);
+					if (bStopAtFirst && Out.Num() > First)
+					{
+						return true;
+					}
+					continue;
+				}
+				if (C->IsRegistered() && BlocksBodies(*C))
+				{
+					ReportUnexportedOnce(*C, TEXT("block physics bodies but are not static meshes or procedural pieces"));
+				}
+			}
+		}
+		return Out.Num() > First;
+	}
 }
 
 void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& Out) const
@@ -1052,45 +1133,13 @@ void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& O
 
 void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter) const
 {
-	TArray<AActor*> Actors;
-	CollectGeneratedActors(*this, Actors);
-	TArray<FRammsCollisionShape> PieceShapes;
-	for (AActor* A : Actors)
-	{
-		if (!A || A->IsA<APawn>() || IsArticulatedStandIn(*A) || A->ActorHasTag(DynamicTag))
-		{
-			continue;
-		}
-		if (const ARammsProcPiece* Piece = Cast<ARammsProcPiece>(A))
-		{
-			if (!Filter.IsEverything() && Piece->MeshComponent)
-			{
-				const FBox Bounds = Piece->MeshComponent->Bounds.GetBox();
-				if (Bounds.IsValid && Bounds.GetSize().SizeSquared() > 1.0 && !Filter.Accepts(Bounds.ExpandBy(100.0)))
-				{
-					continue; // well clear of the region (the mesh's bounds, with room for a piece whose mesh lags its properties)
-				}
-			}
-			PieceShapes.Reset();
-			Piece->AppendCollisionShapes(PieceShapes);
-			for (FRammsCollisionShape& S : PieceShapes)
-			{
-				if (Filter.IsEverything() || Filter.Accepts(RammsCollisionShapes::GetBounds(S)))
-				{
-					Out.Add(MoveTemp(S));
-				}
-			}
-			continue;
-		}
-		TInlineComponentArray<UStaticMeshComponent*> Meshes(A);
-		for (const UStaticMeshComponent* C : Meshes)
-		{
-			if (C && !C->ComponentHasTag(DynamicTag))
-			{
-				EmitStaticMeshComponent(*C, Filter, Out);
-			}
-		}
-	}
+	GatherGenerated(*this, Out, Filter, /*bStopAtFirst=*/false);
+}
+
+bool ARammsWorldGenerator::HasCollisionShapes(const FRammsCollisionShapeFilter& Filter) const
+{
+	TArray<FRammsCollisionShape> Any;
+	return GatherGenerated(*this, Any, Filter, /*bStopAtFirst=*/true);
 }
 
 FString ARammsWorldGenerator::DescribeCollisionShapes() const

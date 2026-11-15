@@ -133,12 +133,17 @@ public:
 	void GatherCollisionShapes(TArray<FRammsCollisionShape>& Out) const;
 
 	/** The same, limited to a region (FRammsCollisionShapeFilter): pieces and instances outside it are not built.
-	 *  Both skip pawns, articulated stand-ins and actors or components tagged RammsDynamic (whatever moves after
-	 *  generation, such as traffic). */
+	 *  Both skip pawns, articulated stand-ins, actors or components tagged RammsDynamic (whatever moves after
+	 *  generation, such as traffic) and the filter's ExcludedActors. */
 	void GatherCollisionShapes(TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter) const;
 
-	/** GatherCollisionShapes, counted by type and surface, as one line of text (for scripts and checks). */
-	UFUNCTION(BlueprintCallable, Category = "World Generator")
+	/** Whether GatherCollisionShapes(Filter) would give any shape, found cheaply: it stops at the first piece or mesh
+	 *  component with one. */
+	bool HasCollisionShapes(const FRammsCollisionShapeFilter& Filter) const;
+
+	/** GatherCollisionShapes, counted by type and surface, as one line of text (for scripts and checks). Not pure: it
+	 *  builds every piece's shapes, so a Blueprint should call it once. */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "World Generator")
 	FString DescribeCollisionShapes() const;
 
 	/** Write the manifest JSON next to the project's Saved folder (or to AbsolutePath when given). Returns the path written. */
