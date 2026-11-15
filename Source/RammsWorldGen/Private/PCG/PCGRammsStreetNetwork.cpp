@@ -936,9 +936,16 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 	// --- graded / rough sidewalks (bGround) -------------------------------------------------------------------
 	// One side's walk (cast in panels when rough) and planting strip as GroundPrisms pieces on the ground model; each
 	// roughness feature a piece of its own carrying its manifest record; and the side's grades and curb heights.
-	const FString MatPaver = Palette && Palette->HasSlot(RammsGround::MatBrick) ? RammsPCG::Mat(Palette, RammsGround::MatBrick) : RammsPCG::Mat(Palette, RammsPaletteSlots::MatFacade);
-	const FString MatSett = RammsPCG::Mat(Palette, RammsPaletteSlots::MatCobble);
-	const FString MatCover = RammsPCG::Mat(Palette, RammsPaletteSlots::MatMetal);
+	// A recipe palette need not carry every surface: the first of these slots the palette fills, else the first one's
+	// fallback (the palette's default material). With the first slot filled, that is what it always was.
+	auto MatFirst = [Palette](const TArray<FName>& Candidates) -> FString
+	{
+		for (const FName& Cand : Candidates) { if (Palette && Palette->HasSlot(Cand)) { return RammsPCG::Mat(Palette, Cand); } }
+		return RammsPCG::Mat(Palette, Candidates.Num() > 0 ? Candidates[0] : NAME_None);
+	};
+	const FString MatPaver = MatFirst({ RammsGround::MatBrick, RammsPaletteSlots::MatFacade, RammsPaletteSlots::MatConcrete, RammsPaletteSlots::MatSidewalk });
+	const FString MatSett = MatFirst({ RammsPaletteSlots::MatCobble, RammsPaletteSlots::MatConcrete, RammsPaletteSlots::MatSidewalk });
+	const FString MatCover = MatFirst({ RammsPaletteSlots::MatMetal, RammsPaletteSlots::MatAsphalt, RammsPaletteSlots::MatConcrete });
 	auto EmitGroundSide = [&](const FSide& Sd, double SL0, double SL, double Pave0, bool bStripSide, FName Route)
 	{
 		const int32 Bk = Sd.BlockId;
