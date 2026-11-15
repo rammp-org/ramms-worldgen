@@ -1,6 +1,7 @@
 // Copyright ATDev. All Rights Reserved.
 #include "PCG/PCGRammsManifest.h"
 
+#include "PCG/RammsGround.h"
 #include "JsonObjectConverter.h"
 #include "PCGContext.h"
 #include "PCGPin.h"
@@ -91,11 +92,45 @@ bool FPCGRammsManifestElement::ExecuteInternal(FPCGContext* Context) const
 			Route.NominalWidth = R.GetD(i, RammsPCG::Width, R.Max(i).Y - R.Min(i).Y);
 			Route.MinClearWidth = R.GetD(i, RammsPCG::ClearWidth, Route.NominalWidth);
 			Route.bCompliant = R.Get<bool>(i, RammsPCG::bCompliant, true);
-			const int32 Steps = FMath::Clamp(FMath::CeilToInt(Length / 500.0), 1, 64);
-			for (int32 s = 0; s <= Steps; ++s)
+			// On graded ground the Hazard Placer gives the centre line as it follows the ground (evenly spaced from the
+			// route's start to its end); otherwise it is the straight line at the route's level.
+			const FString GradedPoints = R.Get<FString>(i, RammsGround::RoutePoints, FString());
+			if (!GradedPoints.IsEmpty())
 			{
-				Route.Points.Add(Xf.TransformPosition(FVector(Length * s / Steps, MidY, 0.0)));
+				TArray<FString> Items;
+				GradedPoints.ParseIntoArray(Items, TEXT(";"), true);
+				for (const FString& It : Items)
+				{
+					TArray<FString> V;
+					if (It.ParseIntoArray(V, TEXT(","), true) == 3)
+					{
+						Route.Points.Add(FVector(FCString::Atod(*V[0]), FCString::Atod(*V[1]), FCString::Atod(*V[2])));
+					}
+				}
 			}
+			if (Route.Points.Num() < 2)
+			{
+				Route.Points.Reset();
+				const int32 Steps = FMath::Clamp(FMath::CeilToInt(Length / 500.0), 1, 64);
+				for (int32 s = 0; s <= Steps; ++s)
+				{
+					Route.Points.Add(Xf.TransformPosition(FVector(Length * s / Steps, MidY, 0.0)));
+				}
+			}
+			// A point along the route Up above it: on its polyline when that follows graded ground.
+			const bool bGraded = !GradedPoints.IsEmpty() && Route.Points.Num() >= 2;
+			const TArray<FVector> Line = Route.Points;
+			auto AlongRoute = [&Xf, &Line, bGraded, Length, MidY](double Along, double Up)
+			{
+				FVector P = Xf.TransformPosition(FVector(Along, MidY, Up));
+				if (bGraded && Length > 1.0)
+				{
+					const double T = FMath::Clamp(Along / Length, 0.0, 1.0) * (Line.Num() - 1);
+					const int32 K = FMath::Min(FMath::FloorToInt(T), Line.Num() - 2);
+					P.Z = FMath::Lerp(Line[K].Z, Line[K + 1].Z, T - K) + Up;
+				}
+				return P;
+			};
 			// A polyline arrives as consecutive segments sharing a name (SegmentIndex > 0 continues the last one).
 			const int32 Segment = static_cast<int32>(R.GetD(i, RammsPCG::SegmentIndex, 0.0));
 			if (Segment > 0 && M.Routes.Num() > 0 && M.Routes.Last().Name == Route.Name)
@@ -112,12 +147,12 @@ bool FPCGRammsManifestElement::ExecuteInternal(FPCGContext* Context) const
 			if (Score > BestShortScore && Length > 40.0)
 			{
 				BestShortScore = Score;
-				ShortStart = FTransform(Xf.GetRotation(), Xf.TransformPosition(FVector(Length * 0.5, MidY, 8.0)));
+				ShortStart = FTransform(Xf.GetRotation(), AlongRoute(Length * 0.5, 8.0));
 			}
 			if (Score > BestScore && Length > 250.0)
 			{
 				BestScore = Score;
-				M.SuggestedStart = FTransform(Xf.GetRotation(), Xf.TransformPosition(FVector(FMath::Min(150.0, Length * 0.25), MidY, 8.0)));
+				M.SuggestedStart = FTransform(Xf.GetRotation(), AlongRoute(FMath::Min(150.0, Length * 0.25), 8.0));
 			}
 		}
 	}

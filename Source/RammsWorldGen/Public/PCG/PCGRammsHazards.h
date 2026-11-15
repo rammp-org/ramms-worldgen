@@ -36,6 +36,8 @@ public:
 	/** World XY boxes "x0,y0,x1,y1;..." kept clear of everything placed along the sides. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hazards", meta = (PCG_Overridable)) FString KeepClear;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double VerticalChangeMax = 0.64;
+	/** Probability a street tree in a pit has heaved the walk beside it (see FRammsWorldGenParams). 0: none, as before. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double RootHeaveChance = 0.0;
 
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override { return FName(TEXT("RammsHazardPlacer")); }

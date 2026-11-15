@@ -276,6 +276,14 @@ FName URammsSegmentationLabels::ClassForPiece(const ARammsProcPiece* Piece, FNam
 			return FName(TEXT("Roof"));
 		case ERammsProcPieceKind::Mound:
 			return FName(TEXT("Mound"));
+		case ERammsProcPieceKind::GroundPrisms:
+			// Graded ground and roughness: the surface it is made of (brick pavers read as paving stones); a curb ramp built
+			// on graded ground is one, whatever it is made of.
+			if (Piece->ManifestKind == FName(TEXT("CurbRamp"))) { return FName(TEXT("CurbRamp")); }
+			if (Piece->ManifestSubtype == FName(TEXT("Brick"))) { return FName(TEXT("Cobblestone")); }
+			return Surface.IsNone() ? FName(TEXT("Slab")) : Surface;
+		case ERammsProcPieceKind::Hump:
+			return Surface.IsNone() ? FName(TEXT("Road")) : Surface;
 		case ERammsProcPieceKind::Decal:
 		default:
 			// A decal is drawn onto whatever it covers and takes that surface's class.
@@ -368,7 +376,8 @@ int32 URammsSegmentationLabels::LabelGeneratorOutput(ARammsWorldGenerator* Gener
 			FName		 Class = ClassForPiece(Piece, MatSlot ? *MatSlot : NAME_None);
 			// A flat slab well above the ground is a roof, whatever surface it borrows its look from (flat
 			// roofs are asphalt-, gravel- or concrete-surfaced slabs).
-			if (Piece->GetEffectiveKind() == ERammsProcPieceKind::Slab && Piece->ManifestKind.IsNone()
+			// (Ground slabs of a graded world, subtype Ground, can stand that high on a hill.)
+			if (Piece->GetEffectiveKind() == ERammsProcPieceKind::Slab && Piece->ManifestKind.IsNone() && Piece->ManifestSubtype.IsNone()
 				&& Piece->GetActorLocation().Z - Generator->GetActorLocation().Z > RoofHeight)
 			{
 				Class = FName(TEXT("Roof"));

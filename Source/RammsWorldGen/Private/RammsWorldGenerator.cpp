@@ -1,8 +1,12 @@
 // Copyright ATDev. All Rights Reserved.
 #include "RammsWorldGenerator.h"
 
+#include "Chaos/TriangleMeshImplicitObject.h"
+#include "CompGeom/ConvexHull3.h"
 #include "Components/BoxComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/SplineMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -18,6 +22,9 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
+#include "IndexTypes.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
+#include "PhysicsEngine/AggregateGeom.h"
 #include "PhysicsEngine/BodyInstance.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PCGComponent.h"
@@ -697,6 +704,475 @@ void ARammsWorldGenerator::CollectProcPieces()
 }
 
 // --- outputs ---------------------------------------------------------------------------
+
+// --- collision shapes ---------------------------------------------------------------------
+//
+// Every procedural piece describes its own collision (ARammsProcPiece::AppendCollisionShapes). Static meshes (the
+// instanced meshes PCG spawns, and the meshes of actors it spawned) are described by their simple collision as Chaos
+// builds it, instance by instance, through the engine's own scaling rules (FK*Elem::GetFinalScaled: a box keeps its
+// axes and scales its extents, a sphere takes the smallest scale). A mesh that collides as its triangles (complex as
+// simple) is described by the convex hulls of its connected parts (RammsCollisionShapes::AppendComponentHulls),
+// coarser than what Chaos sees wherever a part is concave; that is said once per asset.
+
+namespace
+{
+	/** One static mesh's collision in the mesh's own space, built once per asset and kept until its body changes. */
+	struct FMeshCollision
+	{
+		FGuid BodySetupGuid;
+		TArray<FKBoxElem> Boxes;
+		TArray<FKSphereElem> Spheres;
+		TArray<FKSphylElem> Capsules;
+		/** Convex elements (their element transform applied), or the hulls of a triangle mesh's connected parts. */
+		TArray<TArray<FVector>> Hulls;
+
+		bool IsEmpty() const { return Boxes.Num() == 0 && Spheres.Num() == 0 && Capsules.Num() == 0 && Hulls.Num() == 0; }
+	};
+	TMap<TWeakObjectPtr<const UStaticMesh>, TSharedPtr<FMeshCollision>> GMeshCollision;
+	TSet<FString> GMeshCollisionReported;
+
+	void ReportMeshOnce(const UStaticMesh& Mesh, const TCHAR* What)
+	{
+		const FString Key = Mesh.GetPathName() + What;
+		if (!GMeshCollisionReported.Contains(Key))
+		{
+			GMeshCollisionReported.Add(Key);
+			UE_LOG(LogRammsWorldGen, Log, TEXT("Collision shapes: %s %s"), *Mesh.GetPathName(), What);
+		}
+	}
+
+	const FMeshCollision* MeshCollisionOf(const UStaticMesh* Mesh)
+	{
+		UBodySetup* Body = Mesh ? Mesh->GetBodySetup() : nullptr;
+		if (!Body)
+		{
+			return nullptr;
+		}
+		TSharedPtr<FMeshCollision>& Slot = GMeshCollision.FindOrAdd(Mesh);
+		if (Slot.IsValid() && Slot->BodySetupGuid == Body->BodySetupGuid)
+		{
+			return Slot.Get();
+		}
+		Slot = MakeShared<FMeshCollision>();
+		Slot->BodySetupGuid = Body->BodySetupGuid;
+		if (Body->GetCollisionTraceFlag() == CTF_UseComplexAsSimple)
+		{
+			if (Body->TriMeshGeometries.Num() == 0)
+			{
+				Body->CreatePhysicsMeshes();
+			}
+			// One hull per connected part of the cooked triangles (a table's top and each of its legs), all of the mesh's
+			// triangle meshes together.
+			TArray<FVector3f> Vertices;
+			TArray<FIntVector> Triangles;
+			for (const Chaos::FTriangleMeshImplicitObjectPtr& Tri : Body->TriMeshGeometries)
+			{
+				if (!Tri)
+				{
+					continue;
+				}
+				const int32 Base = Vertices.Num();
+				const auto& Particles = Tri->Particles();
+				const int32 Count = static_cast<int32>(Particles.Size());
+				for (int32 i = 0; i < Count; ++i)
+				{
+					const FVector3f V = Particles.GetX(i);
+					Vertices.Add(V);
+				}
+				const Chaos::FTrimeshIndexBuffer& Elements = Tri->Elements();
+				if (Elements.RequiresLargeIndices())
+				{
+					for (const auto& T : Elements.GetLargeIndexBuffer())
+					{
+						Triangles.Add(FIntVector(Base + static_cast<int32>(T[0]), Base + static_cast<int32>(T[1]), Base + static_cast<int32>(T[2])));
+					}
+				}
+				else
+				{
+					for (const auto& T : Elements.GetSmallIndexBuffer())
+					{
+						Triangles.Add(FIntVector(Base + static_cast<int32>(T[0]), Base + static_cast<int32>(T[1]), Base + static_cast<int32>(T[2])));
+					}
+				}
+			}
+			const int32 NumParts = RammsCollisionShapes::AppendComponentHulls(Vertices, Triangles, Slot->Hulls);
+			if (Slot->Hulls.Num() > 0)
+			{
+				ReportMeshOnce(*Mesh, *FString::Printf(TEXT("collides as its triangles: exported as %d convex hulls of its %d connected parts (a part is solid wherever it is concave)"),
+					Slot->Hulls.Num(), NumParts));
+			}
+			else
+			{
+				ReportMeshOnce(*Mesh, TEXT("collides as its triangles but has none cooked here: not exported"));
+			}
+			return Slot.Get();
+		}
+		const FKAggregateGeom& Agg = Body->AggGeom;
+		Slot->Boxes = Agg.BoxElems;
+		Slot->Spheres = Agg.SphereElems;
+		Slot->Capsules = Agg.SphylElems;
+		for (const FKConvexElem& C : Agg.ConvexElems)
+		{
+			const FTransform ElemTM = C.GetTransform();
+			TArray<FVector> P;
+			P.Reserve(C.VertexData.Num());
+			for (const FVector& V : C.VertexData)
+			{
+				P.Add(ElemTM.TransformPosition(V));
+			}
+			if (P.Num() >= 4)
+			{
+				Slot->Hulls.Add(MoveTemp(P));
+			}
+		}
+		if (Agg.TaperedCapsuleElems.Num() > 0 || Agg.LevelSetElems.Num() > 0)
+		{
+			ReportMeshOnce(*Mesh, TEXT("has tapered capsules or level sets: those parts are not exported"));
+		}
+		if (Slot->IsEmpty())
+		{
+			ReportMeshOnce(*Mesh, TEXT("has no simple collision (Chaos bodies pass through it): not exported"));
+		}
+		return Slot.Get();
+	}
+
+	/** One placement of a mesh's collision. Instance carries the placement's scale, which the engine's rules apply. */
+	void EmitMeshCollision(const FMeshCollision& C, const FTransform& Instance, FName Surface, FName Source, const FRammsCollisionShapeFilter& Filter, TArray<FRammsCollisionShape>& Out)
+	{
+		const int32 First = Out.Num();
+		const FVector S = Instance.GetScale3D();
+		const FTransform Body(Instance.GetRotation(), Instance.GetLocation());
+		for (const FKBoxElem& B : C.Boxes)
+		{
+			const FKBoxElem K = B.GetFinalScaled(S, FTransform::Identity);
+			RammsCollisionShapes::AddBox(Out, K.GetTransform() * Body, FVector(K.X, K.Y, K.Z) * 0.5, Surface, Source);
+		}
+		for (const FKSphereElem& E : C.Spheres)
+		{
+			const FKSphereElem K = E.GetFinalScaled(S, FTransform::Identity);
+			FRammsCollisionShape& Sh = Out.AddDefaulted_GetRef();
+			Sh.Type = ERammsCollisionShapeType::Sphere;
+			Sh.Transform = FTransform(Body.GetRotation(), Body.TransformPosition(K.Center));
+			Sh.HalfExtents = FVector(K.Radius);
+			Sh.Surface = Surface;
+			Sh.Source = Source;
+		}
+		for (const FKSphylElem& E : C.Capsules)
+		{
+			const FKSphylElem K = E.GetFinalScaled(S, FTransform::Identity);
+			FRammsCollisionShape& Sh = Out.AddDefaulted_GetRef();
+			Sh.Type = ERammsCollisionShapeType::Capsule;
+			Sh.Transform = FTransform(Body.GetRotation() * K.Rotation.Quaternion(), Body.TransformPosition(K.Center));
+			Sh.HalfExtents = FVector(K.Radius, K.Radius, K.Length * 0.5);
+			Sh.Surface = Surface;
+			Sh.Source = Source;
+		}
+		for (const TArray<FVector>& H : C.Hulls)
+		{
+			// Scaled in the mesh's own space, as a scaled convex is, so equal placements give identical points.
+			TArray<FVector3f> P;
+			P.Reserve(H.Num());
+			for (const FVector& V : H)
+			{
+				P.Add(FVector3f(V * S));
+			}
+			RammsCollisionShapes::AddConvex(Out, Body, MoveTemp(P), Surface, Source);
+		}
+		if (!Filter.IsEverything())
+		{
+			for (int32 k = Out.Num() - 1; k >= First; --k)
+			{
+				if (!Filter.Accepts(RammsCollisionShapes::GetBounds(Out[k])))
+				{
+					Out.RemoveAtSwap(k);
+				}
+			}
+		}
+	}
+
+	FName SurfaceFromTags(const TArray<FName>& Tags)
+	{
+		for (const FName& T : Tags)
+		{
+			const FString S = T.ToString();
+			if (S.StartsWith(URammsSegmentationLabels::TagPrefix, ESearchCase::IgnoreCase))
+			{
+				return RammsCollisionShapes::SurfaceForClass(FName(*S.RightChop(URammsSegmentationLabels::TagPrefix.Len())));
+			}
+		}
+		return NAME_None;
+	}
+
+	/** A mesh component's surface: its segmentation label, else its physical material's name, else Default. */
+	FName ComponentSurface(const UPrimitiveComponent& C)
+	{
+		FName Surface = SurfaceFromTags(C.ComponentTags);
+		if (Surface.IsNone() && C.GetOwner())
+		{
+			Surface = SurfaceFromTags(C.GetOwner()->Tags);
+		}
+		if (Surface.IsNone())
+		{
+			if (const FBodyInstance* Body = C.GetBodyInstance())
+			{
+				if (const UPhysicalMaterial* Material = Body->GetSimplePhysicalMaterial())
+				{
+					Surface = RammsCollisionShapes::SurfaceForPhysicalMaterial(Material->GetName());
+				}
+			}
+		}
+		return Surface.IsNone() ? FName(TEXT("Default")) : Surface;
+	}
+
+	/** Whether a physics body (a robot, a wheelchair) collides with C rather than passing through it. */
+	bool BlocksBodies(const UPrimitiveComponent& C)
+	{
+		if (!CollisionEnabledHasPhysics(C.GetCollisionEnabled()) || C.IsSimulatingPhysics())
+		{
+			return false;
+		}
+		const ECollisionChannel Bodies[] = { ECC_Pawn, ECC_PhysicsBody, ECC_WorldDynamic, ECC_Vehicle };
+		for (const ECollisionChannel Channel : Bodies)
+		{
+			if (C.GetCollisionResponseToChannel(Channel) == ECR_Block)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void EmitStaticMeshComponent(const UStaticMeshComponent& C, const FRammsCollisionShapeFilter& Filter, TArray<FRammsCollisionShape>& Out)
+	{
+		const UStaticMesh* Mesh = C.GetStaticMesh();
+		if (!Mesh || !C.IsRegistered() || !BlocksBodies(C))
+		{
+			return;
+		}
+		const FMeshCollision* Collision = MeshCollisionOf(Mesh);
+		if (!Collision || Collision->IsEmpty())
+		{
+			return;
+		}
+		const FName Surface = ComponentSurface(C);
+		const FName Source(*FString::Printf(TEXT("%s.%s"), C.GetOwner() ? *C.GetOwner()->GetName() : TEXT("None"), *C.GetName()));
+		const FBox MeshBox = Mesh->GetBoundingBox();
+		if (const UInstancedStaticMeshComponent* ISM = Cast<UInstancedStaticMeshComponent>(&C))
+		{
+			const int32 Count = ISM->GetInstanceCount();
+			for (int32 i = 0; i < Count; ++i)
+			{
+				FTransform Instance;
+				if (!ISM->GetInstanceTransform(i, Instance, /*bWorldSpace=*/true))
+				{
+					continue;
+				}
+				if (Filter.IsEverything() || Filter.Accepts(MeshBox.TransformBy(Instance)))
+				{
+					EmitMeshCollision(*Collision, Instance, Surface, Source, Filter, Out);
+				}
+			}
+			return;
+		}
+		const FTransform Placement = C.GetComponentTransform();
+		if (Filter.IsEverything() || Filter.Accepts(MeshBox.TransformBy(Placement)))
+		{
+			EmitMeshCollision(*Collision, Placement, Surface, Source, Filter, Out);
+		}
+	}
+
+	/** What a generator made, as URammsSegmentationLabels::LabelGeneratorOutput finds it: itself, the actors it spawned,
+	 *  owns or carries, and the procedural pieces and partition actors on its site (every piece in the world when it
+	 *  is the only generator). */
+	void CollectGeneratedActors(const ARammsWorldGenerator& Generator, TArray<AActor*>& Out)
+	{
+		UWorld* World = Generator.GetWorld();
+		if (!World)
+		{
+			return;
+		}
+		Out.Add(const_cast<ARammsWorldGenerator*>(&Generator));
+		const FName GenTag(*FString::Printf(TEXT("RammsGen:%s"), *Generator.GetName()));
+		const FBox Site = Generator.SiteBounds ? Generator.SiteBounds->Bounds.GetBox().ExpandBy(500.0) : FBox(ForceInit);
+		int32 Generators = 0;
+		for (TActorIterator<ARammsWorldGenerator> It(World); It; ++It)
+		{
+			++Generators;
+		}
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* A = *It;
+			if (A == &Generator || A->IsA<ARammsWorldGenerator>())
+			{
+				continue;
+			}
+			const AActor* Parent = A->GetAttachParentActor();
+			const AActor* Owner = A->GetOwner();
+			if ((Parent && Parent != &Generator && Parent->IsA<ARammsWorldGenerator>()) || (Owner && Owner != &Generator && Owner->IsA<ARammsWorldGenerator>()))
+			{
+				continue;
+			}
+			bool bOurs = A->ActorHasTag(GenTag) || Parent == &Generator || Owner == &Generator || A->IsAttachedTo(&Generator);
+			if (!bOurs && (Generators == 1 || (Site.IsValid && Site.IsInside(A->GetActorLocation()))))
+			{
+				bOurs = A->IsA<ARammsProcPiece>() || A->GetClass()->GetName().Contains(TEXT("PCGPartitionActor"));
+			}
+			if (bOurs)
+			{
+				Out.Add(A);
+			}
+		}
+	}
+
+	/** An articulated stand-in (ReplaceWithArticulated) simulates as its own articulation, not as scenery. */
+	bool IsArticulatedStandIn(const AActor& Actor)
+	{
+		for (const FName& T : Actor.Tags)
+		{
+			if (T.ToString().StartsWith(TEXT("RammsArticulated:")))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** What moves after generation (traffic, anything animated) is tagged RammsDynamic: not static scenery. */
+	const FName DynamicTag(TEXT("RammsDynamic"));
+
+	/** A colliding component the export does not describe, said once per class and reason. */
+	void ReportUnexportedOnce(const UPrimitiveComponent& C, const TCHAR* Why)
+	{
+		const FString Key = C.GetClass()->GetName() + Why;
+		if (!GMeshCollisionReported.Contains(Key))
+		{
+			GMeshCollisionReported.Add(Key);
+			UE_LOG(LogRammsWorldGen, Log, TEXT("Collision shapes: %s components %s (%s.%s, and any others): not exported"), *C.GetClass()->GetName(), Why,
+				C.GetOwner() ? *C.GetOwner()->GetName() : TEXT("None"), *C.GetName());
+		}
+	}
+
+	/** The shapes of what Generator made that Filter keeps, added to Out. With bStopAtFirst it stops at the first piece
+	 *  or mesh component that adds any. Returns whether any were added. */
+	bool GatherGenerated(const ARammsWorldGenerator& Generator, TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter, bool bStopAtFirst)
+	{
+		const int32 First = Out.Num();
+		TArray<AActor*> Actors;
+		CollectGeneratedActors(Generator, Actors);
+		TArray<FRammsCollisionShape> PieceShapes;
+		for (AActor* A : Actors)
+		{
+			if (!A || A->IsA<APawn>() || IsArticulatedStandIn(*A) || A->ActorHasTag(DynamicTag) || Filter.ExcludedActors.Contains(A))
+			{
+				continue;
+			}
+			if (const ARammsProcPiece* Piece = Cast<ARammsProcPiece>(A))
+			{
+				if (!Filter.IsEverything() && Piece->MeshComponent)
+				{
+					const FBox Bounds = Piece->MeshComponent->Bounds.GetBox();
+					if (Bounds.IsValid && Bounds.GetSize().SizeSquared() > 1.0 && !Filter.Accepts(Bounds.ExpandBy(100.0)))
+					{
+						continue; // well clear of the region (the mesh's bounds, with room for a piece whose mesh lags its properties)
+					}
+				}
+				PieceShapes.Reset();
+				Piece->AppendCollisionShapes(PieceShapes);
+				for (FRammsCollisionShape& S : PieceShapes)
+				{
+					if (Filter.IsEverything() || Filter.Accepts(RammsCollisionShapes::GetBounds(S)))
+					{
+						Out.Add(MoveTemp(S));
+					}
+				}
+				if (bStopAtFirst && Out.Num() > First)
+				{
+					return true;
+				}
+				continue;
+			}
+			TInlineComponentArray<UPrimitiveComponent*> Primitives(A);
+			for (const UPrimitiveComponent* C : Primitives)
+			{
+				if (!C || C->ComponentHasTag(DynamicTag))
+				{
+					continue;
+				}
+				if (C->IsA<USplineMeshComponent>())
+				{
+					// A static mesh bent along a spline: its simple collision is the straight mesh's, which is not what Chaos has.
+					if (C->IsRegistered() && BlocksBodies(*C))
+					{
+						ReportUnexportedOnce(*C, TEXT("collide as their mesh bent along a spline, which the export does not follow"));
+					}
+					continue;
+				}
+				if (const UStaticMeshComponent* Smc = Cast<UStaticMeshComponent>(C))
+				{
+					EmitStaticMeshComponent(*Smc, Filter, Out);
+					if (bStopAtFirst && Out.Num() > First)
+					{
+						return true;
+					}
+					continue;
+				}
+				if (C->IsRegistered() && BlocksBodies(*C))
+				{
+					ReportUnexportedOnce(*C, TEXT("block physics bodies but are not static meshes or procedural pieces"));
+				}
+			}
+		}
+		return Out.Num() > First;
+	}
+}
+
+void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& Out) const
+{
+	GatherCollisionShapes(Out, FRammsCollisionShapeFilter());
+}
+
+void ARammsWorldGenerator::GatherCollisionShapes(TArray<FRammsCollisionShape>& Out, const FRammsCollisionShapeFilter& Filter) const
+{
+	const int32 First = Out.Num();
+	GatherGenerated(*this, Out, Filter, /*bStopAtFirst=*/false);
+	if (Filter.bMergeFlushBoxes)
+	{
+		// Paving and road cubes tiling a flat area, slabs side by side: one box each run, no seams between them.
+		RammsCollisionShapes::MergeFlushBoxes(Out, First);
+	}
+}
+
+bool ARammsWorldGenerator::HasCollisionShapes(const FRammsCollisionShapeFilter& Filter) const
+{
+	TArray<FRammsCollisionShape> Any;
+	return GatherGenerated(*this, Any, Filter, /*bStopAtFirst=*/true);
+}
+
+FString ARammsWorldGenerator::DescribeCollisionShapes() const
+{
+	TArray<FRammsCollisionShape> Shapes;
+	GatherCollisionShapes(Shapes);
+	int32 Counts[RammsCollisionShapes::NumTypes] = {};
+	TMap<FName, int32> BySurface;
+	for (const FRammsCollisionShape& S : Shapes)
+	{
+		const int32 Type = static_cast<int32>(S.Type);
+		if (Type >= 0 && Type < RammsCollisionShapes::NumTypes)
+		{
+			++Counts[Type];
+		}
+		++BySurface.FindOrAdd(S.Surface);
+	}
+	FString Line = FString::Printf(TEXT("%d shapes: %d boxes, %d convex, %d height grids, %d spheres, %d capsules;"), Shapes.Num(),
+		Counts[static_cast<int32>(ERammsCollisionShapeType::Box)], Counts[static_cast<int32>(ERammsCollisionShapeType::Convex)],
+		Counts[static_cast<int32>(ERammsCollisionShapeType::HeightGrid)], Counts[static_cast<int32>(ERammsCollisionShapeType::Sphere)],
+		Counts[static_cast<int32>(ERammsCollisionShapeType::Capsule)]);
+	for (const TPair<FName, int32>& P : BySurface)
+	{
+		Line += FString::Printf(TEXT(" %s %d"), *P.Key.ToString(), P.Value);
+	}
+	return Line;
+}
 
 FString ARammsWorldGenerator::GetManifestJson() const
 {

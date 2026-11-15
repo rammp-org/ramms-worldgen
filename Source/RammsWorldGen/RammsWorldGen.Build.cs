@@ -35,6 +35,8 @@ public class RammsWorldGen : ModuleRules
 		{
 			"Projects",
 			"PhysicsCore",         // FBodyInstance: which bodies of a held player were simulating
+			"Chaos",               // collision shapes: a complex-as-simple mesh's cooked triangles
+			"ChaosCore",
 		});
 
 		if (Target.bBuildEditor)

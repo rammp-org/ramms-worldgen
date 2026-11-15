@@ -88,6 +88,9 @@ PACK = Pack(
                            orm=A + "props/props_streetlight/Textures/T_light_orm", lens=A + "props/props_streetlight/Textures/T_light_emissive",
                            lamp_front_x=45.0,
                            lamps=dict(red=[(311.0, 735.0, 15.6), (679.0, 735.0, 15.6), (0.0, 354.0, 15.2)],
+                                      # (estimated: halfway between the red and green lenses' facing edges; lit
+                                      # only by the traffic signal clock's amber -- check against the mesh)
+                                      amber=[(311.0, 701.5, 10.0), (679.0, 701.5, 10.0), (0.0, 320.5, 9.9)],
                                       green=[(311.0, 668.0, 10.0), (679.0, 668.0, 10.0), (0.0, 287.0, 9.9)]),
                            ped=dict(plane_y=28.4, centre=(-39.4, 471.95), size=(39.9, 64.2), icon_uv=(0.6917, 0.5344, 0.7466, 0.6226),
                                     hand="R", walk="G"),

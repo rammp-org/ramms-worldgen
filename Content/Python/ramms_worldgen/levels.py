@@ -23,7 +23,23 @@ EXAMPLES = {
     # palette under /Game/WorldGen rather than among the committed example maps
     "dense_downtown": ("Map_Gen_DenseDowntown", "PRE_DenseDowntown", 11, "Downtown"),
     "store": ("Map_Gen_Store", "PRE_Indoor_Store", 6),
+    # the dense downtown with moving traffic (traffic.py): 11 m streets, signals; recipe-built like dense_downtown
+    "traffic": ("Map_Gen_Traffic", "PRE_DowntownTraffic", 21, "Downtown"),
+    # graded and rough ground (presets.GRADED_DOWNTOWN / HILLY_RESIDENTIAL): the downtown and suburban layouts of the
+    # same seeds on a hill, with real surface roughness; built only when asked for (OPT_IN)
+    "graded_downtown": ("Map_Gen_GradedDowntown", "PRE_GradedDowntown", 7),
+    "hilly_residential": ("Map_Gen_HillyResidential", "PRE_HillyResidential", 11),
+    # both: the traffic level's streets graded and worn, its cars on the grades (recipe-built like traffic)
+    "graded_traffic": ("Map_Gen_GradedTraffic", "PRE_GradedTraffic", 21, "Downtown"),
+    # the same on a steep hill (streets 2-7 %, the centre intersection a dip all four streets fall into)
+    "hilly_downtown": ("Map_Gen_HillyDowntown", "PRE_HillyDowntown", 21, "Downtown"),
 }
+# Examples build_all_levels() leaves out unless they are named.
+OPT_IN = {"graded_downtown", "hilly_residential", "graded_traffic", "hilly_downtown"}
+
+# Levels that get traffic after generation (vehicle lanes, signal clock, cars: traffic.build_traffic). Any other
+# level gets it with build_level(kind, traffic=True).
+TRAFFIC_KINDS = {"traffic", "graded_traffic", "hilly_downtown"}
 
 _pending = {}
 
@@ -184,10 +200,13 @@ def _add_hills(site, ground, material_path, seed, mounds=None):
     return n
 
 
-def build_level(kind, seed=None, open_after=True, watch=True):
-    """Create (or recreate) one example level and start its generation."""
+def build_level(kind, seed=None, open_after=True, watch=True, traffic=None):
+    """Create (or recreate) one example level and start its generation. `traffic` (None: the kinds in
+    TRAFFIC_KINDS) also gives it moving traffic once generated (finish_level)."""
     if kind not in EXAMPLES:
         raise RuntimeError("unknown example '%s'; choose from %s" % (kind, list(EXAMPLES)))
+    if traffic is None:
+        traffic = kind in TRAFFIC_KINDS
     map_name, preset_name, default_seed = EXAMPLES[kind][:3]
     recipe = EXAMPLES[kind][3] if len(EXAMPLES[kind]) > 3 else None
     seed = default_seed if seed is None else int(seed)
@@ -245,6 +264,9 @@ def build_level(kind, seed=None, open_after=True, watch=True):
     gen.set_editor_property("generate_on_begin_play", False)
     if recipe_palette:
         gen.set_palette(recipe_palette)
+    if traffic:
+        from . import traffic as TR
+        gen.tags = [unreal.Name(TR.LEVEL_TAG)]     # finish_level: lanes, signal clock and cars after generation
 
     gm = unreal.load_class(None, GAME_MODE)
     if gm:
@@ -290,16 +312,29 @@ def keep_clear(gen, boxes=None, tag="RammsKeepClear", margin=0.0):
     return text
 
 
-def finish_level(gen):
+def finish_level(gen, traffic=None):
     """After generation: PlayerStart on the suggested start, pedestrian lanes and a crowd (RammsCrowd)
-    along the routes. The caller saves the level. Returns the crowd summary (or the error text)."""
+    along the routes, and on a traffic level (`traffic` None: the generator carries traffic.LEVEL_TAG) vehicle
+    lanes, a signal clock and cars after the crowd (traffic.build_traffic; its summary under "traffic"). The caller
+    saves the level. Returns the crowd summary (or the error text)."""
     gen.place_player_start()
     try:
         from . import crowd as C
-        return C.build_crowd(gen)
+        res = C.build_crowd(gen)
     except Exception as exc:  # a level without a crowd is still a level
         H.warn("crowd lanes failed: %s" % exc)
-        return {"error": str(exc)}
+        res = {"error": str(exc)}
+    if traffic is not False:
+        try:
+            from . import traffic as TR
+            if traffic is None:
+                traffic = gen.actor_has_tag(TR.LEVEL_TAG)
+            if traffic:
+                res["traffic"] = TR.build_traffic(gen)
+        except Exception as exc:  # nor is one without traffic
+            H.warn("traffic failed: %s" % exc)
+            res["traffic"] = {"error": str(exc)}
+    return res
 
 
 def _watch(path):
@@ -345,8 +380,8 @@ def _watch(path):
 
 def build_all_levels(kinds=None):
     """Build the example levels one after another (each waits for the previous generation). By default the
-    committed examples: the recipe ones (built from local packs) only when asked for."""
-    kinds = list(kinds or [k for k, v in EXAMPLES.items() if len(v) == 3])
+    committed examples: the recipe ones (built from local packs) and the opt-in ones (OPT_IN) only when asked for."""
+    kinds = list(kinds or [k for k, v in EXAMPLES.items() if len(v) == 3 and k not in OPT_IN])
     if not kinds:
         return []
     done = []

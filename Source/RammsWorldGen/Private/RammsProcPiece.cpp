@@ -6,13 +6,20 @@
 #include "Components/BillboardComponent.h"
 #include "UDynamicMesh.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "GeometryScript/MeshPrimitiveFunctions.h"
 #include "GeometryScript/MeshMaterialFunctions.h"
 #include "GeometryScript/MeshNormalsFunctions.h"
 #include "GeometryScript/MeshUVFunctions.h"
 #include "GeometryScript/GeometryScriptSelectionTypes.h"
+#include "Engine/EngineTypes.h"
 #include "Materials/MaterialInterface.h"
+#include "PCG/RammsGround.h"
+#include "RammsCollisionShapes.h"
+#include "RammsSegmentationLabels.h"
 #include "RammsWorldGenModule.h"
+#include "Templates/UnrealTemplate.h"
+#include "UObject/Package.h"
 
 namespace
 {
@@ -28,12 +35,236 @@ namespace
 		return O;
 	}
 
+	// --- collision capture ---------------------------------------------------------
+	//
+	// AppendCollisionShapes runs a kind's own builder into a scratch mesh with a capture open, and every primitive the
+	// builder appends then also reports itself as a collision shape: the mesh Chaos collides with and the shapes another
+	// engine collides with come from one code path, so they cannot drift apart. Boxes report themselves exactly; the
+	// other convex primitives (cylinders, cones, sphere-boxes, prisms, a ramp's planar block) as the hull of the
+	// vertices they appended; grids lifted onto a twisted or curved surface (curb ramp flares, mounds) as height grids
+	// over their own vertices. One capture at a time, on the game thread.
+	struct FShapeCapture
+	{
+		const UDynamicMesh* Mesh = nullptr;
+		/** Piece space to world. It may carry the actor's scale, which is baked into the shapes. */
+		FTransform ToWorld = FTransform::Identity;
+		/** Surface per material slot (0 primary, 1 secondary, 2 glass). */
+		FName Surfaces[3];
+		FName Source;
+		TArray<FRammsCollisionShape>* Out = nullptr;
+
+		FName Surface(int32 Mat) const { return Surfaces[FMath::Clamp(Mat, 0, 2)]; }
+		FVector Scale() const { return ToWorld.GetScale3D(); }
+		FTransform Frame() const { return FTransform(ToWorld.GetRotation(), ToWorld.GetLocation()); }
+	};
+	FShapeCapture* GShapeCapture = nullptr;
+
+	FShapeCapture* CaptureOf(const UDynamicMesh* M)
+	{
+		return GShapeCapture && GShapeCapture->Mesh == M ? GShapeCapture : nullptr;
+	}
+
+	// A box in piece space (Local: its centre and rotation) as a world shape. Scaled by a uniform positive scale it is
+	// still a box; any other scale makes its corners a hull.
+	void CaptureBox(FShapeCapture& C, const FTransform& Local, const FVector& Half, int32 Mat)
+	{
+		const FVector S = C.Scale();
+		const double Su = S.GetAbsMax();
+		if (S.X > 0.0 && S.Y > 0.0 && S.Z > 0.0 && S.GetAbsMin() >= Su * (1.0 - 1.0e-6))
+		{
+			RammsCollisionShapes::AddBox(*C.Out, FTransform(Local.GetRotation(), Local.GetLocation() * Su) * C.Frame(), Half * Su, C.Surface(Mat), C.Source);
+			return;
+		}
+		TArray<FVector3f> Corners;
+		for (int32 k = 0; k < 8; ++k)
+		{
+			const FVector P((k & 1) ? Half.X : -Half.X, (k & 2) ? Half.Y : -Half.Y, (k & 4) ? Half.Z : -Half.Z);
+			Corners.Add(FVector3f(Local.TransformPosition(P) * S));
+		}
+		RammsCollisionShapes::AddConvex(*C.Out, C.Frame(), MoveTemp(Corners), C.Surface(Mat), C.Source);
+	}
+
+	// When capturing: the hull of the vertices appended to M from Start on, one convex primitive. FloorZ also drops
+	// every point straight down to that piece-space height (a disc becomes the slab under it).
+	void CaptureHull(UDynamicMesh* M, int32 Start, int32 Mat, TOptional<double> FloorZ = TOptional<double>())
+	{
+		FShapeCapture* C = CaptureOf(M);
+		if (!C || Start == INDEX_NONE)
+		{
+			return;
+		}
+		const FVector S = C->Scale();
+		TArray<FVector3f> Points;
+		M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			for (const int32 Vid : Mesh.VertexIndicesItr())
+			{
+				if (Vid < Start) { continue; }
+				const FVector P = Mesh.GetVertex(Vid);
+				Points.Add(FVector3f(P * S));
+				if (FloorZ.IsSet()) { Points.Add(FVector3f(FVector(P.X, P.Y, FloorZ.GetValue()) * S)); }
+			}
+		});
+		if (Points.Num() >= 4)
+		{
+			RammsCollisionShapes::AddConvex(*C->Out, C->Frame(), MoveTemp(Points), C->Surface(Mat), C->Source);
+		}
+	}
+
+	// Points in convex position (a sphere-box's lie on an ellipsoid) are their own hull only when every edge between them
+	// folds outward, and the sphere-box splits some of its quads the other way, a dent of up to a few centimetres on a
+	// canopy blob. Flip those edges (Lawson's flips, which end at the hull) so that the mesh Chaos collides with is the
+	// hull the shapes report. A primitive already convex (a cylinder, a frustum, a prism) has none to flip. UV and normal
+	// seams are left alone; the box projection and normal pass after the builders redo both anyway.
+	void FoldOutward(UDynamicMesh* M, int32 Start)
+	{
+		M->EditMesh([&](UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			using UE::Geometry::FDynamicMesh3;
+			using UE::Geometry::FIndex2i;
+			FVector Centre = FVector::ZeroVector;
+			int32 Count = 0;
+			for (const int32 Vid : Mesh.VertexIndicesItr())
+			{
+				if (Vid >= Start) { Centre += Mesh.GetVertex(Vid); ++Count; }
+			}
+			if (Count < 4) { return; }
+			Centre /= Count;
+			const UE::Geometry::FDynamicMeshAttributeSet* Attributes = Mesh.HasAttributes() ? Mesh.Attributes() : nullptr;
+			for (int32 Pass = 0; Pass < 32; ++Pass)
+			{
+				int32 Flips = 0;
+				for (const int32 Eid : Mesh.EdgeIndicesItr())
+				{
+					const FIndex2i V = Mesh.GetEdgeV(Eid);
+					if (V.A < Start || V.B < Start || Mesh.IsBoundaryEdge(Eid) || (Attributes && Attributes->IsSeamEdge(Eid))) { continue; }
+					const FIndex2i O = Mesh.GetEdgeOpposingV(Eid);
+					if (O.A == FDynamicMesh3::InvalidID || O.B == FDynamicMesh3::InvalidID || Mesh.FindEdge(O.A, O.B) != FDynamicMesh3::InvalidID) { continue; }
+					const FVector A = Mesh.GetVertex(V.A), B = Mesh.GetVertex(V.B), C = Mesh.GetVertex(O.A), D = Mesh.GetVertex(O.B);
+					const FVector Normal = FVector::CrossProduct(B - A, C - A);
+					const double SideD = FVector::DotProduct(Normal, D - A);
+					const double SideCentre = FVector::DotProduct(Normal, Centre - A);
+					const double Scale = Normal.Size() * FMath::Max((D - A).Size(), (Centre - A).Size());
+					if (Scale <= 0.0 || FMath::Abs(SideD) <= 1.0e-9 * Scale || FMath::Abs(SideCentre) <= 1.0e-9 * Scale)
+					{
+						continue; // flat across the edge: either split is the hull
+					}
+					if (SideD * SideCentre > 0.0)
+					{
+						continue; // D is inside the face across the edge: the edge folds outward
+					}
+					FDynamicMesh3::FEdgeFlipInfo Info;
+					if (Mesh.FlipEdge(Eid, Info) == UE::Geometry::EMeshResult::Ok) { ++Flips; }
+				}
+				if (Flips == 0) { break; }
+			}
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown);
+	}
+
+	// Append one convex primitive (Append adds it to M), make its mesh its hull, and report that hull when capturing.
+	void Hull(UDynamicMesh* M, int32 Mat, TFunctionRef<void()> Append, TOptional<double> FloorZ = TOptional<double>())
+	{
+		int32 Start = 0;
+		M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh) { Start = Mesh.MaxVertexID(); });
+		Append();
+		FoldOutward(M, Start);
+		CaptureHull(M, Start, Mat, FloorZ);
+	}
+
+	// When capturing: the solid under the upward-facing triangles appended to M from Start on, one prism per triangle
+	// down to piece-space BottomZ. Exact for any surface and any scale: the fallback where a height grid cannot say it.
+	void CapturePrisms(UDynamicMesh* M, int32 Start, double BottomZ, int32 Mat)
+	{
+		FShapeCapture* C = CaptureOf(M);
+		if (!C || Start == INDEX_NONE)
+		{
+			return;
+		}
+		const FVector S = C->Scale();
+		const FTransform Frame = C->Frame();
+		M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			for (const int32 Tid : Mesh.TriangleIndicesItr())
+			{
+				const UE::Geometry::FIndex3i T = Mesh.GetTriangle(Tid);
+				if (T.A < Start || T.B < Start || T.C < Start || Mesh.GetTriNormal(Tid).Z <= 1.0e-3)
+				{
+					continue; // another primitive's, or a wall or the underside of the solid
+				}
+				RammsCollisionShapes::AddTrianglePrism(*C->Out, Frame, S, Mesh.GetVertex(T.A), Mesh.GetVertex(T.B), Mesh.GetVertex(T.C), BottomZ, C->Surface(Mat), C->Source);
+			}
+		});
+	}
+
+	// The grid primitive appended to M from vertex Start on, NX by NY vertices Spacing apart with sample (0, 0) at
+	// piece-space Origin, its top lifted onto a surface: split its cells the HeightGrid way (RammsCollisionShapes.h),
+	// so that what Chaos collides with is what the grid describes, and report it as a height grid when capturing,
+	// solid down to piece-space BottomZ. A grid its mesh does not match, or one the piece's scale mirrors or turns
+	// over, is reported as one prism per triangle instead (CapturePrisms): still exact, never a hole.
+	void Grid(UDynamicMesh* M, int32 Start, const FVector& Origin, int32 NX, int32 NY, const FVector2D& Spacing, double BottomZ, int32 Mat)
+	{
+		if (Start == INDEX_NONE)
+		{
+			return;
+		}
+		TArray<float> Heights;
+		int32 Flipped = -1;
+		M->EditMesh([&](UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			Flipped = RammsCollisionShapes::MatchHeightGridDiagonals(Mesh, Start, FTransform(Origin), NX, NY, Spacing, Heights);
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown);
+		FShapeCapture* C = CaptureOf(M);
+		if (Flipped < 0)
+		{
+			static bool bWarned = false;
+			if (!bWarned)
+			{
+				bWarned = true;
+				UE_LOG(LogRammsWorldGen, Warning, TEXT("ProcPiece: a %dx%d grid did not match its mesh (%s): its collision is exported as one prism per triangle, not as a height grid"),
+					NX, NY, C ? *C->Source.ToString() : TEXT("built"));
+			}
+			CapturePrisms(M, Start, BottomZ, Mat);
+			return;
+		}
+		if (!C)
+		{
+			return;
+		}
+		const FVector S = C->Scale();
+		if (S.X <= 0.0 || S.Y <= 0.0 || S.Z <= 0.0)
+		{
+			// Mirrored, the grid's cells split the other way; turned over, its solid is above it: not a height grid.
+			CapturePrisms(M, Start, BottomZ, Mat);
+			return;
+		}
+		float Lowest = Heights[0];
+		for (float& H : Heights)
+		{
+			Lowest = FMath::Min(Lowest, H);
+			H *= static_cast<float>(S.Z);
+		}
+		FRammsCollisionShape& G = C->Out->AddDefaulted_GetRef();
+		G.Type = ERammsCollisionShapeType::HeightGrid;
+		G.Transform = FTransform(Origin * S) * C->Frame();
+		G.NumX = NX;
+		G.NumY = NY;
+		G.Spacing = FVector2D(Spacing.X * S.X, Spacing.Y * S.Y);
+		G.Heights = MoveTemp(Heights);
+		G.BaseDepth = static_cast<float>(FMath::Max((Lowest - (BottomZ - Origin.Z)) * S.Z, 0.1));
+		G.Surface = C->Surface(Mat);
+		G.Source = C->Source;
+	}
+
 	// Box centred at Centre. Thin wrapper so every builder reads the same way.
 	void Box(UDynamicMesh* M, const FVector& Centre, const FVector& Size, const FRotator& Rot = FRotator::ZeroRotator, int32 Mat = 0)
 	{
 		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(
 			M, Opts(Mat), FTransform(Rot, Centre), static_cast<float>(Size.X), static_cast<float>(Size.Y), static_cast<float>(Size.Z), 0, 0, 0,
 			EGeometryScriptPrimitiveOriginMode::Center);
+		if (FShapeCapture* C = CaptureOf(M))
+		{
+			CaptureBox(*C, FTransform(Rot, Centre), Size * 0.5, Mat);
+		}
 	}
 
 	// A sloped slab: a box of plan length Run and width Width whose top surface
@@ -71,7 +302,7 @@ ARammsProcPiece::ARammsProcPiece()
 
 ERammsProcPieceKind ARammsProcPiece::GetEffectiveKind() const
 {
-	if (KindId >= 0 && KindId <= static_cast<int32>(ERammsProcPieceKind::Patch)) // keep in step with the last enum value
+	if (KindId >= 0 && KindId <= static_cast<int32>(ERammsProcPieceKind::Hump)) // keep in step with the last enum value
 	{
 		return static_cast<ERammsProcPieceKind>(KindId);
 	}
@@ -136,6 +367,8 @@ void ARammsProcPiece::Rebuild()
 	case ERammsProcPieceKind::Column:   BuildColumn(Mesh); break;
 	case ERammsProcPieceKind::Mound:    BuildMound(Mesh); break;
 	case ERammsProcPieceKind::Patch:    BuildPatch(Mesh); break;
+	case ERammsProcPieceKind::GroundPrisms: BuildGroundPrisms(Mesh); break;
+	case ERammsProcPieceKind::Hump:     BuildHump(Mesh); break;
 	default: BuildSlab(Mesh); break;
 	}
 
@@ -196,13 +429,14 @@ void ARammsProcPiece::BuildCurbRamp(UDynamicMesh* M)
 	const double W = FMath::Max(SizeY, 60.0);
 	const double Bottom = -H - 2.0; // 2 cm into the road
 
-	// One block per strip, its top vertices then lifted onto the surface height h(x, y).
-	auto Strip = [&](double Y0, double Y1, int32 StepsY, TFunctionRef<double(double X, double Y)> Height)
+	// One block per strip, its top vertices then lifted onto the surface height h(x, y). StepsX and StepsY are vertex
+	// counts along each side. Returns the strip's first vertex (INDEX_NONE when too narrow to build).
+	const int32 StepsX = FMath::Clamp(FMath::RoundToInt(Run / 30.0), 2, 16);
+	auto Strip = [&](double Y0, double Y1, int32 StepsY, TFunctionRef<double(double X, double Y)> Height) -> int32
 	{
-		if (Y1 - Y0 < 1.0) { return; }
+		if (Y1 - Y0 < 1.0) { return INDEX_NONE; }
 		int32 Start = 0;
 		M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh) { Start = Mesh.MaxVertexID(); });
-		const int32 StepsX = FMath::Clamp(FMath::RoundToInt(Run / 30.0), 2, 16);
 		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(
 			M, Opts(0), FTransform(FVector(Run * 0.5, (Y0 + Y1) * 0.5, Bottom * 0.5)), static_cast<float>(Run), static_cast<float>(Y1 - Y0), static_cast<float>(-Bottom),
 			StepsX, StepsY, 0, EGeometryScriptPrimitiveOriginMode::Center);
@@ -219,8 +453,10 @@ void ARammsProcPiece::BuildCurbRamp(UDynamicMesh* M)
 				}
 			}
 		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown);
+		return Start;
 	};
-	Strip(-W * 0.5, W * 0.5, 2, [&](double X, double) { return -H * X / Run; });
+	// The ramp itself has a plane for a top: one convex block.
+	CaptureHull(M, Strip(-W * 0.5, W * 0.5, 2, [&](double X, double) { return -H * X / Run; }), 0);
 
 	const double FlareRun = H / FMath::Max(FlareSlope, 0.01); // sideways extent of each flare
 	if (FlareRun > 1.0)
@@ -229,11 +465,14 @@ void ARammsProcPiece::BuildCurbRamp(UDynamicMesh* M)
 		for (int32 Side = -1; Side <= 1; Side += 2)
 		{
 			const double Y0 = Side < 0 ? -W * 0.5 - FlareRun : W * 0.5;
-			Strip(Y0, Y0 + FlareRun, Steps, [&](double X, double Y)
+			const int32 Start = Strip(Y0, Y0 + FlareRun, Steps, [&](double X, double Y)
 			{
 				const double T = FMath::Clamp((FMath::Abs(Y) - W * 0.5) / FlareRun, 0.0, 1.0); // 0 at the ramp edge, 1 at the outer edge
 				return -H * (X / Run) * (1.0 - T);
 			});
+			// A flare's top is twisted (level along the walk and its outer edge, down to the road at the ramp's foot), so
+			// it is not convex: a height grid over the strip's own vertices, cells split the way the grid says.
+			Grid(M, Start, FVector(0.0, Y0, 0.0), StepsX, Steps, FVector2D(Run / (StepsX - 1), FlareRun / (Steps - 1)), Bottom, 0);
 		}
 	}
 
@@ -374,7 +613,7 @@ void ARammsProcPiece::BuildBollard(UDynamicMesh* M)
 {
 	const double R = FMath::Max(SizeX, 6.0) * 0.5;
 	const double H = FMath::Max(SizeZ, 30.0);
-	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendCylinder(M, Opts(0), FTransform(FVector::ZeroVector), static_cast<float>(R), static_cast<float>(H), 16, 0, true, EGeometryScriptPrimitiveOriginMode::Base);
+	Hull(M, 0, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendCylinder(M, Opts(0), FTransform(FVector::ZeroVector), static_cast<float>(R), static_cast<float>(H), 16, 0, true, EGeometryScriptPrimitiveOriginMode::Base); });
 }
 
 void ARammsProcPiece::BuildTree(UDynamicMesh* M)
@@ -386,12 +625,13 @@ void ARammsProcPiece::BuildTree(UDynamicMesh* M)
 	FRandomStream Rs(static_cast<int32>(HashCombine(GetTypeHash(GetFName()), GetTypeHash(FMath::RoundToInt(Canopy * 7.0 + H)))));
 	const double TrunkR = Canopy * RammsRange(Rs, 0.045, 0.065);
 	const double TrunkH = H * RammsRange(Rs, 0.38, 0.5);
-	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendCone(M, Opts(1), FTransform(FVector::ZeroVector), static_cast<float>(TrunkR), static_cast<float>(TrunkR * 0.55), static_cast<float>(TrunkH * 1.15), 10, 1, true, EGeometryScriptPrimitiveOriginMode::Base);
+	// Each part is convex (a frustum, a sphere-box), so each part's collision is the hull of its own vertices.
+	Hull(M, 1, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendCone(M, Opts(1), FTransform(FVector::ZeroVector), static_cast<float>(TrunkR), static_cast<float>(TrunkR * 0.55), static_cast<float>(TrunkH * 1.15), 10, 1, true, EGeometryScriptPrimitiveOriginMode::Base); });
 	for (int32 b = 0; b < 2; ++b)
 	{
 		const double Yaw = RammsRange(Rs, 0.0, 360.0), Tilt = RammsRange(Rs, 35.0, 55.0);
 		const FTransform Bx(FRotator(Tilt, Yaw, 0.0), FVector(0.0, 0.0, TrunkH * RammsRange(Rs, 0.7, 0.95)));
-		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendCone(M, Opts(1), Bx, static_cast<float>(TrunkR * 0.5), static_cast<float>(TrunkR * 0.2), static_cast<float>(Canopy * 0.35), 7, 1, true, EGeometryScriptPrimitiveOriginMode::Base);
+		Hull(M, 1, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendCone(M, Opts(1), Bx, static_cast<float>(TrunkR * 0.5), static_cast<float>(TrunkR * 0.2), static_cast<float>(Canopy * 0.35), 7, 1, true, EGeometryScriptPrimitiveOriginMode::Base); });
 	}
 	const double CanopyH = H - TrunkH;
 	const double Rc = Canopy * 0.5;
@@ -399,7 +639,7 @@ void ARammsProcPiece::BuildTree(UDynamicMesh* M)
 	auto Blob = [&](const FVector& Centre, double R, double ZScale)
 	{
 		const FTransform Xf(FRotator(0.0, RammsRange(Rs, 0.0, 90.0), 0.0), Centre, FVector(1.0, 1.0, ZScale));
-		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSphereBox(M, Opts(0), Xf, static_cast<float>(R), 5, 5, 5, EGeometryScriptPrimitiveOriginMode::Center);
+		Hull(M, 0, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSphereBox(M, Opts(0), Xf, static_cast<float>(R), 5, 5, 5, EGeometryScriptPrimitiveOriginMode::Center); });
 	};
 	Blob(FVector(0.0, 0.0, Zc), Rc * 0.95, CanopyH / Canopy * 0.95);
 	const int32 Satellites = 4 + (Rs.FRand() < 0.5 ? 1 : 0);
@@ -421,7 +661,7 @@ void ARammsProcPiece::BuildRoof(UDynamicMesh* M)
 	const double Span = FMath::Max(SizeX, 100.0), Ridge = FMath::Max(SizeY, 100.0), RoofRise = FMath::Max(SizeZ, 30.0);
 	TArray<FVector2D> Tri = { FVector2D(-Span * 0.5, 0.0), FVector2D(Span * 0.5, 0.0), FVector2D(0.0, RoofRise) };
 	const FTransform Xf(FRotator(0.0, 0.0, -90.0), FVector(0.0, Ridge * 0.5, 0.0));
-	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSimpleExtrudePolygon(M, Opts(0), Xf, Tri, static_cast<float>(Ridge), 0, true, EGeometryScriptPrimitiveOriginMode::Base);
+	Hull(M, 0, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSimpleExtrudePolygon(M, Opts(0), Xf, Tri, static_cast<float>(Ridge), 0, true, EGeometryScriptPrimitiveOriginMode::Base); });
 	// A thin soffit slab under the eaves closes the gap to the walls and reads as the roof's edge.
 	Box(M, FVector(0.0, 0.0, -4.0), FVector(Span, Ridge, 8.0));
 }
@@ -432,13 +672,13 @@ void ARammsProcPiece::BuildShrub(UDynamicMesh* M)
 	const double H = FMath::Max(SizeZ, 30.0);
 	FRandomStream Rs(static_cast<int32>(HashCombine(GetTypeHash(GetFName()), GetTypeHash(FMath::RoundToInt(D * 3.0 + H)))));
 	const FTransform Xf(FRotator::ZeroRotator, FVector(0.0, 0.0, H * 0.5), FVector(1.0, 1.0, H / D));
-	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSphereBox(M, Opts(0), Xf, static_cast<float>(D * 0.5), 5, 5, 5, EGeometryScriptPrimitiveOriginMode::Center);
+	Hull(M, 0, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSphereBox(M, Opts(0), Xf, static_cast<float>(D * 0.5), 5, 5, 5, EGeometryScriptPrimitiveOriginMode::Center); });
 	for (int32 i = 0; i < 3; ++i)
 	{
 		const double A = FMath::DegreesToRadians(i * 120.0 + RammsRange(Rs, -30.0, 30.0));
 		const double R = D * RammsRange(Rs, 0.28, 0.38);
 		const FTransform Bx(FRotator::ZeroRotator, FVector(FMath::Cos(A) * D * 0.3, FMath::Sin(A) * D * 0.3, H * RammsRange(Rs, 0.35, 0.5)), FVector(1.0, 1.0, H / D));
-		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSphereBox(M, Opts(0), Bx, static_cast<float>(R), 4, 4, 4, EGeometryScriptPrimitiveOriginMode::Center);
+		Hull(M, 0, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendSphereBox(M, Opts(0), Bx, static_cast<float>(R), 4, 4, 4, EGeometryScriptPrimitiveOriginMode::Center); });
 	}
 }
 
@@ -463,24 +703,32 @@ void ARammsProcPiece::BuildMound(UDynamicMesh* M)
 	// the ground tangentially (the rim and the corners sit 2 cm under it so the lawn shows there).
 	const double SX = FMath::Max(SizeX, 100.0), SY = FMath::Max(SizeY, 100.0), Hm = Rise;
 	const int32 NX = FMath::Clamp(FMath::RoundToInt(SX / 40.0), 8, 64), NY = FMath::Clamp(FMath::RoundToInt(SY / 40.0), 8, 64);
+	int32 Start = 0;
+	M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh) { Start = Mesh.MaxVertexID(); });
+	// NX by NY vertices (the rectangle's step counts are vertex counts).
 	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendRectangleXY(M, Opts(0), FTransform::Identity, static_cast<float>(SX), static_cast<float>(SY), NX, NY);
 	M->EditMesh([&](UE::Geometry::FDynamicMesh3& Mesh)
 	{
 		for (const int32 Vid : Mesh.VertexIndicesItr())
 		{
+			if (Vid < Start) { continue; }
 			FVector3d P = Mesh.GetVertex(Vid);
 			const double E = FMath::Sqrt(FMath::Square(2.0 * P.X / SX) + FMath::Square(2.0 * P.Y / SY));
 			P.Z = (E < 1.0 ? Hm * 0.5 * (1.0 + FMath::Cos(PI * E)) : 0.0) - 2.0;
 			Mesh.SetVertex(Vid, P);
 		}
 	}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown);
+	// A sheet, not a solid: its collision is a height grid over the same vertices, solid 20 cm under its lowest point
+	// (the ground slab it sits on fills the rest).
+	Grid(M, Start, FVector(-SX * 0.5, -SY * 0.5, 0.0), NX, NY, FVector2D(SX / (NX - 1), SY / (NY - 1)), FMath::Min(Hm, 0.0) - 22.0, 0);
 }
 
 void ARammsProcPiece::BuildPatch(UDynamicMesh* M)
 {
 	const double SX = FMath::Max(SizeX, 20.0), SY = FMath::Max(SizeY, 20.0);
 	const FTransform Xf(FRotator::ZeroRotator, FVector(0.0, 0.0, FMath::Max(SizeZ, 0.2)), FVector(SX / 100.0, SY / 100.0, 1.0));
-	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendDisc(M, Opts(0), Xf, 50.0f, 40, 1);
+	// A disc floating SizeZ over the ground: its collision is the slab from the ground up to it, the same top.
+	Hull(M, 0, [&]() { UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendDisc(M, Opts(0), Xf, 50.0f, 40, 1); }, 0.0);
 }
 
 // --- materials and collision ------------------------------------------------------
@@ -547,6 +795,113 @@ void ARammsProcPiece::ApplyCollision()
 	MeshComponent->UpdateCollision(false);
 }
 
+namespace
+{
+	// The surface a piece's primary material stands for: its segmentation label (seg:<Class> on its mesh or its actor,
+	// URammsSegmentationLabels) where that names one, else its kind's usual surface.
+	FName PrimarySurface(const ARammsProcPiece& Piece)
+	{
+		auto FromTags = [](const TArray<FName>& Tags) -> FName
+		{
+			for (const FName& T : Tags)
+			{
+				const FString S = T.ToString();
+				if (S.StartsWith(URammsSegmentationLabels::TagPrefix, ESearchCase::IgnoreCase))
+				{
+					return RammsCollisionShapes::SurfaceForClass(FName(*S.RightChop(URammsSegmentationLabels::TagPrefix.Len())));
+				}
+			}
+			return NAME_None;
+		};
+		FName Surface = Piece.MeshComponent ? FromTags(Piece.MeshComponent->ComponentTags) : NAME_None;
+		if (Surface.IsNone())
+		{
+			Surface = FromTags(Piece.Tags);
+		}
+		if (!Surface.IsNone())
+		{
+			return Surface;
+		}
+		switch (Piece.GetEffectiveKind())
+		{
+		case ERammsProcPieceKind::Curb:     return FName(TEXT("Curb"));
+		case ERammsProcPieceKind::Wall:     return FName(TEXT("Brick"));
+		case ERammsProcPieceKind::Door:     return FName(TEXT("Wood"));
+		case ERammsProcPieceKind::Bollard:  return FName(TEXT("Metal"));
+		case ERammsProcPieceKind::Mound:    return FName(TEXT("Grass"));
+		case ERammsProcPieceKind::Patch:    return FName(TEXT("Dirt"));
+		case ERammsProcPieceKind::Roof:     return FName(TEXT("Default"));
+		default:                            return FName(TEXT("Concrete"));
+		}
+	}
+}
+
+void ARammsProcPiece::AppendCollisionShapes(TArray<FRammsCollisionShape>& Out) const
+{
+	if (!MeshComponent || !CollisionEnabledHasPhysics(MeshComponent->GetCollisionEnabled()))
+	{
+		return; // nothing a body can stand on (a decal has no collision at all)
+	}
+
+	// The kinds whose builder reports its own primitives (FShapeCapture): run the builder into a scratch mesh with a
+	// capture open. The builders only read the properties and write the mesh they are given, hence the const_cast.
+	auto Capture = [&](void (ARammsProcPiece::*Build)(UDynamicMesh*))
+	{
+		UDynamicMesh* Scratch = NewObject<UDynamicMesh>(GetTransientPackage(), NAME_None, RF_Transient);
+		UGeometryScriptLibrary_MeshMaterialFunctions::EnableMaterialIDs(Scratch);
+		const ERammsProcPieceKind K = GetEffectiveKind();
+		FShapeCapture C;
+		C.Mesh = Scratch;
+		C.ToWorld = MeshComponent->GetComponentTransform();
+		C.Source = GetFName();
+		C.Out = &Out;
+		C.Surfaces[0] = PrimarySurface(*this);
+		C.Surfaces[1] = C.Surfaces[0];
+		switch (K)
+		{
+		case ERammsProcPieceKind::Tree:  C.Surfaces[0] = FName(TEXT("Foliage")); C.Surfaces[1] = FName(TEXT("Wood")); break; // canopy, trunk
+		case ERammsProcPieceKind::Shrub: C.Surfaces[0] = FName(TEXT("Foliage")); C.Surfaces[1] = C.Surfaces[0]; break;
+		case ERammsProcPieceKind::Wall:  C.Surfaces[1] = FName(TEXT("Wood")); break;   // frames
+		case ERammsProcPieceKind::Door:  C.Surfaces[1] = FName(TEXT("Metal")); break;  // handles, threshold
+		case ERammsProcPieceKind::Planter: C.Surfaces[1] = FName(TEXT("Dirt")); break; // soil
+		default: break;
+		}
+		C.Surfaces[2] = K == ERammsProcPieceKind::Wall ? FName(TEXT("Glass")) : C.Surfaces[1];
+		{
+			TGuardValue<FShapeCapture*> Open(GShapeCapture, &C);
+			(const_cast<ARammsProcPiece*>(this)->*Build)(Scratch);
+		}
+		Scratch->MarkAsGarbage();
+	};
+
+	switch (GetEffectiveKind())
+	{
+	case ERammsProcPieceKind::Slab:     Capture(&ARammsProcPiece::BuildSlab); break;
+	case ERammsProcPieceKind::Curb:     Capture(&ARammsProcPiece::BuildCurb); break;
+	case ERammsProcPieceKind::CurbRamp: Capture(&ARammsProcPiece::BuildCurbRamp); break;
+	case ERammsProcPieceKind::Step:
+	case ERammsProcPieceKind::Stairs:   Capture(&ARammsProcPiece::BuildSteps); break;
+	case ERammsProcPieceKind::Ramp:     Capture(&ARammsProcPiece::BuildRamp); break;
+	case ERammsProcPieceKind::Wall:     Capture(&ARammsProcPiece::BuildWall); break;
+	case ERammsProcPieceKind::Door:     Capture(&ARammsProcPiece::BuildDoor); break;
+	case ERammsProcPieceKind::Bollard:  Capture(&ARammsProcPiece::BuildBollard); break;
+	case ERammsProcPieceKind::Tree:     Capture(&ARammsProcPiece::BuildTree); break;
+	case ERammsProcPieceKind::Shrub:    Capture(&ARammsProcPiece::BuildShrub); break;
+	case ERammsProcPieceKind::Roof:     Capture(&ARammsProcPiece::BuildRoof); break;
+	case ERammsProcPieceKind::Planter:  Capture(&ARammsProcPiece::BuildPlanter); break;
+	case ERammsProcPieceKind::Column:   Capture(&ARammsProcPiece::BuildColumn); break;
+	case ERammsProcPieceKind::Mound:    Capture(&ARammsProcPiece::BuildMound); break;
+	case ERammsProcPieceKind::Patch:    Capture(&ARammsProcPiece::BuildPatch); break;
+	case ERammsProcPieceKind::Decal:    break; // projected onto whatever is below: no collision of its own
+	// The ground kinds describe themselves (RammsProcPieceGround.cpp).
+	case ERammsProcPieceKind::GroundPrisms: AppendGroundPrismShapes(Out); break;
+	case ERammsProcPieceKind::Hump:         AppendHumpShapes(Out); break;
+	default:
+		// Each kind added later reports its own shapes here, one case each; a kind with no case adds nothing.
+		break;
+	}
+}
+
 FRammsManifestFeature ARammsProcPiece::ToManifestFeature() const
 {
 	FRammsManifestFeature F;
@@ -563,6 +918,20 @@ FRammsManifestFeature ARammsProcPiece::ToManifestFeature() const
 		const double FlareRun = FlareSlope < 50.0 ? H / FMath::Max(FlareSlope, 0.01) : 0.0;
 		F.Size = FVector(Run, FMath::Max(SizeY, 60.0) + 2.0 * FlareRun, H);
 		F.Location = GetActorTransform().TransformPosition(FVector(Run * 0.5, 0.0, -H * 0.5));
+	}
+	else if (GetEffectiveKind() == ERammsProcPieceKind::GroundPrisms)
+	{
+		// Graded ground's features (potholes, covers, cracks, pavers, curb ramps on a grade): the box of their prisms'
+		// plan in the piece's frame, centred on it; its height the feature's (Rise: a curb ramp's curb) when given.
+		TArray<RammsGround::FPart> Ps;
+		if (RammsGround::ParseParts(Parts, Ps))
+		{
+			FBox2D Plan(ForceInit);
+			for (const RammsGround::FPart& P : Ps) { for (const FVector& V : P.Top) { Plan += FVector2D(V.X, V.Y); } }
+			const FVector2D C = Plan.GetCenter(), Sz = Plan.GetSize();
+			F.Size = FVector(Sz.X, Sz.Y, Rise > 0.0 ? Rise : SizeZ);
+			F.Location = GetActorTransform().TransformPosition(FVector(C.X, C.Y, Rise > 0.0 ? -Rise * 0.5 : 0.0));
+		}
 	}
 	F.bCompliant = bCompliant;
 	F.Issue = static_cast<ERammsComplianceIssue>(FMath::Clamp(IssueId, 0, static_cast<int32>(ERammsComplianceIssue::ObstacleInRoute)));

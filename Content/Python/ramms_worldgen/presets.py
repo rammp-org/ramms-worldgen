@@ -43,6 +43,21 @@ PRESETS = {
              # facing their traffic, signals at the corners) and street litter
              StreetRules=True, LitterDensity=8.0),
     ),
+    "PRE_DowntownTraffic": (
+        unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+        "The dense downtown with moving traffic (levels 'traffic'): 11 m streets (two traffic lanes between the "
+        "parked cars), a larger site with more intersections, signals at the corners. traffic.py lays the vehicle "
+        "lanes and places the signal clock and the cars after generation.",
+        dict(SiteSizeX=12000.0, SiteSizeY=12000.0, NonCompliance=0.15,
+             BlockSizeMin=3600.0, BlockSizeMax=5200.0, RoadWidth=1100.0, SidewalkWidth=300.0, FurnitureZoneWidth=100.0,
+             StreetJitter=0.2, StreetDropout=0.0, MidblockCrossingChance=0.25, CrosswalkWidth=300.0,
+             LotWidthMin=800.0, LotWidthMax=1600.0, SetbackMin=0.0, SetbackMax=0.0, FloorsMin=3, FloorsMax=8,
+             FloorHeight=380.0, LotCoverage=0.95, EntranceStepChance=0.35, EntranceRampChance=0.6, WindowSpacing=300.0, RearParkingChance=0.0,
+             PropDensity=10.0, HazardDensity=5.0, TreeSpacing=800.0, HazardIntrusionChance=0.5, ParkFraction=0.0,
+             ParkingDensity=0.6, CanopyChance=0.25, StreetLightSpacing=1800.0, DecalDensity=8.0, GrassDensity=0.9,
+             FacadeStyles="dt01,dt02,dt03,dwba,dwbb,dwcafe,dwd,dwe,dwf,cmpub,cmres,cmind",
+             WholeBuildingChance=0.3, StreetRules=True, LitterDensity=8.0),
+    ),
     "PRE_Suburban": (
         unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,
         "Residential streets: long blocks, sidewalks behind a grass planting strip with street trees (some streets "
@@ -108,6 +123,55 @@ PRESETS = {
              HazardIntrusionChance=0.4, RetailFraction=1.0),
     ),
 }
+
+
+# Graded and rough variants (FRammsWorldGenParams' terrain and roughness groups; every other preset keeps them at 0,
+# the flat, smooth world). Each is an existing preset with the ground added, so for a seed the layout is the same.
+GRADED_DOWNTOWN = dict(
+    MaxStreetGrade=0.05, RoadCrown=0.02, SidewalkCrossSlope=0.02, NonCompliantCrossSlopeChance=0.2,
+    CurbHeightMin=5.0, CurbHeightMax=20.0,
+    SurfaceRoughness=0.7, PanelLength=150.0, HeaveDensity=3.0, CrackDensity=4.0, CoverDensity=3.0,
+    PavingPatchDensity=2.0, PotholeDensity=3.0, SpeedHumpChance=0.25, RootHeaveChance=0.3)
+HILLY_RESIDENTIAL = dict(
+    MaxStreetGrade=0.07, RoadCrown=0.025, SidewalkCrossSlope=0.015, NonCompliantCrossSlopeChance=0.15,
+    CurbHeightMin=8.0, CurbHeightMax=18.0,
+    SurfaceRoughness=0.5, PanelLength=150.0, HeaveDensity=2.0, CrackDensity=2.0, CoverDensity=1.0,
+    PavingPatchDensity=0.5, PotholeDensity=1.5, SpeedHumpChance=0.35, RootHeaveChance=0.3)
+
+PRESETS["PRE_GradedDowntown"] = (
+    unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+    "PRE_Downtown on a hill and worn: streets climbing up to 5 % between intersections, crowned roads, sidewalks "
+    "falling to the curb (some too steeply), curbs from 5 to 20 cm, and a rough walk -- panel joints with lips, "
+    "heaved and cracked panels, raised and sunken covers, brick and sett patches, root heaves by the trees -- "
+    "potholes and speed humps in the road.",
+    dict(PRESETS["PRE_Downtown"][3], **GRADED_DOWNTOWN),
+)
+PRESETS["PRE_HillyResidential"] = (
+    unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,
+    "PRE_Suburban on rolling hills: streets up to 7 % between intersections, crowned roads, curbs from 8 to 18 cm, "
+    "sidewalks with some steep cross slopes, joints, heaves and cracks, root heaves by the street trees, speed humps "
+    "and the odd pothole.",
+    dict(PRESETS["PRE_Suburban"][3], **HILLY_RESIDENTIAL),
+)
+PRESETS["PRE_GradedTraffic"] = (
+    unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+    "PRE_DowntownTraffic on the graded downtown's hill and wear: moving cars on streets climbing up to 5 % between "
+    "intersections, crowned roads, curbs from 5 to 20 cm, a rough walk, potholes and speed humps (levels "
+    "'graded_traffic').",
+    dict(PRESETS["PRE_DowntownTraffic"][3], **GRADED_DOWNTOWN),
+)
+# Steeper still: the same streets on a real hill (with seed 21 they climb 2-7 %; the walks keep their own cross slope,
+# the lots and the corners take up the hill), for clips and tests that need the slopes to show.
+HILLY_DOWNTOWN = dict(GRADED_DOWNTOWN, MaxStreetGrade=0.12, RoadCrown=0.025, SidewalkCrossSlope=0.035,
+                      NonCompliantCrossSlopeChance=0.35)
+PRESETS["PRE_HillyDowntown"] = (
+    unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+    "PRE_DowntownTraffic on a steep hill: streets up to 12 % allowed between intersections (2-7 % with seed 21), "
+    "crowned 2.5 %, walks falling up to 3.5 % toward the curb (some steeper) whatever the hill does across them (the "
+    "lots and the corners take it up), curbs from 5 to 20 cm, the graded downtown's wear, and traffic (levels "
+    "'hilly_downtown').",
+    dict(PRESETS["PRE_DowntownTraffic"][3], **HILLY_DOWNTOWN),
+)
 
 
 def build_profile(path=PROFILE_ADA):

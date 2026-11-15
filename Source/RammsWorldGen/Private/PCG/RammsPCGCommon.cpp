@@ -164,6 +164,7 @@ int32 RammsPCG::WritePiece(FRammsPointWriter& W, const FRammsPieceDesc& P)
 	W.Set(i, MaterialPath2, P.MaterialPath2);
 	W.Set(i, MaterialPath3, P.MaterialPath3);
 	W.Set(i, Openings, P.Openings);
+	W.Set(i, Parts, P.Parts);
 	W.Set(i, ManifestKind, P.ManifestKind);
 	W.Set(i, ManifestSubtype, P.ManifestSubtype);
 	W.SetBool(i, bCompliant, P.bCompliant);
@@ -218,10 +219,10 @@ int32 RammsPCG::WritePickedMesh(FRammsPointWriter& W, const FRammsPaletteMesh& P
 TArray<FBox2D> RammsPCG::ParseBoxes(const FString& Text)
 {
 	TArray<FBox2D> Out;
-	TArray<FString> Parts;
-	Text.ParseIntoArray(Parts, TEXT(";"), true);
+	TArray<FString> Entries;
+	Text.ParseIntoArray(Entries, TEXT(";"), true);
 	bool bMalformed = false;
-	for (const FString& Part : Parts)
+	for (const FString& Part : Entries)
 	{
 		if (Part.TrimStartAndEnd().IsEmpty()) { continue; }
 		TArray<FString> V;

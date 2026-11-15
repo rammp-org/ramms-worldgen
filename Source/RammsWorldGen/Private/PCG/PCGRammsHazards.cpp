@@ -1,6 +1,7 @@
 // Copyright ATDev. All Rights Reserved.
 #include "PCG/PCGRammsHazards.h"
 
+#include "PCG/RammsGround.h"
 #include "PCGContext.h"
 #include "PCGPin.h"
 #include "Data/PCGBasePointData.h"
@@ -139,6 +140,10 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 	FRammsPointWriter Props, Pieces, Routes, Litter, Modules, Features;
 	int32 Counter = 0;
 	auto NextSeed = [&]() { return RammsPCG::SubSeed(Seed, 4000 + (++Counter)); };
+	// Seeds of what only the root heaves add, so everything else keeps its own.
+	int32 HeaveCounter = 0;
+	auto NextHeaveSeed = [&]() { return RammsPCG::SubSeed(Seed, 4900000 + (++HeaveCounter)); };
+	FRammsGroundCache GroundCache;
 	const TArray<FBox2D> KeepBoxes = RammsPCG::ParseBoxes(S->KeepClear);
 	auto InKeep = [&KeepBoxes](const FVector& P)
 	{
@@ -162,7 +167,34 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 			const double Yaw = Xf.Rotator().Yaw;
 			FName RouteName = R.GetN(i, RammsPCG::RouteName);
 			if (RouteName.IsNone()) { RouteName = FName(*FString::Printf(TEXT("Side%d"), SideIndex)); }
-			auto ToWorld = [&](double Along, double Across, double Up) { return Xf.TransformPosition(FVector(Along, Across, Up)); };
+			// Graded worlds carry the ground model: everything stands on the ground under it (Up above it). Without it,
+			// the side's own level, as before.
+			const FRammsGroundModel* Gm = GroundCache.Get(R.GetS(i, RammsGround::Attr));
+			auto ToWorld = [&](double Along, double Across, double Up)
+			{
+				FVector W = Xf.TransformPosition(FVector(Along, Across, Up));
+				if (Gm) { W.Z = Gm->GroundZ(W.X, W.Y) + Up; }
+				return W;
+			};
+			// A wide object (a bench, a shelter, a dumpster) on graded ground stands on the lowest ground under its footprint
+			// (HalfA along the side, HalfC across it), so no corner floats.
+			auto ToWorldFoot = [&](double Along, double Across, double HalfA, double HalfC)
+			{
+				FVector W = ToWorld(Along, Across, 0.0);
+				if (Gm)
+				{
+					for (int32 c = 0; c < 4; ++c)
+					{
+						const FVector Q = Xf.TransformPosition(FVector(Along + ((c & 1) ? HalfA : -HalfA), Across + ((c & 2) ? HalfC : -HalfC), 0.0));
+						W.Z = FMath::Min(W.Z, Gm->GroundZ(Q.X, Q.Y));
+					}
+				}
+				return W;
+			};
+			auto GroundNormal = [&](const FVector& W) { return Gm ? Gm->Normal(W.X, W.Y) : FVector::UpVector; };
+			// A rough walk's panels set off the model: a heave or an upheaval slab stands on the panel's top, not the model's.
+			FRammsPanelOffsets Panels;
+			if (Gm) { Panels.Parse(R.GetS(i, RammsGround::PanelDzAttr)); }
 
 			FOccupancy Occ;
 			ParseKeepouts(R.GetS(i, FName(TEXT("Keepouts"))), Occ);
@@ -260,7 +292,7 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 							const double y0 = FMath::Max(0.0, FMath::Min((FZ - fy) * 0.5, SW - S->MinClearWidth - fy));
 							const double Clear = FMath::Max(0.0, SW - (y0 + fy));
 							MinClear = FMath::Min(MinClear, Clear);
-							const int32 p = RammsPCG::WritePickedMesh(Props, Bm, ToWorld(A0 + fx * 0.5, y0 + fy * 0.5, 0.0), Yaw + 90.0, NextSeed());
+							const int32 p = RammsPCG::WritePickedMesh(Props, Bm, ToWorldFoot(A0 + fx * 0.5, y0 + fy * 0.5, fx * 0.5, fy * 0.5), Yaw + 90.0, NextSeed());
 							RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), bShelter ? RammsPaletteSlots::BusStop : RammsPaletteSlots::Bench, true, ERammsComplianceIssue::None, Clear, S->MinClearWidth);
 						}
 					}
@@ -346,7 +378,9 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 						{
 							const double PitMax = FMath::Max(Pit.Footprint.X, Pit.Footprint.Y);
 							const double Fit = FMath::Min(1.0, (FZ - 12.0) / FMath::Max(PitMax, 1.0));
-							const int32 p = RammsPCG::WritePickedMesh(Props, Pit, Base, Yaw, NextSeed(), Fit);
+							// (A grate lies flat on the walk: on graded ground, on its slope.)
+							const int32 p = Gm ? RammsGround::WritePickedMeshOn(Props, Pit, Base, Yaw, GroundNormal(Base), NextSeed(), Fit)
+								: RammsPCG::WritePickedMesh(Props, Pit, Base, Yaw, NextSeed(), Fit);
 							RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), FName(TEXT("TreePit")), true, ERammsComplianceIssue::None, RouteW, S->MinClearWidth);
 						}
 					}
@@ -361,6 +395,62 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 						RammsPCG::WriteFoliage(Props, Pieces, Palette, RammsPaletteSlots::Tree, Rng, Base, RammsPCG::RandRange(Rng, 0.0, 360.0), NextSeed(),
 							RammsPCG::RandRange(Rng, 300.0, 520.0), RammsPCG::RandRange(Rng, 550.0, 850.0), MatFoliage, MatTrunk, FName(TEXT("Tree")));
 					}
+				}
+			}
+
+			// --- root heaves (RootHeaveChance): a street tree has lifted the walk beside its pit ------------------
+			// A slab on the walk, its edge at the pit 0.5-4.5 cm proud and falling to flush further in (its sides taper),
+			// drawn from a stream of its own so nothing else moves.
+			if (S->RootHeaveChance > 0.0 && TreeAlong.Num() > 0 && RouteW > 60.0)
+			{
+				FRandomStream HeaveRng(RammsPCG::SubSeed(Seed, 5500 + SideIndex));
+				for (const double Ta : TreeAlong)
+				{
+					if (HeaveRng.FRand() >= S->RootHeaveChance) { continue; }
+					const double Wh = RammsPCG::RandRange(HeaveRng, 80.0, 140.0);
+					const double Dp = FMath::Min(RammsPCG::RandRange(HeaveRng, 60.0, 110.0), RouteW * 0.7);
+					const double Lip = RammsPCG::RandRange(HeaveRng, 0.5, 4.5);
+					const double Ha0 = Ta - Wh * 0.5, Ha1 = Ta + Wh * 0.5, Hc0 = FZ, Hc1 = FZ + Dp;
+					RammsGround::FPrisms Hv(ToWorld(Ta, (Hc0 + Hc1) * 0.5, 0.0));
+					double Measure = Lip;
+					if (Gm)
+					{
+						// Graded ground: over the ground's facets (it bends where the walk does), on the highest panel under it,
+						// so its flush edge is flush there; what the lower panels under it are left with counts toward its lip.
+						const FVector W0 = Xf.TransformPosition(FVector(Ha0, Hc0, 0.0)), W1 = Xf.TransformPosition(FVector(Ha1, Hc0, 0.0));
+						const FVector W2 = Xf.TransformPosition(FVector(Ha1, Hc1, 0.0)), W3 = Xf.TransformPosition(FVector(Ha0, Hc1, 0.0));
+						const TArray<FVector2D> Poly = { FVector2D(W0), FVector2D(W1), FVector2D(W2), FVector2D(W3) };
+						FBox2D Bb(ForceInit);
+						for (const FVector2D& V : Poly) { Bb += V; }
+						double PMin = 0.0, PMax = 0.0;
+						Panels.Range(Bb, PMin, PMax);
+						Measure = Lip + (PMax - PMin);
+						// The lip falls linearly from the pit's edge (Hc0) to nothing at Hc1: a plane over the slab.
+						const FVector2D A0(W0), A1(W1), A3(W3);
+						const int32 Bk = Gm->FindBlock(Bb.GetCenter().X, Bb.GetCenter().Y);
+						Hv.AddOnGround(*Gm, Bk, Poly, [&](const FVector2D& Q) { return PMax + RammsGround::LerpTriangle(A0, A1, A3, Lip, Lip, 0.0, Q); }, 0, FName(TEXT("Concrete")));
+					}
+					else
+					{
+						auto HeaveCorner = [&](double Ca, double Cc)
+						{
+							const FVector Wc = Xf.TransformPosition(FVector(Ca, Cc, 0.0));
+							return FVector(Wc.X, Wc.Y, Wc.Z + Lip * (1.0 - (Cc - Hc0) / Dp));
+						};
+						Hv.Add({ HeaveCorner(Ha0, Hc0), HeaveCorner(Ha1, Hc0), HeaveCorner(Ha1, Hc1), HeaveCorner(Ha0, Hc1) }, 0, FName(TEXT("Concrete")));
+					}
+					if (Hv.IsEmpty()) { continue; }
+					FRammsPieceDesc D = Hv.Desc(8.0);
+					D.MaterialPath = MatSidewalk;
+					D.ManifestKind = FName(TEXT("Hazard"));
+					D.ManifestSubtype = FName(TEXT("RootHeave"));
+					D.Measure = Measure;
+					D.Threshold = S->VerticalChangeMax;
+					D.bCompliant = Measure <= S->VerticalChangeMax;
+					D.Issue = D.bCompliant ? ERammsComplianceIssue::None : ERammsComplianceIssue::VerticalChangeTooHigh;
+					D.Seed = NextHeaveSeed();
+					RammsPCG::WritePiece(Pieces, D);
+					if (!D.bCompliant) { bRouteCompliant = false; }
 				}
 			}
 
@@ -437,12 +527,12 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 					// On the lawn along the path's +Y edge (the Park Layout's own benches use the other edge),
 					// seating turned to face the path.
 					y0 = SW + 45.0; Clear = SW;
-					const int32 p = RammsPCG::WritePickedMesh(Props, M, ToWorld(A + fx * 0.5, y0 + fy * 0.5, 0.0), Yaw + (bFaceIn ? -90.0 : 0.0), NextSeed());
+					const int32 p = RammsPCG::WritePickedMesh(Props, M, ToWorldFoot(A + fx * 0.5, y0 + fy * 0.5, fx * 0.5, fy * 0.5), Yaw + (bFaceIn ? -90.0 : 0.0), NextSeed());
 					RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), Slot, true, ERammsComplianceIssue::None, Clear, S->MinClearWidth);
 					continue;
 				}
 				PlaceAcross(fy, false, y0, Clear);
-				const int32 p = RammsPCG::WritePickedMesh(Props, M, ToWorld(A + fx * 0.5, y0 + fy * 0.5, 0.0), Yaw + (bFaceIn ? 90.0 : 0.0), NextSeed());
+				const int32 p = RammsPCG::WritePickedMesh(Props, M, ToWorldFoot(A + fx * 0.5, y0 + fy * 0.5, fx * 0.5, fy * 0.5), Yaw + (bFaceIn ? 90.0 : 0.0), NextSeed());
 				RammsPCG::WriteManifest(Props, p, FName(TEXT("Prop")), Slot, Clear >= S->MinClearWidth, Clear >= S->MinClearWidth ? ERammsComplianceIssue::None : ERammsComplianceIssue::ClearWidthBelowMinimum, Clear, S->MinClearWidth);
 			}
 
@@ -485,6 +575,17 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 						Sl.ManifestKind = FName(TEXT("Hazard")); Sl.ManifestSubtype = Type; Sl.Measure = Lip; Sl.Threshold = S->VerticalChangeMax;
 						Sl.bCompliant = Lip <= S->VerticalChangeMax; Sl.Issue = Sl.bCompliant ? ERammsComplianceIssue::None : ERammsComplianceIssue::VerticalChangeTooHigh;
 						Sl.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(A, y0 + fy * 0.5, Lip)); Sl.Seed = NextSeed();
+						if (Gm)
+						{
+							Sl.Transform.SetRotation(RammsGround::OnPlane(Yaw, GroundNormal(ToWorld(A + fx * 0.5, y0 + fy * 0.5, 0.0))));
+							// On the highest walk panel under it (a rough walk's), so its lip is above the walk it stands on.
+							FBox2D Bb(ForceInit);
+							Bb += FVector2D(Xf.TransformPosition(FVector(A, y0, 0.0)));
+							Bb += FVector2D(Xf.TransformPosition(FVector(A + fx, y0 + fy, 0.0)));
+							double PMin = 0.0, PMax = 0.0;
+							Panels.Range(Bb, PMin, PMax);
+							Sl.Transform.AddToTranslation(FVector(0.0, 0.0, PMax));
+						}
 						RammsPCG::WritePiece(Pieces, Sl);
 					}
 					if (Lip > S->VerticalChangeMax) { bRouteCompliant = false; }
@@ -509,7 +610,7 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				const ERammsComplianceIssue Issue = bOk ? ERammsComplianceIssue::None : ERammsComplianceIssue::ClearWidthBelowMinimum;
 				if (bMesh)
 				{
-					const int32 p = RammsPCG::WritePickedMesh(Props, M, ToWorld(A + fx * 0.5, y0 + fy * 0.5, 0.0), Yaw + RammsPCG::RandRange(Rng, -25.0, 25.0), NextSeed());
+					const int32 p = RammsPCG::WritePickedMesh(Props, M, ToWorldFoot(A + fx * 0.5, y0 + fy * 0.5, fx * 0.5, fy * 0.5), Yaw + RammsPCG::RandRange(Rng, -25.0, 25.0), NextSeed());
 					RammsPCG::WriteManifest(Props, p, FName(TEXT("Hazard")), Type, bOk, Issue, Clear, S->MinClearWidth);
 					if (Type == FName(TEXT("Cafe")))
 					{
@@ -542,9 +643,12 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				{
 					if (A < 30.0 || A > Length - 30.0) { return; }
 					if (bOffCrossings && !Crossings.Free(A - 50.0, A + 50.0)) { return; }
-					const FVector P = ToWorld(A, Y, Z);
+					// (Z is relative to the walk: the road's things are given RoadDrop below it. On graded ground the ground
+					// model knows the road's height itself, so they keep only their own lift above it.)
+					const FVector P = ToWorld(A, Y, (Gm && Y < 0.0) ? Z + RoadDrop : Z);
 					FRammsPaletteMesh Lm;
 					if (InKeep(P) || !Palette->PickMesh(LSlot, Rng, Lm)) { return; }
+					if (Gm) { RammsGround::WritePickedMeshOn(Litter, Lm, P, LYaw, GroundNormal(P), NextSeed(), Scale); return; }
 					RammsPCG::WritePickedMesh(Litter, Lm, P, LYaw, NextSeed(), Scale);
 				};
 				// a tree's own leaves around its pit
@@ -607,6 +711,19 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 			Routes.Set(r, RammsPCG::ClearWidth, MinClear);
 			Routes.SetBool(r, RammsPCG::bCompliant, bRouteCompliant);
 			Routes.Set(r, RammsPCG::Threshold, S->MinClearWidth);
+			if (Gm)
+			{
+				// On graded ground the route's centre line follows the ground: its polyline every 2 m, for the manifest.
+				const double MidY = (FZ + SW) * 0.5;
+				const int32 Steps = FMath::Max(1, FMath::CeilToInt(Length / 200.0));
+				FString Pts;
+				for (int32 k = 0; k <= Steps; ++k)
+				{
+					const FVector Pk = ToWorld(Length * k / Steps, MidY, 0.0);
+					Pts += FString::Printf(TEXT("%.1f,%.1f,%.1f;"), Pk.X, Pk.Y, Pk.Z);
+				}
+				Routes.Set(r, RammsGround::RoutePoints, Pts);
+			}
 		}
 	}
 	Props.Emit(Context, RammsPCG::PinProps, { TEXT("Hazards") });
@@ -665,6 +782,7 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 	int32 Counter = 0;
 	auto NextSeed = [&]() { return RammsPCG::SubSeed(Seed, 6000 + (++Counter)); };
 	const double PW = FMath::Max(S->PathWidth, 90.0);
+	FRammsGroundCache GroundCache;
 
 	int32 ParkIndex = 0;
 	for (const FPCGTaggedData& Tagged : Context->InputData.GetInputsByPin(RammsPCG::PinIn))
@@ -676,6 +794,12 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 			const FVector C = R.T(i).GetLocation();
 			const FVector Size = R.Max(i) - R.Min(i);
 			const double Z0 = C.Z;
+			// Graded worlds: the park lies on its block's ground (the ground model); flat streets: at Z0, as before.
+			const FString GroundText = R.GetS(i, RammsGround::Attr);
+			const FRammsGroundModel* Gm = GroundCache.Get(GroundText);
+			const int32 ParkBlock = static_cast<int32>(R.GetD(i, RammsPCG::BlockId, -1.0));
+			auto BaseZ = [&](const FVector2D& P) { return Gm ? Gm->GroundZ(P.X, P.Y) : Z0; };
+			auto BaseUp = [&](const FVector2D& P) { return Gm ? Gm->Normal(P.X, P.Y) : FVector::UpVector; };
 			const double Inset = 300.0 + PW * 0.5;
 			const double x0 = C.X - Size.X * 0.5 + Inset, x1 = C.X + Size.X * 0.5 - Inset;
 			const double y0 = C.Y - Size.Y * 0.5 + Inset, y1 = C.Y + Size.Y * 0.5 - Inset;
@@ -723,7 +847,25 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 			{
 				const double Len = FVector::Dist(Sg.A, Sg.B);
 				const bool bUneven = Rng.FRand() < S->NonCompliance * 0.5;
-				if (bUneven)
+				if (Gm)
+				{
+					// On the graded ground, 4 mm proud of the lawn: over the ground's facets (the park's lot ring and hill).
+					// The path's plan: the segment (axis-aligned) grown by half its width all round, as the flat world lays it.
+					const FBox2D Rect2(FVector2D(FMath::Min(Sg.A.X, Sg.B.X) - PW * 0.5, FMath::Min(Sg.A.Y, Sg.B.Y) - PW * 0.5),
+						FVector2D(FMath::Max(Sg.A.X, Sg.B.X) + PW * 0.5, FMath::Max(Sg.A.Y, Sg.B.Y) + PW * 0.5));
+					const FVector2D Mid2 = Rect2.GetCenter();
+					RammsGround::FPrisms Pp(FVector(Mid2.X, Mid2.Y, BaseZ(Mid2)));
+					const int32 Bk = ParkBlock >= 0 ? ParkBlock : Gm->FindBlock(Mid2.X, Mid2.Y);
+					Pp.AddOnGround(*Gm, Bk, RammsGround::BoxPoly(Rect2), [](const FVector2D&) { return 0.4; }, 0, bUneven ? FName(TEXT("Cobble")) : FName(TEXT("Path")));
+					FRammsPieceDesc D = Pp.Desc(20.0);
+					// (A recipe palette without cobbles: the path's own surface.)
+					D.MaterialPath = bUneven ? MatOr(RammsPaletteSlots::MatCobble, MatPath) : MatPath;
+					D.UVScale = 200.0;
+					D.ManifestSubtype = RammsGround::GroundSubtype;
+					D.Seed = NextSeed();
+					RammsPCG::WritePiece(Pieces, D);
+				}
+				else if (bUneven)
 				{
 					// Cobbles as a slab piece: the cobble material uses mesh UVs, which a scaled cube would stretch.
 					FRammsPieceDesc D;
@@ -742,6 +884,7 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				const FRotator Rot(0.0, Sg.Yaw, 0.0);
 				const FVector Left = Rot.RotateVector(FVector(0.0, -PW * 0.5, 0.0));
 				const int32 p = Paths.Add(FTransform(Rot, Sg.A + Left), FVector::ZeroVector, FVector(Len, PW, 0.0), NextSeed());
+				if (Gm) { Paths.Set(p, RammsGround::Attr, GroundText); }
 				Paths.Set(p, RammsPCG::Length, Len);
 				Paths.Set(p, RammsPCG::Width, PW);
 				Paths.Set(p, RammsPCG::FurnitureZone, 0.0);
@@ -756,7 +899,9 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				}
 				if (bUneven)
 				{
-					const int32 f = Features.AddBox((Sg.A + Sg.B) * 0.5, Sg.Yaw, FVector(Len, PW, 2.0), NextSeed());
+					FVector Fc = (Sg.A + Sg.B) * 0.5;
+					if (Gm) { Fc.Z = BaseZ(FVector2D(Fc.X, Fc.Y)); }
+					const int32 f = Features.AddBox(Fc, Sg.Yaw, FVector(Len, PW, 2.0), NextSeed());
 					RammsPCG::WriteManifest(Features, f, FName(TEXT("Surface")), FName(TEXT("Cobbled")), false, ERammsComplianceIssue::SurfaceUneven, 1.0, 0.64);
 				}
 				// Benches on the lawn beside the path, facing it.
@@ -767,7 +912,8 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				{
 					const double a = Len * 0.5 + (bi - (NB - 1) * 0.5) * BS;
 					// Bench on the -Y side of the path, its front (+X after the facing offset) turned to +Y = the path.
-					const FVector P = Sg.A + Rot.RotateVector(FVector(a, -PW * 0.5 - 60.0, 0.0));
+					FVector P = Sg.A + Rot.RotateVector(FVector(a, -PW * 0.5 - 60.0, 0.0));
+					if (Gm) { P.Z = BaseZ(FVector2D(P.X, P.Y)); }
 					// Not at a junction, and the bench (about 2 m by 0.8 m) clear of every other path.
 					bool bOnPath = false;
 					for (const double t : Junc) { if (FMath::Abs(a - t) < PW + 120.0) { bOnPath = true; break; } }
@@ -789,11 +935,13 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 			TArray<FBox2D> Avoid; // ponds and patches: no trees or grass clumps
 			auto GroundZ = [&](const FVector2D& P)
 			{
-				double Z = Z0;
+				// (Graded: the park's ground under the point, the mounds on it.)
+				const double Base = BaseZ(P);
+				double Z = Base;
 				for (const FMound& Mn : Mounds)
 				{
 					const double E = FMath::Sqrt(FMath::Square(2.0 * (P.X - Mn.C.X) / Mn.SX) + FMath::Square(2.0 * (P.Y - Mn.C.Y) / Mn.SY));
-					if (E < 1.0) { Z = FMath::Max(Z, Z0 + Mn.Hm * 0.5 * (1.0 + FMath::Cos(PI * E)) - 2.0); }
+					if (E < 1.0) { Z = FMath::Max(Z, Base + Mn.Hm * 0.5 * (1.0 + FMath::Cos(PI * E)) - 2.0); }
 				}
 				return Z;
 			};
@@ -816,6 +964,11 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				D.ManifestSubtype = Sub;
 				D.Measure = FMath::Min(SX, SY);
 				D.Transform = FTransform(FRotator(0.0, PatchYaw >= 0.0 ? PatchYaw : RammsPCG::RandRange(Rng, 0.0, 180.0), 0.0), FVector(P.X, P.Y, Z0));
+				if (Gm)
+				{
+					// On the graded ground, lying on its slope.
+					D.Transform = FTransform(RammsGround::OnPlane(D.Transform.Rotator().Yaw, BaseUp(P)), FVector(P.X, P.Y, BaseZ(P)));
+				}
 				D.Seed = NextSeed();
 				RammsPCG::WritePiece(Pieces, D);
 				Avoid.Add(FBox2D(P - FVector2D(FMath::Max(SX, SY) * 0.5), P + FVector2D(FMath::Max(SX, SY) * 0.5)));
@@ -863,7 +1016,7 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 						D.MaterialPath = MatLawn;
 						D.ManifestKind = FName(TEXT("Terrain")); D.ManifestSubtype = FName(TEXT("Mound"));
 						D.Measure = Hm * PI / FMath::Min(SX, SY); // steepest grade of the cosine bump
-						D.Transform = FTransform(FRotator::ZeroRotator, FVector(Mc.X, Mc.Y, Z0));
+						D.Transform = Gm ? FTransform(RammsGround::OnPlane(0.0, BaseUp(Mc)), FVector(Mc.X, Mc.Y, BaseZ(Mc))) : FTransform(FRotator::ZeroRotator, FVector(Mc.X, Mc.Y, Z0));
 						D.Seed = NextSeed();
 						RammsPCG::WritePiece(Pieces, D);
 						if (Rng.FRand() < 0.5) { for (int32 r = 0; r < 3; ++r) { RockAt(Mc + FVector2D(RammsPCG::RandRange(Rng, -SX, SX) * 0.3, RammsPCG::RandRange(Rng, -SY, SY) * 0.3), 0.6, 1.4); } }
@@ -875,7 +1028,7 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 						const FString& Mat = Pk == 0 ? MatGravel : (Pk == 1 ? MatDirt : MatMud);
 						const double SX = RammsPCG::RandRange(Rng, 150.0, 400.0), SY = RammsPCG::RandRange(Rng, 120.0, 300.0);
 						const FVector2D Pc(RammsPCG::RandRange(Rng, Q.Min.X + 150.0, Q.Max.X - 150.0), RammsPCG::RandRange(Rng, Q.Min.Y + 150.0, Q.Max.Y - 150.0));
-						if (GroundZ(Pc) <= Z0 + 1.0) { Patch(Pc, SX, SY, 0.6, Mat, FName(Subs[Pk])); }
+						if (GroundZ(Pc) <= BaseZ(Pc) + 1.0) { Patch(Pc, SX, SY, 0.6, Mat, FName(Subs[Pk])); }
 					}
 					// A boulder group.
 					{
@@ -909,6 +1062,7 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 							D.ManifestKind = FName(TEXT("Surface")); D.ManifestSubtype = FName(TEXT("GravelTrail"));
 							D.bCompliant = false; D.Issue = ERammsComplianceIssue::SurfaceUneven; D.Measure = 110.0; D.Threshold = S->MinClearWidth;
 							D.Transform = FTransform(FRotator(0.0, TYaw, 0.0), FVector(Ta.X, Ta.Y, Z0 + 0.6));
+							if (Gm) { D.Transform = FTransform(RammsGround::OnPlane(TYaw, BaseUp(Tc)), FVector(Ta.X, Ta.Y, BaseZ(Ta) + 0.6)); }
 							D.Seed = NextSeed();
 							RammsPCG::WritePiece(Pieces, D);
 							for (double t = 0.0; t <= 1.0; t += 0.1) { const FVector2D P = Ta + (Tb - Ta) * t; Avoid.Add(FBox2D(P - FVector2D(70.0), P + FVector2D(70.0))); }
@@ -922,6 +1076,12 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 					D.SizeX = PW * 3.0; D.SizeY = PW * 3.0; D.SizeZ = 20.0; D.UVScale = 200.0;
 					D.MaterialPath = MatCobble;
 					D.Transform = FTransform(FRotator::ZeroRotator, FVector(C.X - PW * 1.5, C.Y, Z0 + 0.6));
+					if (Gm)
+					{
+						const FVector2D Pz(C.X, C.Y);
+						D.Transform = FTransform(RammsGround::OnPlane(0.0, BaseUp(Pz)), FVector(C.X - PW * 1.5, C.Y, BaseZ(FVector2D(C.X - PW * 1.5, C.Y)) + 0.6));
+						D.ManifestSubtype = RammsGround::GroundSubtype;
+					}
 					D.Seed = NextSeed();
 					RammsPCG::WritePiece(Pieces, D);
 				}

@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "RammsWorldGenTypes.h"
+#include "RammsCollisionShapes.h"
 #include "RammsProcPiece.generated.h"
 
 class UDynamicMeshComponent;
@@ -60,6 +61,10 @@ public:
 	 *  heights above the base). Each gets a frame (material 2) and, when its sill is above the floor, a glass
 	 *  pane (material 3): windows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Piece") FString Openings;
+	/** GroundPrisms: the prisms, ';'-separated, each "<material slot>,<surface>:x,y,z x,y,z ..." -- its top polygon in
+	 *  the actor's frame (convex, planar, counter-clockwise from above), solid down to SizeZ below its lowest vertex
+	 *  (see RammsGround::FPrisms). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Piece") FString Parts;
 	/** Level landing length at the top of a ramp. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Piece") double LandingSize = 152.4;
 	/** Detectable warning strip at the bottom of a curb ramp (depth, cm); 0 = none. */
@@ -104,6 +109,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Ramms|WorldGen")
 	FRammsManifestFeature ToManifestFeature() const;
 
+	/** This piece's collision as exact primitive shapes in world space (see RammsCollisionShapes.h): what Chaos
+	 *  collides with, for physics engines that build their own world. Decals and other non-colliding kinds add
+	 *  nothing. */
+	void AppendCollisionShapes(TArray<FRammsCollisionShape>& Out) const;
+
 	virtual void OnConstruction(const FTransform& Transform) override;
 
 private:
@@ -123,6 +133,11 @@ private:
 	void BuildMound(UDynamicMesh* Mesh);
 	void BuildPatch(UDynamicMesh* Mesh);
 	void BuildDecal();
+	// Ground kinds (RammsProcPieceGround.cpp): graded streets and surface roughness, with their exact collision shapes.
+	void BuildGroundPrisms(UDynamicMesh* Mesh);
+	void BuildHump(UDynamicMesh* Mesh);
+	void AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out) const;
+	void AppendHumpShapes(TArray<FRammsCollisionShape>& Out) const;
 
 	void ApplyMaterials();
 	void ApplyCollision();

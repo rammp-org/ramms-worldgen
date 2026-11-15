@@ -59,7 +59,9 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
   - [At runtime](#at-runtime)
 - [The manifest](#the-manifest)
 - [Segmentation labels](#segmentation-labels)
+- [Collision shapes](#collision-shapes)
 - [Parameters](#parameters)
+- [Graded streets and rough ground](#graded-streets-and-rough-ground)
 - [Packs and palette recipes](#packs-and-palette-recipes)
 - [Extending](#extending)
 - [UrbanVerse assets](#urbanverse-assets)
@@ -67,6 +69,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
   - [Articulated SimReady assets in MuJoCo](#articulated-simready-assets-in-mujoco)
   - [Articulated SimReady assets in generated levels](#articulated-simready-assets-in-generated-levels)
   - [Hinged doors and ceilings](#hinged-doors-and-ceilings)
+- [Traffic (RammsCrowd)](#traffic-rammscrowd)
 - [Design notes and limits](#design-notes-and-limits)
 - [First-compile checklist](#first-compile-checklist)
 
@@ -76,7 +79,8 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 |---|---|---|
 | **Data assets** | `URammsWorldPreset` (scene kind, params, palette, profile, graph), `URammsWorldPalette` (semantic slots → Fab meshes / materials / actor classes), `URammsAccessibilityProfile` (ADA thresholds + the ranges used to break them on purpose) | `Source/.../Public/RammsWorld*.h`, instances under `/RammsWorldGen/` |
 | **Generator** | `ARammsWorldGenerator`: owns the `UPCGComponent`, a seed, a preset; flattens preset + profile + per-instance overrides into `FRammsWorldGenParams`; `Regenerate()` / `Randomize()` / `Cleanup()`; builds the manifest after generation; `PlacePlayerStart()`; `ExportManifest()` | `RammsWorldGenerator.h` |
-| **Procedural pieces** | `ARammsProcPiece`: a GeometryScript dynamic mesh whose dimensions decide usability — curb ramps with flares and detectable-warning strips, curbs, steps, ramps with landings and edge protection, walls with door openings, door leaves and thresholds, bollards, planters, low-poly trees and shrubs. Spawned by PCG's Spawn Actor with every property mapped from a same-named point attribute. Complex-as-simple collision. | `RammsProcPiece.h` |
+| **Procedural pieces** | `ARammsProcPiece`: a GeometryScript dynamic mesh whose dimensions decide usability — curb ramps with flares and detectable-warning strips, curbs, steps, ramps with landings and edge protection, walls with door openings, door leaves and thresholds, bollards, planters, low-poly trees and shrubs, and on graded ground `GroundPrisms` (convex prisms: roads, sidewalk panels, potholes, covers, pavers) and `Hump` (speed humps and tables). Spawned by PCG's Spawn Actor with every property mapped from a same-named point attribute. Complex-as-simple collision; `AppendCollisionShapes` describes it as exact boxes, convex hulls and height grids. | `RammsProcPiece.h`, `RammsCollisionShapes.h` |
+| **Ground model** | `FRammsGroundModel`: the street world's elevation (street grades, crown, curb heights, walks at their own cross slope, the lots and the corners taking up the hill) as one function every node evaluates (planar facets built from the same text), handed downstream as the `Ground` point attribute | `Public/PCG/RammsGround.h` |
 | **PCG nodes (C++)** | `Ramms: Street Network`, `Subdivide Lots`, `Building Massing`, `Park Layout`, `Hazard Placer`, `Indoor Layout`, `Manifest`. Deterministic by seed. They emit *oriented points with attributes*; stock spawners do the placing. | `Public/PCG/*.h` |
 | **Graphs** | `PCG_Streets` (downtown, suburban, park, main street) and `PCG_Indoor` (home, office, store), both ending in the shared subgraph `PCG_SpawnAndRecord`; **built from code** by `ramms_worldgen.graphs` so they are reviewable and reproducible (see `doc/world_generation.md`, "The PCG graphs"). | `/RammsWorldGen/Graphs/` |
 | **Python** | Graph builder DSL, palette/preset builders, example-level assembly, MCP toolset | `Content/Python/ramms_worldgen/` |
@@ -94,9 +98,10 @@ Points carry three families of attributes:
   scaled to size, which is how roads, sidewalks, floors, building shells,
   windows and crosswalk bars are drawn with the Megascans surface materials.
 - **Piece properties**: `KindId`, `SizeX/Y/Z`, `Rise`, `Slope`, `FlareSlope`,
-  `StepCount`, `OpeningWidth/Offset/Height`, `LandingSize`, `WarningDepth`,
-  `MaterialPath`, `MaterialPath2` — the Spawn Actor node maps each onto
-  `ARammsProcPiece` and then calls `Rebuild()`.
+  `StepCount`, `OpeningWidth/Offset/Height`, `LandingSize`, `WarningDepth`, `UVScale`,
+  `MaterialPath`, `MaterialPath2`, `MaterialPath3`, `Openings`, `Parts` — the Spawn Actor node maps each onto
+  `ARammsProcPiece` and then calls `Rebuild()` (`URammsWorldGenGraphLibrary::PiecePropertyNames`; a new
+  property needs the graphs rebuilt).
 - **Manifest**: `ManifestKind`, `ManifestSubtype`, `bCompliant`, `IssueId`,
   `Measure`, `Threshold` — read by the Manifest node for mesh-spawned
   features, and reported by the pieces themselves for actors.
@@ -202,7 +207,7 @@ The in-editor MCP server (see the project README) lists the toolset
 | `worldgen_export_manifest` | Write the manifest JSON |
 | `worldgen_place_player_start` | PlayerStart to the suggested start |
 | `worldgen_build_assets` | Rebuild palette / presets / graphs from code |
-| `worldgen_build_level` | Create an example level (`downtown`, `suburban`, `park`, `indoor`, `office`, `mainstreet`, `store`) |
+| `worldgen_build_level` | Create an example level (`downtown`, `suburban`, `park`, `indoor`, `office`, `mainstreet`, `store`, graded `graded_downtown`, `hilly_residential`; recipe-built `dense_downtown` and, with traffic, `traffic`, `graded_traffic`, `hilly_downtown`) |
 
 A typical session: `worldgen_list_presets` → `worldgen_generate(preset="PRE_Downtown", seed=7)`
 → poll `worldgen_status` → `worldgen_manifest(only_non_compliant=true)` →
@@ -301,16 +306,20 @@ Kinds and the issues they can carry:
 
 | Kind | Subtypes | Issue |
 |---|---|---|
-| `CurbRamp` | Standard, TooSteep, NoDetectableWarning | SlopeTooSteep |
+| `CurbRamp` | Standard, TooSteep, NoDetectableWarning, CrossSlope (graded: its cross slope, the street's grade, above `MaxCrossSlope`), SteepFlare (graded: a flare steeper than `CurbRampFlareSlope`, or none, beside it near a corner) | SlopeTooSteep, CrossSlopeTooSteep |
+| `Grade` | Running, Cross (graded ground: per sidewalk side, its steepest running grade along the route's centre line out of the corner zones and its cross slope at mid-side, the block's own; the box is the side's walk; `route` = the side) | SlopeTooSteep (above `RampMaxSlope`), CrossSlopeTooSteep (above `MaxCrossSlope`) |
+| `Curb` | Low (under 10 cm), Standard, High (over 17 cm) (graded ground: per side, measure = mean curb height, size.z the highest) | — |
+| `SpeedHump` | Hump, Table (measure = height; the box is the whole hump, centred on it, across the road between its gaps at the gutters) | — |
+| `Cover` | Raised, Sunken (a utility cover set into the walk; measure = its lip) | VerticalChangeTooHigh |
 | `Crossing` | MissingCurbRamp | MissingCurbRamp |
 | `Crosswalk` | Ramped, SteepRamp, OneRamp, NoRamps (whether both ends have a curb ramp; size.x = curb to curb, yaw = the crossing direction) | — |
 | `Entrance` | Level, SteppedWithRamp, SteppedSteepRamp, SteppedNoRamp | StepAtEntrance, SlopeTooSteep, DoorTooNarrow, ThresholdTooHigh |
 | `Door`, `Threshold` | Standard, Narrow, RaisedThreshold, High/Low | DoorTooNarrow, ThresholdTooHigh |
-| `Ramp`, `Step` | Standard, TooSteep / WithRamp, NoRamp | SlopeTooSteep, StepAtEntrance |
-| `Hazard` | AFrame, Scooter, BinOut, Cafe, Barrier, Upheaval, or a furniture slot indoors | ClearWidthBelowMinimum, VerticalChangeTooHigh, ObstacleInRoute |
+| `Ramp`, `Step` | Standard, TooSteep, FootLip (graded: the yard's slope across the ramp's foot leaves a lip over `VerticalChangeMax`) / WithRamp, NoRamp (a step's measure is its whole rise) | SlopeTooSteep, VerticalChangeTooHigh, StepAtEntrance |
+| `Hazard` | AFrame, Scooter, BinOut, Cafe, Barrier, Upheaval, Heave (a tilted sidewalk panel), RootHeave (the walk lifted beside a street tree), or a furniture slot indoors | ClearWidthBelowMinimum, VerticalChangeTooHigh, ObstacleInRoute |
 | `Building` / `House` | house footprint | — |
 | `Prop`, `Furniture`, `Decor`, `Tree`, `Shrub` | palette slot | ClearWidthBelowMinimum when a prop spills out of the furniture zone |
-| `Surface` | Cobbled, GravelTrail / Gravel, Dirt, Mud (park patches) | SurfaceUneven |
+| `Surface` | Cobbled, GravelTrail / Gravel, Dirt, Mud (park patches); on rough ground JointLip (two route panels' lip over `VerticalChangeMax`, on their joint: along a side, beside a ramp, across a corner), Crack (a panel split, one part proud), Pothole (measure = depth), Brick, Setts (pavers) | SurfaceUneven, VerticalChangeTooHigh |
 | `Terrain`, `Water` | Mound (measure = steepest grade) / Pond | — |
 | `Room` | Living, Bedroom, Office, Meeting, Kitchen, Dining, Bathroom, Restroom, Corridor, Shop, Storage | — |
 | `Stall` | Standard, Accessible (restroom toilet stalls; measure = stall width, threshold 152.4 for the accessible one) | — |
@@ -318,6 +327,8 @@ Kinds and the issues they can carry:
 | `Path`, `Driveway`, `Vehicle`, `CarPark` | FrontWalk / Concrete / Parked, Driveway, CarPark / SingleRow, DoubleRow, MultiRow | — |
 | `CheckoutLane` | Standard, Narrow (store checkouts; measure = lane width) | ClearWidthBelowMinimum |
 | `Tree`, `Shrub`, `Prop` (lots) | StreetTree, Canopy / Foundation / Mailbox, StreetLight | — |
+| `Road` | AlongX, AlongY (a live street segment, recorded for the traffic: location on its centreline at road level, size.x = length between the intersection squares, size.y = width = measure) | — |
+| `Intersection` | Cross, Tee, Through, Bend, End (a node live segments meet at: location its centre at road level, size = the square, measure = how many segments meet) | — |
 
 `measure` / `threshold` are the number that decided it (slope as rise/run,
 widths and heights in cm) and what it was compared to.
@@ -340,7 +351,8 @@ does not depend on CameraCapture.
 | Instanced boxes with a `Mat.*` override (roads, sidewalks, paths) | the surface: `Road`, `Sidewalk`, `Path`, `Lawn`, `Floor`, `Wall.Interior` ... |
 | Slabs, patches, walls | their surface (as above); a slab more than 2.5 m above the generator is a `Roof` |
 | Other procedural pieces | the kind: `Curb`, `CurbRamp`, `Stairs`, `Ramp`, `Door`, `Bollard`, `Tree`, `Mound` ... |
-| Hazard pieces (upheavals) | `Hazard.<Subtype>` |
+| Hazard pieces (upheavals, heaves, root heaves) | `Hazard.<Subtype>` |
+| Graded ground (`GroundPrisms`, `Hump`) | their surface (`Road`, `Sidewalk`, `Lawn`, `Metal` covers, `Cobblestone` setts and brick pavers) |
 | Decals (cracks, puddles) | none: a decal takes the class of what it is projected on |
 
 A mesh that answers several slots (a chair used as furniture and as a cafe
@@ -352,6 +364,94 @@ config: RAMMS lists them in `Config/DefaultGame.ini` under
 `[/Script/CameraCapture.CameraCaptureSegmentationSettings]`.
 `URammsSegmentationLabels::ClassesForPalette` lists every class a palette can
 produce, for keeping that list complete when slots are added.
+
+## Collision shapes
+
+A generated world's collision is also available as plain shapes
+(`RammsCollisionShapes.h`: Core types only, actors named by pointer in the filter), so
+another physics engine can build the same world: RammsMujocoSupport turns them into
+MuJoCo world geoms. `ARammsWorldGenerator::GatherCollisionShapes(Shapes[, Filter])`
+returns them in world space; `HasCollisionShapes(Filter)` says cheaply whether there is
+any (it stops at the first piece or mesh with one); `DescribeCollisionShapes()` counts
+them by type and surface. A `FRammsCollisionShapeFilter` limits them to a box or to a
+radius in plan, and skips its `ExcludedActors` (actors another engine already
+converts, such as MuJoCo quick-convert components).
+
+The shapes are exactly what Chaos collides with, so a curb face stays a vertical
+step and a 6 mm lip stays 6 mm:
+
+| Source | Shapes |
+|---|---|
+| Slab, curb, column, steps, ramp (slab, landing, lips), wall (around its openings, frames, glass), door (leaf, handles, threshold), planter, roof soffit, warning strip | one box per part |
+| Bollard, tree trunk and branches, tree and shrub canopy blobs, gable roof, the ramp of a curb ramp | one convex hull per part, of the part's own vertices |
+| Curb ramp flares (their top is twisted), mounds and hollows | a height grid over the mesh's own vertices |
+| Ground prisms (graded roads, sidewalks, panels, potholes, covers, pavers) | a level rectangle along the piece's axes is a box; another planar convex top the hull of it and its footprint; a top that is not planar and convex the mesh's own fan, one prism per triangle |
+| Humps and tables | a height grid two samples wide (the profile is constant across) |
+| Patch | the slab under the disc (its top is the disc) |
+| Decal | none |
+| Instanced and static meshes the generator made | per instance, the mesh's simple collision as Chaos builds it (`FK*Elem::GetFinalScaled`): boxes, spheres, capsules, convex hulls. A complex-as-simple mesh is the convex hulls of its connected parts (`RammsCollisionShapes::AppendComponentHulls`: a table's top and each leg, open between them; a part inside another's bounds joins it; at most 64 per mesh, the smallest joining their nearest). A part that is itself concave (an L-shaped wall, a doorway in one welded mesh) is still solid inside its hull; decomposing those (CoACD, cached per asset) is the follow-up. Logged once per asset |
+
+A piece's scale is baked into its shapes, mirrored or not. A height grid the
+piece's scale mirrors or turns over (its cells would split the other way), or a
+grid whose mesh does not match it, is exported as one prism per upward-facing
+triangle of the mesh instead: still exact, and never a hole.
+
+**Flush neighbours are one solid.** Two geoms meeting at a seam give a body that
+crosses it a contact on the far one's edge, whose normal leans sideways (MuJoCo
+measured it: up to 0.28 of a sphere's contact normal, 0.19 of a wheel's, all of a
+roller pad's, 2 mm into the surface), a bump the flat surface does not have. So a
+GroundPrisms piece merges parts with the same surface whose tops lie in one plane
+(within 0.1 mm) and whose union is convex into one box or hull, and
+`GatherCollisionShapes` merges flush neighbouring boxes (`MergeFlushBoxes`: paving
+and road cubes tiling a flat area, slabs side by side; `bMergeFlushBoxes` on the
+filter turns it off). A real lip (a paver 6 mm proud, a panel's heave), a gap or
+another surface keeps its solids apart, and its step. The Chaos mesh keeps its
+parts as built.
+
+Anything without physics collision is skipped (PCG foliage is `NoCollision`), as
+are articulated stand-ins (they simulate as articulations), pawns, the filter's
+excluded actors, and actors or components tagged `RammsDynamic`: tag whatever
+moves after generation (traffic), or it is exported as a fixed obstacle where it
+stood. Spline meshes (collision bent along the spline) and colliding components
+that are neither static meshes nor pieces are not exported; each such class is
+logged once.
+
+**One code path.** `ARammsProcPiece::AppendCollisionShapes` runs the kind's own
+builder into a scratch mesh with a capture open: every box the builder appends
+through `Box()` reports itself as a box, every other convex primitive appended
+through `Hull()` as the hull of the vertices it appended, every lifted grid passed
+to `Grid()` as a height grid. The mesh and the shapes cannot drift apart, and a new
+builder part is exported without extra code as long as it goes through those
+helpers (a raw `Append*` call is not captured). The ground kinds (GroundPrisms,
+Hump) describe themselves from the same properties their builders read. A kind
+added later reports its shapes from its own case in `AppendCollisionShapes`. A
+sphere-box (a canopy blob) splits some quads inward, a dent of a few centimetres,
+so its edges are flipped to fold outward when it is built: its mesh is then its
+hull, and Chaos collides with exactly the hull that is exported.
+
+**Height grids** split each cell along the diagonal from sample (i+1, j) to
+(i, j+1), which is how MuJoCo's height fields split theirs once Unreal's Y is
+mirrored. A mesh drawn from a grid must split its cells the same way, or the
+two agree only at the samples: `RammsCollisionShapes::MatchHeightGridDiagonals`
+flips a grid mesh's edges to match (flares and mounds use it, so their meshes
+changed by that flip), and reports a mesh it cannot match.
+
+**Surfaces** come from the segmentation label (`Road` is `Asphalt`, `Sidewalk`
+`Concrete`, `Curb` `Curb`, `Lawn` `Grass`, `Hazard.Mud` `Mud` ...,
+`RammsCollisionShapes::SurfaceForClass`), else from a physical material's name,
+else from the piece kind; anything else is `Default`.
+
+`Ramms.WorldGen.CollisionShapes.ProcPieces` checks every kind, ground prisms
+(a level rectangle, sloped and level hulls, a pothole, a twisted top, flush
+pavers as one box, a lipped paver kept apart, a flush sloped pair as one hull) and
+humps (with and without a table top) included, pitched, rolled, scaled and mirrored
+pieces too, against its mesh: bounds within 1 mm, vertical probes within 2 mm of
+Chaos's trace (not for mirrored pieces). `Ramms.WorldGen.CollisionShapes.InstancedMeshes`
+checks scaled, rotated instances against Chaos's simple collision, and the
+exclusions. `Ramms.WorldGen.CollisionShapes.ComponentHulls` checks that a table
+exports as its five parts, open between the legs where Chaos is.
+`Ramms.WorldGen.CollisionShapes.MergeFlushBoxes` checks that a field of flush boxes
+is one box and that a lip, a gap, another surface or another thickness is not.
 
 ## Parameters
 
@@ -368,6 +468,8 @@ runs it at 0.2, the office at 0.1.
 | Buildings | `LotWidthMin/Max`, `SetbackMin/Max`, `FloorsMin/Max`, `FloorHeight`, `LotCoverage`, `WholeBuildingChance`, `EntranceStepChance`, `EntranceRampChance`, `WindowSpacing`, `FacadeStyles`, `RearParkingChance` |
 | Hazards | `PropDensity`, `HazardDensity` (per 100 m), `TreeSpacing`, `CanopyChance` (big old trees, closer together), `StreetLightSpacing`, `HazardIntrusionChance` |
 | Accessibility | `MinClearWidth`, `PreferredClearWidth`, `RampMaxSlope`, `MaxCrossSlope`, `CurbRampFlareSlope`, `DoorClearWidth`, `DoorThresholdMax`, `VerticalChangeMax`, `LandingSize`, `DetectableWarningDepth` |
+| Terrain (all 0: flat) | `MaxStreetGrade` (0..0.15, rise / run between intersections), `RoadCrown` (0..0.08), `SidewalkCrossSlope` (0..0.08, each block draws 0.6-1 of it), `NonCompliantCrossSlopeChance` (0..1, per block: 3-6 %), `CurbHeightMin` / `CurbHeightMax` (cm, never under 2; Max 0 = every curb `CurbHeight`) — see [Graded streets and rough ground](#graded-streets-and-rough-ground) |
+| Roughness (all 0: smooth) | `SurfaceRoughness` (0..1, panel lips), `PanelLength` (cm, 150), `HeaveDensity`, `CrackDensity`, `CoverDensity`, `PavingPatchDensity` (per 100 m of side), `PotholeDensity` (per 100 m of road), `SpeedHumpChance` (per street segment), `RootHeaveChance` (per street tree in a pit) |
 | Suburban / park | `LawnLots`, `YardTreeChance`, `DrivewayChance`, `DrivewayWidth`, `FrontBoundaryChance`, `PathWidth`, `FoliageDensity`, `GrassDensity` (grass clumps per m^2 on lawns, strips and parks) |
 | Indoor | `RoomSizeMin/Max`, `CorridorWidth`, `CorridorChance`, `WallThickness`, `WallHeight`, `DoorWidthMean/Std`, `ThresholdChance`, `FurnitureDensity`, `OfficeFraction`, `RetailFraction` |
 
@@ -498,8 +600,9 @@ with the same packs, and a pack that is not installed only leaves its slots to t
 - **New node**: derive from `URammsPCGSettingsBase` / `FRammsPCGElementBase`,
   emit through `FRammsPointWriter` (`WriteCube`, `WritePaletteMesh`,
   `WritePiece`, `WriteManifest`), add it to `graphs.py`.
-- **New piece kind**: add to `ERammsProcPieceKind`, a `Build*` in
-  `RammsProcPiece.cpp`, and emit it from a node.
+- **New piece kind**: add to `ERammsProcPieceKind` (at the end; `GetEffectiveKind` clamps `KindId` to the
+  last value), a `Build*` in `RammsProcPiece.cpp` (the ground kinds are in `RammsProcPieceGround.cpp`), its
+  collision shapes in `AppendCollisionShapes`, and emit it from a node.
 
 ## UrbanVerse assets
 
@@ -856,8 +959,10 @@ URLab cannot replace-import a Blueprint.
   `surfaces.build_signal` (the pack's maps on the heads and sign, paint
   elsewhere; lamps lit from the lens geometry; the pedestrian head's icon
   projected onto its panel) and `build_paint` on the arm. Every signal in a
-  level shows one phase - heads facing nearer world X green, nearer Y red
-  (`GreenAlongX` flips it) - and each pedestrian head the opposite. Camden
+  level shows one phase by the axis its heads face: on a level with traffic the
+  signal clock cycles it (amber and walk / don't walk included, see "Traffic"),
+  otherwise heads facing nearer world X are green, nearer Y red, and each
+  pedestrian head the opposite. Camden
   Market's pole signal cycles on its own timer, so the recipe leaves it out.
 - **Pack look controls** (palette `CollectionValues`): scalars of a pack's
   material parameter collections, set in the world by the generator (on
@@ -881,6 +986,152 @@ URLab cannot replace-import a Blueprint.
   scenario's start or a robot's path. `keep_clear` takes boxes and the bounds
   of actors tagged `RammsKeepClear` and sets the generator's override (with
   no box at all it drops the override, and the preset's boxes apply again).
+
+## Graded streets and rough ground
+
+With the terrain and roughness parameters at 0 (every preset but four) the streets are level and smooth and are
+placed exactly as before. Turning any of them on (`RootHeaveChance` aside: on its own it lays its heaves on the flat
+walk) switches the Street Network to the **ground model** (`FRammsGroundModel`, `Public/PCG/RammsGround.h`) and lays
+the ground as `GroundPrisms` pieces on it. Its draws come from random streams of their own -- one per concern: the
+grades; each block's curb heights and its cross slope; each segment's hump and its potholes; each side's panels and
+its features -- so a seed keeps its blocks, lots and crossings (a graded world is the flat world of the same seed on a
+hill; props near the curb ramps can move, since graded ramps are sized for the ground), and turning one parameter up
+leaves what the others drew where it was.
+
+- **Elevation.** Each interval of the street grid climbs at its own grade in `[-MaxStreetGrade, MaxStreetGrade]`
+  (columns for the streets along X, rows for those along Y), so intersections sit at different heights and every
+  street has a constant grade between them; the lowest street is at the generator's height. The reference height is
+  `Z0 + FX(x) + FY(y)`, one plane per grid cell: it sets the gutters and the lots.
+- **Roads.** `CurbHeight` under the reference at the gutters, `RoadCrown` higher toward the centre line: each half
+  of a segment is one plane. An intersection square is eight planar triangles: the triangle toward an edge carries the
+  crown of the road through it, or of the other road where the edge is a curb (no lip anywhere). Markings, crosswalk
+  bars, decals and parked cars lie on the road's plane (a bar or line across the crown is two, one on each half).
+- **Curbs.** Each block draws its curb height as a plane: its four corners within `[CurbHeightMin, CurbHeightMax]`
+  (never under 2 cm), varying linearly along each side. The two streets on opposite sides of a block can differ by up
+  to the whole range (with 5-20 cm, a 5 cm curb on its south street and a 20 cm one on its north street), two streets
+  meeting at a corner by up to half of it. Curbs are procedural pieces tilted along the curb and across it with the
+  walk.
+- **Sidewalks.** The walk runs along the curb's top at its street's grade and rises toward the lots at exactly the
+  block's cross slope (`SidewalkCrossSlope`, 0.6-1 of it per block, now and then 3-6 % with
+  `NonCompliantCrossSlopeChance`), whatever the hill does across the street: the hill across is left to the lots and
+  the corners. Streets dropped inside a merged block bend the walk along their line, and every piece is split there.
+- **Corners.** Two walks of different grades meet at a block corner, so their back edges cannot meet there at one
+  height. Each corner zone -- the corner square and one sidewalk width beyond it along each side's back edge -- is a
+  fan of planar triangles from the curb corner: along each curb it is still that walk's own plane, and between the
+  two the ground turns from one walk's plane to the other's, continuous everywhere (no lip on any diagonal). The
+  cross slope is exact outside the corner zones (`FRammsGroundModel::StraightRange` says where, per side).
+- **Lots** (and parks, yards) follow the hill -- one plane per street-grid cell, `CrossSlope * SidewalkWidth` above
+  the curb's top at the back of the walk -- inside a ring of planar triangles (up to 8 m wide) that meets every walk's
+  back edge exactly, so what the level walks leave of the hill becomes a gentle bank in the lots.
+- **Curb ramps** follow the ground: each is the walk lowered by a dip (the curb's height at the curb line, nothing at
+  the ramp's top; on the flares falling to nothing at their outer edges), laid as prisms over the ground's facets, so
+  its foot is the gutter at the curb line and its top, flares and landing meet the walk wherever the walk bends. The run
+  is sized for the ramp's real running slope (rise plus the walk's slope inward over the run), the flares for
+  `CurbRampFlareSlope` at the curb's height there. Near a corner a ramp's cut stays on its side of the corner's
+  diagonal (clear of the other street's ramp): the flare toward the corner gives way first, then the run. Recorded
+  `TooSteep` above `RampMaxSlope`, `CrossSlope` / `CrossSlopeTooSteep` when the street's grade (the ramp's cross slope)
+  is above `MaxCrossSlope`, `SteepFlare` / `SlopeTooSteep` when a flare is steeper than `CurbRampFlareSlope` (or
+  missing). Their manifest records read as the flat world's: `size.x` the run, `size.y` with the flares, yaw outward.
+- **Buildings and lots** stand on a level pad at the walk's top in front of their entrance (the panel's top on a rough
+  walk, so the door meets the walk), with a concrete plinth down to the lowest ground under the footprint. Entrance
+  steps stand on the lowest ground under them (their bottom riser takes up the rest; the record's measure is the whole
+  rise); an entrance ramp's foot is where its slope meets the yard along the facade (on the other side when the first
+  does not reach the ground in the room there, none when neither does), with a plinth where the ground falls away
+  under it, and a `FootLip` / `VerticalChangeTooHigh` record when the yard's slope across its foot leaves a lip. Front
+  walks, driveways and aprons are prisms 5 mm above the ground (an apron above each panel of the walk it crosses);
+  fences, planting, trees, the street furniture and hazards, litter and parks follow the ground (wide furniture stands
+  on the lowest ground under its footprint; flat things lie on its slope).
+- **Banks.** A raised site gets grassy banks from its outer gutters down to 50 cm under the generator, at 1:3 at the
+  steepest, so the street grid has no cliff edge (the example levels' ground slab is 45 cm under the generator).
+- **Roughness** is real geometry the chair and the rider feel. With `SurfaceRoughness` (or any density) above 0 the
+  walk is cast in panels `PanelLength` long, the furniture zone its own band, each a few millimetres high or low
+  (about one in eight 4-16 mm off at 1; panels a curb ramp's pour touches are level with it): every lip over
+  `VerticalChangeMax` between two panels of the route -- along a side, beside a ramp's level panels, around a cut,
+  across a corner -- is a `Surface/JointLip` record on its joint. `HeaveDensity` tilts whole panels (an edge 1-5 cm
+  proud), `CrackDensity` splits panels with a 2-15 mm lip, `CoverDensity` sets metal covers into them (raised 4-25 mm
+  or sunken 4-30 mm, the panel cut round them), `PavingPatchDensity` relays them in brick (running bond) or granite
+  setts with 1.5 cm joints, `RootHeaveChance` lifts the walk beside a street tree in a pit (0.5-4.5 cm, on the
+  highest panel under it; its measure counts the lower panels' step too). In the road, `PotholeDensity` cuts real
+  holes 2.5-9 cm deep (the road is open under them; 45 cm off the gutters, clear of the edge lines) and
+  `SpeedHumpChance` puts a sinusoidal hump (7-10 cm over 3.6-4.2 m) or a table (7.5-9 cm, flat top) across a segment,
+  clear of its crossings, stopping 40 cm short of each gutter (its two halves overlap at the crown). Every
+  non-compliant feature carries its own manifest record. Surfaces: bricks `Mat.Brick`, else `Mat.Facade`; setts
+  `Mat.Cobble`, else `Mat.Concrete`; covers `Mat.Metal`, else `Mat.Asphalt` (a recipe palette need not have them; the
+  Downtown recipe gives `Mat.Metal` Downtown West's dark grey paint).
+- **Exact collision.** Every ground piece describes itself to `ARammsProcPiece::AppendCollisionShapes`: a
+  `GroundPrisms` part (the graded curb ramps' too) is a box when it is a level rectangle, else a convex hull (its top
+  polygon and the same footprint `SizeZ` below its lowest vertex); a hump is a height grid along its profile (2 cm
+  spacing, constant across). Lips are vertical faces between separate solids. Tilted curbs, ramps, slabs and mounds
+  are the existing kinds through their actor transform.
+- **Downstream.** The Street Network writes the model's text on its `Blocks` and `Sidewalks` points (`Ground`), and
+  on a rough walk the panels it set off the model (`PanelDz`: their boxes and offsets; Subdivide Lots passes both to
+  the lots, which stand doors and aprons on them, and the Hazard Placer stands heaves on them); Subdivide Lots and Park
+  Layout pass the text on; every node parses the same text and builds the same facets from it (`FRammsGroundCache`),
+  so every height agrees. On graded ground the Hazard Placer writes each route's ground-following centre line
+  (`RoutePoints`, every 2 m), which the manifest's `routes[].points` carry, and the crowd lanes take their heights
+  from it.
+
+To get a graded level: `levels.build_level("graded_downtown")` (PRE_GradedDowntown: PRE_Downtown with
+`presets.GRADED_DOWNTOWN`, seed 7), `levels.build_level("hilly_residential")` (PRE_HillyResidential: PRE_Suburban
+with `presets.HILLY_RESIDENTIAL`, seed 11), or, with traffic and the Downtown recipe (local packs, saved under
+`/Game/WorldGen/Maps`), `"graded_traffic"` (streets up to 5 %) and `"hilly_downtown"` (PRE_HillyDowntown: up to 12 %
+allowed, 2-7 % with seed 21; the centre intersection is a dip all four streets fall into). `build_all_levels()` leaves
+these four out unless named. Or set the parameters on any street generator and regenerate (below).
+`worldgen_manifest(kind="Grade")` lists every side's grades.
+
+### Adjusting slope, cross slope and curb heights
+
+**Where to set them.**
+
+- **One level (one generator):** select the World Generator, set the value under **Param Overrides** and add the
+  parameter's name to **Override Keys** (only listed names apply), then **Regenerate**. From Python:
+  `gen.set_param("MaxStreetGrade", 0.08)` (adds the key for you), then `gen.regenerate()`; from an AI assistant,
+  `worldgen_set_param`; from Remote Control, `SetParamsJson`. Overrides are saved with the level and leave its
+  preset alone; on a level with crowd lanes or traffic, run `levels.finish_level(gen)` after regenerating (or
+  rebuild the level) so the lanes follow the new ground.
+- **A preset (every level using it):** edit its entry in `Content/Python/ramms_worldgen/presets.py` (the graded ones
+  are a base preset plus a dict such as `GRADED_DOWNTOWN`), run `build_all.build("presets")`, then rebuild the levels
+  (`levels.build_level(kind)`).
+
+**What each one does.** Slopes are fractions (rise / run: 0.05 = 5 %), heights cm.
+
+| To change | Parameter | Range | How it is used |
+|---|---|---|---|
+| How steep streets are | `MaxStreetGrade` | 0..0.15 | Each interval of the street grid (between two street lines) draws its grade uniformly in ±`MaxStreetGrade`, separately along X and along Y, so intersections end up at different heights and each street has one grade between intersections, changing at them. It is a bound, not a target: a small site has few intervals, so its steepest street is often well under it (0.05 gives 2.9 % in `graded_traffic`, 0.12 gives 7 % in `hilly_downtown`). Change `Seed` for other grades. A walk runs at its street's grade. |
+| How the road falls to its gutters | `RoadCrown` | 0..0.08 | Each half of a road falls from the centre line at this slope (0.02 is typical). |
+| How the walk falls toward the curb | `SidewalkCrossSlope` | 0..0.08 | Each block's walks rise from the curb top toward the lots at 0.6-1 times this: that is their whole cross slope, whatever the hill (0.02 or less is compliant: `MaxCrossSlope`). |
+| Some steeper walks | `NonCompliantCrossSlopeChance` | 0..1 | That share of blocks instead draws a cross slope from max(`MaxCrossSlope` + 0.01, 0.03) to max(3 × `MaxCrossSlope`, 0.06). |
+| Curb heights | `CurbHeight`, `CurbHeightMin`, `CurbHeightMax` | cm | With `CurbHeightMax` 0 every curb is `CurbHeight` (15 by default). Otherwise each block draws a curb height in [`CurbHeightMin`, `CurbHeightMax`] (never under 2 cm, so `CurbHeightMin`'s default 0 means 2: set it too) that varies linearly along each of its sides; two opposite streets of a block can differ by the whole range, two meeting at a corner by half of it. `CurbHeight` still sets how far the gutters lie under the reference height and how far the crossings stand back from the corners (so keep it near the middle of the range). |
+| What counts as non-compliant | `MaxCrossSlope` (0.02), `RampMaxSlope` (0.0833), `CurbRampFlareSlope` (0.1), `VerticalChangeMax` | | Thresholds the manifest's compliance records use; they do not shape the ground (`CurbRampFlareSlope` sizes the flares). |
+
+**Worth knowing.**
+
+- A walk's cross slope is its block's own (`SidewalkCrossSlope`, or the steeper draw), not added to by the hill across
+  its street: the lots take the hill up (a gentle bank inside the walk's back edge), and the corner zones turn from one
+  walk's grade to the next. The manifest's `Grade/Cross` records give each side's cross slope (so `CrossSlopeTooSteep`
+  comes only from those settings), `Grade/Running` the grade along the side.
+- The ground model switches on as soon as any terrain or roughness parameter other than `RootHeaveChance` is above 0;
+  with all of them at 0 the world is the flat one, placed exactly as before. A graded world keeps its seed's blocks,
+  lots and crossings.
+- Curb ramps are sized for the real running slope on a grade and recorded `TooSteep` above `RampMaxSlope`, so steeper
+  streets and walks give more non-compliant ramps (as they do in real cities); near the corners the flares can be
+  short or missing on hills (`SteepFlare`).
+- Grades change only at street lines (intersections, and where a dropped street bends the ground inside a merged
+  block), in the corner zones, at curb ramps and at the site's banks: there are no vertical curves or grade breaks
+  part way along a block.
+
+Example, steeper hills and higher curbs on one level, from the editor's Python console:
+
+```python
+import unreal
+gen = unreal.GameplayStatics.get_all_actors_of_class(unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world(), unreal.RammsWorldGenerator)[0]
+for name, value in (("MaxStreetGrade", 0.10), ("RoadCrown", 0.02), ("SidewalkCrossSlope", 0.02),
+                    ("NonCompliantCrossSlopeChance", 0.2), ("CurbHeightMin", 10.0), ("CurbHeightMax", 20.0)):
+    gen.set_param(name, value)
+gen.regenerate()
+# when generation is done (not gen.is_generating()):
+#   import ramms_worldgen.levels as L; L.finish_level(gen)   # crowd lanes (and traffic) on the new ground
+```
 
 ## Indoor furnishing and routes
 
@@ -988,7 +1239,19 @@ lane keeps to its sidewalk.
 
 Every run is sampled about every 50 cm onto the surface below it, so lanes
 follow curb ramps, the drop to the road, path slopes and thresholds instead
-of floating in a straight line between their ends.
+of floating in a straight line between their ends. On graded ground (any terrain
+or roughness parameter but RootHeaveChance above 0) each node takes its height from its route's
+ground-following polyline, a run is cut where the route's grade bends (so a
+straight run keeps to one slope), and "one walking level" is the walk's plane
+rather than one height: a nudged run end keeps to the plane through it, a rerouted
+run to its own grade and the walk's cross slope across it, and the level audit
+measures the walkers' edges against the cross slope at each sample (slopes are
+medians of 20 cm steps over 80 cm, so a curb edge or a panel's lip does not tilt
+them). Planes are fitted to the ground along each run, the manifest's curb ramps
+count as the walk (a graded ramp, sized for its real slope, can reach under the
+route's centre line, so a crossing's end stands on it), and a rerouted run's points
+take the plane's heights. A curb is still a drop off that plane; the tolerance uses
+the lowest curb (`CurbHeightMin`, at least 2 cm). On flat streets the tests are the original ones.
 
 Branch nodes become polygon `ZoneShape` junctions, the runs between them
 spline `ZoneShape`s on the `PedestrianLanesSidewalk` profile (2 x 60 cm)
@@ -1000,6 +1263,110 @@ of lane outdoors, per 8 m indoors). Everything sits in the `WorldGen/Crowd`
 outliner folder with the tag `RammsCrowd`, so a rebuild replaces it. The
 ZoneGraph is built in the editor, so the crowd comes with levels generated
 and saved there (the example levels), not with runtime regeneration.
+
+## Traffic (RammsCrowd)
+
+Moving cars on the generated streets, with RammsCrowd's lightweight Mass traffic (its README, "Traffic").
+`ramms_worldgen.traffic.build_traffic` (run by `levels.finish_level` after the crowd on a traffic level) turns the
+street network's `Road`, `Intersection` and `Crosswalk` manifest records into ZoneGraph vehicle lanes, ties the
+crowd's crossings at signalized intersections to a signal clock and places the cars.
+
+**Levels.** Three example levels have traffic, all built with the Downtown palette recipe from the packs installed
+here and saved under `/Game/WorldGen/Maps` (`build_all_levels()` builds the two graded ones only when named):
+
+| Kind | Preset | Streets |
+|---|---|---|
+| `traffic` (`Map_Gen_Traffic`) | `PRE_DowntownTraffic`, seed 21 | the dense downtown on a 120 m site with 11 m streets, level, signals at the corners |
+| `graded_traffic` (`Map_Gen_GradedTraffic`) | `PRE_GradedTraffic`, seed 21 | the same streets graded up to 5 %, crowned and worn (see "Graded streets and rough ground") |
+| `hilly_downtown` (`Map_Gen_HillyDowntown`) | `PRE_HillyDowntown`, seed 21 | a steep hill: up to 12 % allowed, 2-7 % with this seed, the centre intersection a dip all four streets fall into |
+
+**Traffic on another level.** `build_level(kind, traffic=True)` tags the generator `RammsTrafficLevel`, so
+`finish_level` adds traffic after every generation; on an open, generated level run `crowd.build_crowd(gen)` and
+then `traffic.build_traffic(gen)`, and save the level. Before you do, know that:
+
+- signals stand only where the preset has `StreetRules` (a post at each corner of a three- or four-way
+  intersection); without it every intersection is an all-way stop (PRE_Downtown, PRE_Suburban, PRE_MainStreet...);
+- the signal heads follow the clock only with the recipe-built signal material (Downtown West's mast, from a palette
+  recipe under `/Game`); on a PAL_Default level they keep the fixed look while the cars obey the clock;
+- two lanes beside parked cars want streets of 10 m or more (the traffic presets have 11 m). With parking on both
+  sides Downtown (8 m), Park (7 m) and Suburban (6 m) put the lanes through the parked cars (the summary's
+  `parked_in_lane`); MainStreet (9 m) just fits. That is why the dense downtown preset (8 m) has no traffic.
+
+**Roads.** Each road segment becomes a spline `ZoneShape` on the `VehicleLanes` profile (2 x 320 cm, lane centres
+160 cm off the centreline: room beside the parked cars of an 11 m street; `VehicleLanesNarrow`, 2 x 250 cm, on roads
+under 10 m), right-hand traffic. Every 1.5 m both lane centres are traced onto the road surface (each from its
+previous height; a pothole is bridged): the spline point takes their mean height and its roll tilts the profile, so
+each lane lies on its own side of a crowned or cross-sloped road and follows grades and humps.
+
+**Intersections.** Each becomes a polygon `ZoneShape` with a lane-profile entry facing in on every arm; ZoneGraph adds
+the turning lanes, never back the way they came. Three- and four-way intersections carry the ZoneGraph tag
+`Intersection` (all-way stop), and `Signalized` too when a `TrafficSignal` record belongs to them (each signal to the
+intersection of its nearest corner crosswalk: the street network posts it just past one); a bend or a street running
+straight on is a plain polygon (free flow), never signalized, and the street network posts no signal there. Two
+layouts (`build_traffic(compact=...)` forces one; the summary's `layout`):
+
+- level streets (`stop_lines`, arc routing): the entries stand at the stop lines (70 cm beyond the arm's own
+  crosswalk, the painted line's outer edge; 1.5 m beyond the square without one), the outline runs along the arms'
+  curb lines and round the square's corners, and the inner turn radius puts a right turn's centre on the curb corner
+  (a left turn's near the opposite one). A road too short for both stop lines beyond their crosswalks gets one or
+  both at the square's edge (a warning: a waiting car stands over the crosswalk there).
+- graded streets (`compact`, Bezier routing; `MaxStreetGrade` > 0): the grade bends at the intersection's centre
+  lines, and ZoneGraph interpolates an intersection lane's height between its two entries, so the intersection is
+  kept to its square: the entries stand at the square's edges, pitched with the road and rolled with its cross slope,
+  and the Bezier control points carry those slopes in (a turn within one quarter of the square lies on that quarter's
+  plane; a lane straight through is off by about a quarter of the grade change times half the square). The cars stop
+  at the stop lines all the same: the spawner's `StopLineGap` is 40 cm plus the stop line's distance from the square
+  (on every arm; one without a crosswalk stops as far back). The crosswalks are then on the road lanes, where the
+  cars yield to walkers as at a mid-block crossing; unlike the level layout, a car queued on an exit can stop on its
+  crosswalk (the box rule keeps only the intersection clear).
+
+**Crossings, clock, cars.**
+
+- The crowd's crossings at the signalized intersections get the ZoneGraph tag `Crossing` (`crowd.tag_crossings`):
+  MassCrowd closes them until the signal clock opens them for Walk, and the crowd waits at the curb. Mid-block
+  crossings and crossings at all-way stops stay open; the cars yield there. The controlled crosswalks are stored on
+  the signalized intersection shapes (`RammsTrafficXing:x,y,axis` actor tags) and read by `traffic.signalized_areas()`,
+  so `build_crowd` on a level with traffic tags the same crossings. Each crossing is a crowd lane shape of its own;
+  one whose two ends do not lie along its crosswalk's walk axis (the axis the clock reads off them) is left open and
+  reported (`crowd.AXIS_MISMATCH`).
+- An `ARammsTrafficSignalClock` (one phase for every signal: 20 s green, 3.5 s amber, 1.5 s all red per axis; Walk
+  with the parallel green, then 8 s of Flashing Don't Walk) reading `/Game/WorldGen/Traffic/MPC_RammsTrafficSignals`
+  (built by `traffic.signal_collection()`).
+- An `ARammsTrafficSpawner` with the palette's `Car` meshes (their palette offsets: cars face the way they drive),
+  about one car per 45 m of lane (6..60; `count=0` leaves it to the spawner's `DensityPerKm`), speed limit 10 m/s,
+  the generator's seed. On graded or rough ground its `GroundTraceRadius` covers the site, so every car traces its
+  axles onto the ground (elsewhere only cars within 60 m of the robot do).
+
+**Signal material.** The traffic signal material (`surfaces.build_signal`, built into a recipe's folder) reads the
+clock's collection: per head axis `GreenX` / `AmberX` / `RedX` (heads facing nearer world X) and `...Y`, and
+`WalkX` / `HandX`, `WalkY` / `HandY` for the pedestrian heads on those poles (a pole whose heads face along X serves
+the people crossing the X-running road, who walk along Y: `WalkX` is the clock's walk-along-Y). Its resting values are
+the old fixed look (X green, Y red), so a level without a clock looks as before; a signal material built outside
+`/Game` keeps the `GreenAlongX` scalar. Downtown West's amber lens positions are estimated (between the red and green
+lenses). After pulling this, `build_all.build("traffic")` builds the collection and rebuilds the recipes' signal
+materials.
+
+**Summary and self-check.** `build_traffic` returns (and logs) a summary: `roads`, `intersections`, `signalized`,
+`all_way_stop`, `free_bends`, `layout` and `routing`, `stop_line_gap_cm`, `ground_trace_radius_cm`, `lane_m`,
+`profile`, `vehicles` (`vehicle_count_mode`: estimate / fixed / density), `car_half_width_cm` (the widest palette car,
+for `parked_in_lane`), `crossings_tagged`, `signals` (records, assigned by crosswalk or nearest intersection, at
+two-arm intersections, unassigned), `lane_ground_dev_cm` and `check`, the result of `traffic.check_traffic()`, which
+also runs on its own. It re-reads the traffic shapes and reports:
+
+- `joined_ends` / `unjoined_ends` / `orphan_entries`: every road spline end must meet an intersection entry as
+  ZoneGraph joins them (within 25 cm, facing within 10 deg); `dead_end_lanes` are ends at an intersection of one
+  road (the runtime starts a car there again elsewhere);
+- `lane_ground_dev_cm`: every lane sampled every metre -- road splines as ZoneGraph tessellates them, the intersection
+  lanes rebuilt as ZoneGraph builds them (Bezier exactly, arcs approximately) -- against the road traced under it:
+  `max`, `mean`, `p95`, `road_max`, `intersection_max` and the `worst` point (potholes are bridged and not counted);
+- `stops_on_crosswalk`: approaches whose cars stop (`StopLineGap` short of the entry) on a crosswalk;
+- `crossings`: the crowd crossings, how many are tagged, and any tagged along the wrong axis, tagged outside or
+  untagged inside the signalized areas, or not one straight crossing;
+- `ok` and `problems`: anything above that needs a look (a lane more than 55 cm off the road among them: the
+  runtime's ground trace corrects a car up to 60 cm).
+
+Everything sits in the `WorldGen/Traffic` outliner folder with the tag `RammsTraffic`. Not yet: MuJoCo does not see
+the cars, no per-intersection signal offsets, wheels do not turn.
 
 ## Design notes and limits
 
@@ -1021,8 +1388,8 @@ and saved there (the example levels), not with runtime regeneration.
   Lane markings stop at a midblock crossing, which gets its own stop lines;
   parked cars, street-side props and park benches keep clear of crossings,
   ramps and path junctions.
-  Sidewalks are flat (no cross slope); `MaxCrossSlope`
-  is carried for the profile but not yet generated.
+  Streets are level and sidewalks flat unless the terrain parameters say otherwise
+  (see [Graded streets and rough ground](#graded-streets-and-rough-ground)).
 - Hazard meshes stand in: an info board plays the A-frame, railings play
   barriers, the raised-cobble tree pit plays the heaved slab. Scooters have no
   mesh and use a low planter piece until a pack provides one.
@@ -1064,8 +1431,9 @@ and saved there (the example levels), not with runtime regeneration.
     (`levels.build_level` does) before `crowd.build_crowd`.
 
   Generated geometry is Unreal collision. The Chaos backend drives on it
-  directly; the MuJoCo / Newton backends only know what URLab has imported, so
-  a generated world is not yet visible to them.
+  directly; MuJoCo gets the same world through the [collision shapes](#collision-shapes)
+  (RammsMujocoSupport exports them as world geoms). The Newton backend does not
+  read them yet.
 - Pieces are one actor each (walls, ramps, doors, trees). A dense downtown
   spawns a few hundred; fine in the editor, and `Collapse` in the Spawn Actor
   node is the lever if it ever matters.
