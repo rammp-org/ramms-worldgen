@@ -170,10 +170,36 @@ namespace
 		CaptureHull(M, Start, Mat, FloorZ);
 	}
 
+	// When capturing: the solid under the upward-facing triangles appended to M from Start on, one prism per triangle
+	// down to piece-space BottomZ. Exact for any surface and any scale: the fallback where a height grid cannot say it.
+	void CapturePrisms(UDynamicMesh* M, int32 Start, double BottomZ, int32 Mat)
+	{
+		FShapeCapture* C = CaptureOf(M);
+		if (!C || Start == INDEX_NONE)
+		{
+			return;
+		}
+		const FVector S = C->Scale();
+		const FTransform Frame = C->Frame();
+		M->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& Mesh)
+		{
+			for (const int32 Tid : Mesh.TriangleIndicesItr())
+			{
+				const UE::Geometry::FIndex3i T = Mesh.GetTriangle(Tid);
+				if (T.A < Start || T.B < Start || T.C < Start || Mesh.GetTriNormal(Tid).Z <= 1.0e-3)
+				{
+					continue; // another primitive's, or a wall or the underside of the solid
+				}
+				RammsCollisionShapes::AddTrianglePrism(*C->Out, Frame, S, Mesh.GetVertex(T.A), Mesh.GetVertex(T.B), Mesh.GetVertex(T.C), BottomZ, C->Surface(Mat), C->Source);
+			}
+		});
+	}
+
 	// The grid primitive appended to M from vertex Start on, NX by NY vertices Spacing apart with sample (0, 0) at
 	// piece-space Origin, its top lifted onto a surface: split its cells the HeightGrid way (RammsCollisionShapes.h),
 	// so that what Chaos collides with is what the grid describes, and report it as a height grid when capturing,
-	// solid down to piece-space BottomZ.
+	// solid down to piece-space BottomZ. A grid its mesh does not match, or one the piece's scale mirrors or turns
+	// over, is reported as one prism per triangle instead (CapturePrisms): still exact, never a hole.
 	void Grid(UDynamicMesh* M, int32 Start, const FVector& Origin, int32 NX, int32 NY, const FVector2D& Spacing, double BottomZ, int32 Mat)
 	{
 		if (Start == INDEX_NONE)
@@ -186,22 +212,30 @@ namespace
 		{
 			Flipped = RammsCollisionShapes::MatchHeightGridDiagonals(Mesh, Start, FTransform(Origin), NX, NY, Spacing, Heights);
 		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown);
+		FShapeCapture* C = CaptureOf(M);
 		if (Flipped < 0)
 		{
 			static bool bWarned = false;
 			if (!bWarned)
 			{
 				bWarned = true;
-				UE_LOG(LogRammsWorldGen, Warning, TEXT("ProcPiece: a %dx%d grid did not match its mesh: its collision is not exported"), NX, NY);
+				UE_LOG(LogRammsWorldGen, Warning, TEXT("ProcPiece: a %dx%d grid did not match its mesh (%s): its collision is exported as one prism per triangle, not as a height grid"),
+					NX, NY, C ? *C->Source.ToString() : TEXT("built"));
 			}
+			CapturePrisms(M, Start, BottomZ, Mat);
 			return;
 		}
-		FShapeCapture* C = CaptureOf(M);
 		if (!C)
 		{
 			return;
 		}
-		const FVector S = C->Scale().GetAbs();
+		const FVector S = C->Scale();
+		if (S.X <= 0.0 || S.Y <= 0.0 || S.Z <= 0.0)
+		{
+			// Mirrored, the grid's cells split the other way; turned over, its solid is above it: not a height grid.
+			CapturePrisms(M, Start, BottomZ, Mat);
+			return;
+		}
 		float Lowest = Heights[0];
 		for (float& H : Heights)
 		{

@@ -10,6 +10,7 @@
 #include "GeometryScript/MeshPrimitiveFunctions.h"
 #include "PCG/RammsGround.h"
 #include "RammsCollisionShapes.h"
+#include "RammsWorldGenModule.h"
 
 namespace
 {
@@ -93,6 +94,59 @@ namespace
 	{
 		return FTransform(Xf.GetRotation(), Xf.GetLocation());
 	}
+
+	/** How far a prism's top may stray from one plane (cm) and still be exported as one hull (the text form rounds
+	 *  vertices to 0.1 mm). */
+	constexpr double PrismPlanarTolerance = 0.05;
+
+	// Whether a prism's top polygon is planar (within Tolerance) and convex in plan: then the hull of it and its
+	// footprint is the prism AppendPrism builds, whose top is a fan from the first vertex.
+	bool IsPlanarConvex(const TArray<FVector>& Top, double Tolerance)
+	{
+		const int32 N = Top.Num();
+		FVector Normal = FVector::ZeroVector, Mean = FVector::ZeroVector;
+		for (int32 k = 0; k < N; ++k)
+		{
+			// Newell's normal: robust for any planar polygon.
+			const FVector& A = Top[k];
+			const FVector& B = Top[(k + 1) % N];
+			Normal.X += (A.Y - B.Y) * (A.Z + B.Z);
+			Normal.Y += (A.Z - B.Z) * (A.X + B.X);
+			Normal.Z += (A.X - B.X) * (A.Y + B.Y);
+			Mean += A;
+		}
+		Mean /= N;
+		if (!Normal.Normalize())
+		{
+			return false;
+		}
+		for (const FVector& V : Top)
+		{
+			if (FMath::Abs(FVector::DotProduct(V - Mean, Normal)) > Tolerance)
+			{
+				return false;
+			}
+		}
+		int32 Turn = 0;
+		for (int32 k = 0; k < N; ++k)
+		{
+			const FVector& A = Top[k];
+			const FVector& B = Top[(k + 1) % N];
+			const FVector& C = Top[(k + 2) % N];
+			const double Cross = (B.X - A.X) * (C.Y - B.Y) - (B.Y - A.Y) * (C.X - B.X);
+			if (FMath::Abs(Cross) < 1.0e-6)
+			{
+				continue; // collinear
+			}
+			const int32 Sign = Cross > 0.0 ? 1 : -1;
+			if (Turn != 0 && Sign != Turn)
+			{
+				return false;
+			}
+			Turn = Sign;
+		}
+		return true;
+	}
 }
 
 void ARammsProcPiece::BuildGroundPrisms(UDynamicMesh* M)
@@ -145,14 +199,17 @@ void ARammsProcPiece::AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out)
 		return;
 	}
 	const double Depth = FMath::Max(SizeZ, 1.0);
-	const FTransform Xf = NoScale(GetActorTransform());
+	// The mesh's frame; its scale (any sign) is baked into the shapes, as the capture does for the other kinds.
+	const FTransform ToWorld = MeshComponent ? MeshComponent->GetComponentTransform() : GetActorTransform();
+	const FVector Sc = ToWorld.GetScale3D();
+	const FTransform Xf = NoScale(ToWorld);
+	const FName Source = GetFName();
 	for (const RammsGround::FPart& P : Ps)
 	{
 		const double Bottom = MinTopZ(P.Top) - Depth;
-		FRammsCollisionShape S;
-		S.Surface = P.Surface.IsNone() ? FName(TEXT("Default")) : P.Surface;
-		S.Source = GetFName();
-		// A level rectangle along the actor's axes is a box (pavers, setts, panels on level ground); anything else a hull.
+		const FName Surface = P.Surface.IsNone() ? FName(TEXT("Default")) : P.Surface;
+		// A level rectangle along the actor's axes is a box (pavers, setts, panels on level ground); a planar convex top
+		// the hull of it and its footprint; anything else (twisted, not convex) the mesh's own fan, prism by prism.
 		bool bBox = P.Top.Num() == 4;
 		double TopZ = P.Top[0].Z;
 		FBox2D Plan(ForceInit);
@@ -165,22 +222,35 @@ void ARammsProcPiece::AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out)
 		}
 		if (bBox && Plan.bIsValid && Plan.GetSize().X > 0.01 && Plan.GetSize().Y > 0.01)
 		{
+			// Scaled along the actor's axes (mirrored too), a box along them stays one.
 			const FVector2D C = Plan.GetCenter(), E = Plan.GetExtent();
-			S.Type = ERammsCollisionShapeType::Box;
-			S.Transform = FTransform(Xf.GetRotation(), Xf.TransformPosition(FVector(C.X, C.Y, (TopZ + Bottom) * 0.5)));
-			S.HalfExtents = FVector(E.X, E.Y, (TopZ - Bottom) * 0.5);
+			const FVector Centre(C.X, C.Y, (TopZ + Bottom) * 0.5);
+			RammsCollisionShapes::AddBox(Out, FTransform(Xf.GetRotation(), Xf.TransformPosition(Centre * Sc)), FVector(E.X, E.Y, (TopZ - Bottom) * 0.5) * Sc.GetAbs(), Surface, Source);
+			continue;
 		}
-		else
+		if (IsPlanarConvex(P.Top, PrismPlanarTolerance))
 		{
-			S.Type = ERammsCollisionShapeType::Convex;
-			S.Transform = Xf;
+			TArray<FVector3f> Points;
+			Points.Reserve(P.Top.Num() * 2);
 			for (const FVector& V : P.Top)
 			{
-				S.Points.Add(FVector3f(V));
-				S.Points.Add(FVector3f(static_cast<float>(V.X), static_cast<float>(V.Y), static_cast<float>(Bottom)));
+				Points.Add(FVector3f(V * Sc));
+				Points.Add(FVector3f(FVector(V.X, V.Y, Bottom) * Sc));
 			}
+			RammsCollisionShapes::AddConvex(Out, Xf, MoveTemp(Points), Surface, Source);
+			continue;
 		}
-		Out.Add(MoveTemp(S));
+		static TSet<FName> Reported;
+		if (!Reported.Contains(Source))
+		{
+			Reported.Add(Source);
+			UE_LOG(LogRammsWorldGen, Log, TEXT("%s: a ground prism's top is not planar and convex; exported as the mesh's own triangles, one prism each"), *Source.ToString());
+		}
+		for (int32 k = 1; k + 1 < P.Top.Num(); ++k)
+		{
+			// AppendPrism's top fan, triangle for triangle.
+			RammsCollisionShapes::AddTrianglePrism(Out, Xf, Sc, P.Top[0], P.Top[k + 1], P.Top[k], Bottom, Surface, Source);
+		}
 	}
 }
 
@@ -188,22 +258,46 @@ void ARammsProcPiece::AppendHumpShapes(TArray<FRammsCollisionShape>& Out) const
 {
 	const double L = FMath::Max(SizeX, 20.0), W = FMath::Max(SizeY, 20.0), H = FMath::Max(Rise, 0.5), D = FMath::Max(SizeZ, 2.0);
 	const int32 NX = HumpSamples(L);
+	const FTransform ToWorld = MeshComponent ? MeshComponent->GetComponentTransform() : GetActorTransform();
+	const FVector Sc = ToWorld.GetScale3D();
+	const FTransform Xf = NoScale(ToWorld);
+	const FName Surface(TEXT("Asphalt"));
+	auto HeightAt = [&](int32 i) { return HumpHeight(L * i / (NX - 1), L, H, LandingSize); };
+	if (Sc.X <= 0.0 || Sc.Y <= 0.0 || Sc.Z <= 0.0)
+	{
+		// Mirrored or turned over it is no height grid; the profile is constant across, so each cell along X is a
+		// convex column (its top planar) and the hulls are exact.
+		for (int32 i = 0; i + 1 < NX; ++i)
+		{
+			const double X0 = L * i / (NX - 1), X1 = L * (i + 1) / (NX - 1), H0 = HeightAt(i), H1 = HeightAt(i + 1);
+			TArray<FVector3f> Points;
+			for (const double Y : { -W * 0.5, W * 0.5 })
+			{
+				Points.Add(FVector3f(FVector(X0, Y, H0) * Sc));
+				Points.Add(FVector3f(FVector(X1, Y, H1) * Sc));
+				Points.Add(FVector3f(FVector(X0, Y, -D) * Sc));
+				Points.Add(FVector3f(FVector(X1, Y, -D) * Sc));
+			}
+			RammsCollisionShapes::AddConvex(Out, Xf, MoveTemp(Points), Surface, GetFName());
+		}
+		return;
+	}
 	// The same grid as the mesh: samples along X at L * i / (NX - 1), both long edges (the profile is constant across).
 	FRammsCollisionShape S;
 	S.Type = ERammsCollisionShapeType::HeightGrid;
-	S.Transform = FTransform(FVector(0.0, -W * 0.5, 0.0)) * NoScale(GetActorTransform());
+	S.Transform = FTransform(FVector(0.0, -W * 0.5, 0.0) * Sc) * Xf;
 	S.NumX = NX;
 	S.NumY = 2;
-	S.Spacing = FVector2D(L / (NX - 1), W);
+	S.Spacing = FVector2D(L / (NX - 1) * Sc.X, W * Sc.Y);
 	S.Heights.SetNum(NX * 2);
 	for (int32 i = 0; i < NX; ++i)
 	{
-		const float Hz = static_cast<float>(HumpHeight(L * i / (NX - 1), L, H, LandingSize));
+		const float Hz = static_cast<float>(HeightAt(i) * Sc.Z);
 		S.Heights[i] = Hz;
 		S.Heights[NX + i] = Hz;
 	}
-	S.BaseDepth = static_cast<float>(D);
-	S.Surface = FName(TEXT("Asphalt"));
+	S.BaseDepth = static_cast<float>(D * Sc.Z);
+	S.Surface = Surface;
 	S.Source = GetFName();
 	Out.Add(MoveTemp(S));
 }
