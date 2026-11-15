@@ -776,7 +776,7 @@ namespace
 				const int32 Count = static_cast<int32>(Particles.Size());
 				for (int32 i = 0; i < Count; ++i)
 				{
-					const FVector3f V = Particles.X(i);
+					const FVector3f V = Particles.GetX(i);
 					Vertices.Add(V);
 				}
 				const Chaos::FTrimeshIndexBuffer& Elements = Tri->Elements();
