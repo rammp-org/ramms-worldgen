@@ -1067,8 +1067,11 @@ rather than one height: a nudged run end keeps to the plane through it, a rerout
 run to its own grade and the walk's cross slope across it, and the level audit
 measures the walkers' edges against the cross slope at each sample (slopes are
 medians of 20 cm steps over 80 cm, so a curb edge or a panel's lip does not tilt
-them). A curb is still a drop off that plane; the tolerance uses the lowest curb
-(`CurbHeightMin`). On flat streets the tests are the original ones.
+them). Planes are fitted to the ground along each run, the manifest's curb ramps
+count as the walk (a graded ramp, sized for its real slope, can reach under the
+route's centre line, so a crossing's end stands on it), and a rerouted run's points
+take the plane's heights. A curb is still a drop off that plane; the tolerance uses
+the lowest curb (`CurbHeightMin`). On flat streets the tests are the original ones.
 
 Branch nodes become polygon `ZoneShape` junctions, the runs between them
 spline `ZoneShape`s on the `PedestrianLanesSidewalk` profile (2 x 60 cm)
