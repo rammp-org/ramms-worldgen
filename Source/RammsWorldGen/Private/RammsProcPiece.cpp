@@ -267,7 +267,7 @@ ARammsProcPiece::ARammsProcPiece()
 
 ERammsProcPieceKind ARammsProcPiece::GetEffectiveKind() const
 {
-	if (KindId >= 0 && KindId <= static_cast<int32>(ERammsProcPieceKind::Patch)) // keep in step with the last enum value
+	if (KindId >= 0 && KindId <= static_cast<int32>(ERammsProcPieceKind::Hump)) // keep in step with the last enum value
 	{
 		return static_cast<ERammsProcPieceKind>(KindId);
 	}
@@ -332,6 +332,8 @@ void ARammsProcPiece::Rebuild()
 	case ERammsProcPieceKind::Column:   BuildColumn(Mesh); break;
 	case ERammsProcPieceKind::Mound:    BuildMound(Mesh); break;
 	case ERammsProcPieceKind::Patch:    BuildPatch(Mesh); break;
+	case ERammsProcPieceKind::GroundPrisms: BuildGroundPrisms(Mesh); break;
+	case ERammsProcPieceKind::Hump:     BuildHump(Mesh); break;
 	default: BuildSlab(Mesh); break;
 	}
 
@@ -856,6 +858,9 @@ void ARammsProcPiece::AppendCollisionShapes(TArray<FRammsCollisionShape>& Out) c
 	case ERammsProcPieceKind::Mound:    Capture(&ARammsProcPiece::BuildMound); break;
 	case ERammsProcPieceKind::Patch:    Capture(&ARammsProcPiece::BuildPatch); break;
 	case ERammsProcPieceKind::Decal:    break; // projected onto whatever is below: no collision of its own
+	// The ground kinds describe themselves (RammsProcPieceGround.cpp).
+	case ERammsProcPieceKind::GroundPrisms: AppendGroundPrismShapes(Out); break;
+	case ERammsProcPieceKind::Hump:         AppendHumpShapes(Out); break;
 	default:
 		// Each kind added later reports its own shapes here, one case each; a kind with no case adds nothing.
 		break;

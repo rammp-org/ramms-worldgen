@@ -125,6 +125,36 @@ PRESETS = {
 }
 
 
+# Graded and rough variants (FRammsWorldGenParams' terrain and roughness groups; every other preset keeps them at 0,
+# the flat, smooth world). Each is an existing preset with the ground added, so for a seed the layout is the same.
+GRADED_DOWNTOWN = dict(
+    MaxStreetGrade=0.05, RoadCrown=0.02, SidewalkCrossSlope=0.02, NonCompliantCrossSlopeChance=0.2,
+    CurbHeightMin=5.0, CurbHeightMax=20.0,
+    SurfaceRoughness=0.7, PanelLength=150.0, HeaveDensity=3.0, CrackDensity=4.0, CoverDensity=3.0,
+    PavingPatchDensity=2.0, PotholeDensity=3.0, SpeedHumpChance=0.25, RootHeaveChance=0.3)
+HILLY_RESIDENTIAL = dict(
+    MaxStreetGrade=0.07, RoadCrown=0.025, SidewalkCrossSlope=0.015, NonCompliantCrossSlopeChance=0.15,
+    CurbHeightMin=8.0, CurbHeightMax=18.0,
+    SurfaceRoughness=0.5, PanelLength=150.0, HeaveDensity=2.0, CrackDensity=2.0, CoverDensity=1.0,
+    PavingPatchDensity=0.5, PotholeDensity=1.5, SpeedHumpChance=0.35, RootHeaveChance=0.3)
+
+PRESETS["PRE_GradedDowntown"] = (
+    unreal.RammsSceneKind.DOWNTOWN, STREETS_GRAPH,
+    "PRE_Downtown on a hill and worn: streets climbing up to 5 % between intersections, crowned roads, sidewalks "
+    "falling to the curb (some too steeply), curbs from 5 to 20 cm, and a rough walk -- panel joints with lips, "
+    "heaved and cracked panels, raised and sunken covers, brick and sett patches, root heaves by the trees -- "
+    "potholes and speed humps in the road.",
+    dict(PRESETS["PRE_Downtown"][3], **GRADED_DOWNTOWN),
+)
+PRESETS["PRE_HillyResidential"] = (
+    unreal.RammsSceneKind.SUBURBAN, STREETS_GRAPH,
+    "PRE_Suburban on rolling hills: streets up to 7 % between intersections, crowned roads, curbs from 8 to 18 cm, "
+    "sidewalks with some steep cross slopes, joints, heaves and cracks, root heaves by the street trees, speed humps "
+    "and the odd pothole.",
+    dict(PRESETS["PRE_Suburban"][3], **HILLY_RESIDENTIAL),
+)
+
+
 def build_profile(path=PROFILE_ADA):
     prof, _ = H.get_or_create(path, unreal.RammsAccessibilityProfile)
     # Defaults in the class are the 2010 ADA numbers; the asset exists so a project can tune them.

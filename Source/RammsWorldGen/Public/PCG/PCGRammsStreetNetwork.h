@@ -54,6 +54,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double CurbRampFlareSlope = 0.1;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double DetectableWarningDepth = 61.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double VerticalChangeMax = 0.64;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility", meta = (PCG_Overridable)) double MaxCrossSlope = 0.02;
+
+	// Terrain and roughness (see FRammsWorldGenParams). All 0: the original flat world, placed exactly as before.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (PCG_Overridable)) double MaxStreetGrade = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (PCG_Overridable)) double RoadCrown = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (PCG_Overridable)) double SidewalkCrossSlope = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (PCG_Overridable)) double NonCompliantCrossSlopeChance = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (PCG_Overridable)) double CurbHeightMin = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (PCG_Overridable)) double CurbHeightMax = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double SurfaceRoughness = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double PanelLength = 150.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double HeaveDensity = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double CrackDensity = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double CoverDensity = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double PavingPatchDensity = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double PotholeDensity = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (PCG_Overridable)) double SpeedHumpChance = 0.0;
 
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override { return FName(TEXT("RammsStreetNetwork")); }

@@ -192,6 +192,7 @@ class GraphBuilder:
 # Mirrors URammsWorldGenGraphLibrary::PiecePropertyNames (documentation only; the C++ list is what gets wired).
 PIECE_PROPERTIES = [
     "KindId", "SizeX", "SizeY", "SizeZ", "Rise", "Slope", "FlareSlope", "StepCount",
-    "OpeningWidth", "OpeningOffset", "OpeningHeight", "LandingSize", "WarningDepth",
-    "MaterialPath", "MaterialPath2", "ManifestKind", "ManifestSubtype", "bCompliant", "IssueId",
+    "OpeningWidth", "OpeningOffset", "OpeningHeight", "LandingSize", "WarningDepth", "UVScale",
+    "MaterialPath", "MaterialPath2", "MaterialPath3", "Openings", "Parts",
+    "ManifestKind", "ManifestSubtype", "bCompliant", "IssueId", "Measure", "Threshold",
 ]

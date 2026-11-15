@@ -47,6 +47,8 @@ enum class ERammsProcPieceKind : uint8
 	Decal     UMETA(ToolTip = "Projected decal (crack, pothole, stain): SizeX length, SizeY width, SizeZ projection depth; MaterialPath is a deferred-decal material; centred on the origin, projecting down."),
 	Mound     UMETA(ToolTip = "Grassy mound (or, with a negative Rise, a hollow): SizeX/SizeY plan diameters of an elliptical cosine bump Rise high, centred on the origin; its rim sits 2 cm under the ground."),
 	Patch     UMETA(ToolTip = "Flat elliptical ground patch (pond water, mud, gravel): SizeX/SizeY diameters, top SizeZ above the origin."),
+	GroundPrisms UMETA(ToolTip = "Ground as convex prisms (graded roads, sidewalk panels, curbs' surroundings, potholes, covers, pavers): Parts lists each prism's top polygon (actor-local vertices with their heights) and material; each is solid down to SizeZ below its lowest top vertex."),
+	Hump      UMETA(ToolTip = "Speed hump or table along +X: SizeX long, SizeY wide (centred on Y = 0), Rise high on a base at z = 0; LandingSize > 0 is a table's flat top, else a sinusoidal hump; solid down to SizeZ below the base."),
 };
 
 /** Why a generated feature is tagged non-compliant. Carried into the manifest. */
@@ -292,6 +294,46 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double DoorClearWidth = 81.3;
 	/** Scales the gentle mounds laid in yards (0 = flat lawns). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain") double TerrainVariation = 1.0;
+
+	// --- terrain: street grades, cross slopes and curb heights (all 0 = the flat world) --------------------------
+	/** Steepest running grade of a street (rise / run): every interval of the street grid draws its own grade in
+	 *  [-MaxStreetGrade, MaxStreetGrade] (streets along X per column, along Y per row), so intersections sit at
+	 *  different heights and each street climbs or falls between them. The lowest street sits at the generator's
+	 *  height. 0 = level streets. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 0.15)) double MaxStreetGrade = 0.0;
+	/** Road crown: the carriageway's cross slope from its centre line down to each gutter (rise / run, e.g. 0.02). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 0.08)) double RoadCrown = 0.0;
+	/** Sidewalk cross slope, falling toward the curb (rise / run); each block draws its own in [0.6, 1] of this. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 0.08)) double SidewalkCrossSlope = 0.0;
+	/** Probability a block's sidewalks fall toward the curb more steeply than MaxCrossSlope (3-6 %), recorded CrossSlopeTooSteep. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 1)) double NonCompliantCrossSlopeChance = 0.0;
+	/** Curb heights above the gutter. With CurbHeightMax > 0 every block draws curb heights in [CurbHeightMin,
+	 *  CurbHeightMax] at its corners, varying linearly along each side (low 5-10 cm and high 18-20 cm curbs); 0 = every
+	 *  curb is CurbHeight. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0)) double CurbHeightMin = 0.0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0)) double CurbHeightMax = 0.0;
+
+	// --- surface roughness: real geometry the chair and the rider feel (all 0 = smooth) ---------------------------
+	/** Sidewalk panel joints: above 0 every walk is cast in panels (PanelLength long, the furniture zone its own band)
+	 *  set at slightly different heights, so their edges stand proud of each other; 0..1 scales the lips (at 1 most
+	 *  under 6.4 mm, some up to 2 cm, recorded VerticalChangeTooHigh). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0, ClampMax = 1)) double SurfaceRoughness = 0.0;
+	/** Sidewalk panel length along the walk (cm), when the walk is cast in panels (any roughness above 0). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 60)) double PanelLength = 150.0;
+	/** Heaved panels (tilted, one edge raised 1-5 cm) per 100 m of sidewalk side. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0)) double HeaveDensity = 0.0;
+	/** Cracked panels (split in two, one part raised 2-15 mm) per 100 m of sidewalk side. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0)) double CrackDensity = 0.0;
+	/** Utility covers set into the walk, raised or sunken, per 100 m of sidewalk side. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0)) double CoverDensity = 0.0;
+	/** Panels relaid in brick or granite setts (uneven, with joints) per 100 m of sidewalk side. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0)) double PavingPatchDensity = 0.0;
+	/** Potholes per 100 m of road: true depressions, the road open under them. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0)) double PotholeDensity = 0.0;
+	/** Probability a street segment gets a speed hump or a speed table. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0, ClampMax = 1)) double SpeedHumpChance = 0.0;
+	/** Probability a street tree in a pit has heaved the walk beside it (a tilted slab, its edge 0.5-4.5 cm proud). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0, ClampMax = 1)) double RootHeaveChance = 0.0;
 	/** Narrowest door the generator makes, even a deliberately non-compliant one: the RAMMP Gen1 is ~72 cm wide, so 80 cm still lets it through. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double MinPassableDoorWidth = 80.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double DoorThresholdMax = 1.27;
