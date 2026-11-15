@@ -17,6 +17,7 @@
 #include "Engine/HitResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "GeometryScript/MeshPrimitiveFunctions.h"
 #include "Math/RandomStream.h"
 #include "Misc/Paths.h"
 #include "PhysicsEngine/BodyInstance.h"
@@ -76,7 +77,56 @@ namespace RammsCollisionShapesTest
 		bool bClosedMesh = true;
 		/** Shapes expected of each type, or -1 to not check. */
 		int32 Boxes = -1, Convex = -1, Grids = -1;
+		/** The piece's scale (shapes bake it in). */
+		FVector Scale = FVector::OneVector;
+		/** Compare vertical probes with Chaos's trace. Off for a mirrored piece: mirroring turns its triangles' winding,
+		 *  and how a trace from above treats that is Chaos's business, not the shapes'. Bounds and counts still count. */
+		bool bProbe = true;
 	};
+
+	/** One GroundPrisms prism: its surface and its top polygon (counter-clockwise from above). */
+	struct FPrismSpec
+	{
+		const TCHAR* Surface;
+		TArray<FVector> Top;
+	};
+
+	/** GroundPrisms Parts text, "<material slot>,<surface>:x,y,z x,y,z ...;..." (RammsGround::ParseParts). */
+	FString PrismParts(const TArray<FPrismSpec>& Prisms)
+	{
+		FString Text;
+		for (const FPrismSpec& P : Prisms)
+		{
+			if (!Text.IsEmpty())
+			{
+				Text += TEXT(";");
+			}
+			Text += FString::Printf(TEXT("0,%s:"), P.Surface);
+			for (int32 k = 0; k < P.Top.Num(); ++k)
+			{
+				Text += FString::Printf(TEXT("%s%.2f,%.2f,%.2f"), k > 0 ? TEXT(" ") : TEXT(""), P.Top[k].X, P.Top[k].Y, P.Top[k].Z);
+			}
+		}
+		return Text;
+	}
+
+	/** A counter-clockwise (from above) level rectangle at height Z. */
+	TArray<FVector> Rect(double X0, double Y0, double X1, double Y1, double Z)
+	{
+		return { FVector(X0, Y0, Z), FVector(X1, Y0, Z), FVector(X1, Y1, Z), FVector(X0, Y1, Z) };
+	}
+
+	/** A road 400 x 300 with a pothole: four level boxes around a 100 x 100 hole whose floor is 6 cm down. */
+	FString PotholeParts()
+	{
+		return PrismParts({
+			{ TEXT("Asphalt"), Rect(0.0, 0.0, 400.0, 100.0, 0.0) },
+			{ TEXT("Asphalt"), Rect(0.0, 200.0, 400.0, 300.0, 0.0) },
+			{ TEXT("Asphalt"), Rect(0.0, 100.0, 150.0, 200.0, 0.0) },
+			{ TEXT("Asphalt"), Rect(250.0, 100.0, 400.0, 200.0, 0.0) },
+			{ TEXT("Asphalt"), Rect(150.0, 100.0, 250.0, 200.0, -6.0) },
+		});
+	}
 
 	FBox MeshBounds(const ARammsProcPiece& Piece)
 	{
@@ -277,11 +327,75 @@ bool FRammsProcPieceCollisionShapesTest::RunTest(const FString& Parameters)
 		C.bClosedMesh = false; C.Convex = 1;
 	}
 
+	// Ground kinds (graded streets and roughness): they describe their own shapes, so each path is checked here.
+	const FString SlopedParts = PrismParts({
+		{ TEXT("Asphalt"), { FVector(0.0, 0.0, 0.0), FVector(300.0, 0.0, -12.0), FVector(300.0, 200.0, -12.0), FVector(0.0, 200.0, 0.0) } },
+		{ TEXT("Asphalt"), { FVector(300.0, 0.0, -12.0), FVector(450.0, 0.0, -12.0), FVector(500.0, 100.0, -12.0), FVector(450.0, 200.0, -12.0), FVector(300.0, 200.0, -12.0) } },
+	});
+	{
+		FCase& C = Add(TEXT("GroundPrisms level rectangle"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P) { P.SizeZ = 20.0; P.Parts = PrismParts({ { TEXT("Concrete"), Rect(0.0, 0.0, 200.0, 150.0, 0.0) } }); }, FRotator(0.0, 25.0, 0.0));
+		C.Boxes = 1; C.Convex = 0; C.Grids = 0;
+	}
+	{
+		// A sloped quad and a level pentagon: planar convex tops, one hull each.
+		FCase& C = Add(TEXT("GroundPrisms sloped, pitched and rolled"), ERammsProcPieceKind::GroundPrisms, [SlopedParts](ARammsProcPiece& P) { P.SizeZ = 15.0; P.Parts = SlopedParts; }, FRotator(3.0, -20.0, 2.0));
+		C.Boxes = 0; C.Convex = 2; C.Grids = 0;
+	}
+	{
+		// A road cut open around a pothole: four boxes around it, the floor a fifth 6 cm down; the hole's walls are the
+		// boxes' faces.
+		FCase& C = Add(TEXT("GroundPrisms pothole, pitched"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P) { P.SizeZ = 20.0; P.Parts = PotholeParts(); }, FRotator(2.0, 15.0, -1.5));
+		C.Boxes = 5; C.Convex = 0;
+	}
+	{
+		// Not planar: the mesh's own fan, one prism per triangle.
+		FCase& C = Add(TEXT("GroundPrisms twisted"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P)
+		{
+			P.SizeZ = 15.0;
+			P.Parts = PrismParts({ { TEXT("Concrete"), { FVector(0.0, 0.0, 0.0), FVector(200.0, 0.0, 0.0), FVector(200.0, 200.0, 10.0), FVector(0.0, 200.0, 0.0) } } });
+		});
+		C.Boxes = 0; C.Convex = 2;
+	}
+	{
+		FCase& C = Add(TEXT("GroundPrisms pothole, scaled"), ERammsProcPieceKind::GroundPrisms, [](ARammsProcPiece& P) { P.SizeZ = 20.0; P.Parts = PotholeParts(); }, FRotator(0.0, 10.0, 0.0));
+		C.Scale = FVector(1.5, 0.8, 1.25); C.Boxes = 5;
+	}
+	{
+		FCase& C = Add(TEXT("GroundPrisms sloped, mirrored"), ERammsProcPieceKind::GroundPrisms, [SlopedParts](ARammsProcPiece& P) { P.SizeZ = 15.0; P.Parts = SlopedParts; });
+		C.Scale = FVector(-1.0, 1.0, 1.0); C.Convex = 2; C.bProbe = false;
+	}
+	{
+		FCase& C = Add(TEXT("Hump"), ERammsProcPieceKind::Hump, [](ARammsProcPiece& P) { P.SizeX = 370.0; P.SizeY = 300.0; P.Rise = 8.0; P.SizeZ = 5.0; P.LandingSize = 0.0; }, FRotator(0.0, 30.0, 0.0));
+		C.Boxes = 0; C.Convex = 0; C.Grids = 1;
+	}
+	{
+		FCase& C = Add(TEXT("Hump table, pitched"), ERammsProcPieceKind::Hump, [](ARammsProcPiece& P) { P.SizeX = 600.0; P.SizeY = 300.0; P.Rise = 10.0; P.SizeZ = 5.0; P.LandingSize = 300.0; }, FRotator(2.0, -40.0, 1.0));
+		C.Grids = 1;
+	}
+	{
+		// Mirrored, a hump is one convex column per cell along it (HumpSamples(370) = 186 samples, 185 cells).
+		FCase& C = Add(TEXT("Hump mirrored"), ERammsProcPieceKind::Hump, [](ARammsProcPiece& P) { P.SizeX = 370.0; P.SizeY = 300.0; P.Rise = 8.0; P.SizeZ = 5.0; P.LandingSize = 0.0; });
+		C.Scale = FVector(1.0, -1.0, 1.0); C.Grids = 0; C.Convex = 185; C.bProbe = false;
+	}
+	{
+		FCase& C = Add(TEXT("CurbRamp scaled"), ERammsProcPieceKind::CurbRamp, [](ARammsProcPiece& P) { P.Rise = 15.0; P.Slope = 0.0833; P.SizeY = 120.0; P.FlareSlope = 0.1; P.WarningDepth = 61.0; }, FRotator(0.0, 20.0, 0.0));
+		C.Scale = FVector(1.2, 0.9, 1.1); C.Grids = 2;
+	}
+	{
+		// Mirrored, a flare's cells split the other way: one prism per triangle, no height grid.
+		FCase& C = Add(TEXT("CurbRamp mirrored"), ERammsProcPieceKind::CurbRamp, [](ARammsProcPiece& P) { P.Rise = 15.0; P.Slope = 0.0833; P.SizeY = 120.0; P.FlareSlope = 0.1; P.WarningDepth = 0.0; });
+		C.Scale = FVector(1.0, -1.0, 1.0); C.Grids = 0; C.bProbe = false;
+	}
+	{
+		FCase& C = Add(TEXT("Mound scaled"), ERammsProcPieceKind::Mound, [](ARammsProcPiece& P) { P.SizeX = 400.0; P.SizeY = 300.0; P.Rise = 40.0; }, FRotator(0.0, -10.0, 0.0));
+		C.Scale = FVector(1.3, 0.7, 1.2); C.bClosedMesh = false; C.Grids = 1;
+	}
+
 	FRandomStream Rs(20261114);
 	for (int32 c = 0; c < Cases.Num(); ++c)
 	{
 		const FCase& Case = Cases[c];
-		ARammsProcPiece* Piece = Scratch.Spawn<ARammsProcPiece>(FTransform(Case.Rotation, FVector(2500.0 * c, 700.0, 120.0)));
+		ARammsProcPiece* Piece = Scratch.Spawn<ARammsProcPiece>(FTransform(Case.Rotation, FVector(2500.0 * c, 700.0, 120.0), Case.Scale));
 		if (!TestNotNull(*FString::Printf(TEXT("%s: spawns"), *Case.Name), Piece))
 		{
 			continue;
@@ -342,6 +456,10 @@ bool FRammsProcPieceCollisionShapesTest::RunTest(const FString& Parameters)
 			TestTrue(*FString::Printf(TEXT("%s: the solid reaches below the sheet"), *Case.Name), Solid.Min.Z <= Mesh.Min.Z + Mm);
 		}
 
+		if (!Case.bProbe)
+		{
+			continue;
+		}
 		UDynamicMeshComponent* Component = Piece->MeshComponent;
 		const FBox Local = LocalMeshBounds(*Piece);
 		const FTransform PieceXf = Component->GetComponentTransform();
@@ -495,6 +613,181 @@ bool FRammsInstancedCollisionShapesTest::RunTest(const FString& Parameters)
 	TArray<FRammsCollisionShape> Filtered;
 	Generator->GatherCollisionShapes(Filtered, Near);
 	TestTrue(TEXT("a region keeps fewer shapes"), Filtered.Num() > 0 && Filtered.Num() < Shapes.Num());
+
+	// The cheap check agrees, and an excluded actor (here the generator, which carries the instances) gives nothing.
+	TestTrue(TEXT("HasCollisionShapes finds the instances"), Generator->HasCollisionShapes(FRammsCollisionShapeFilter()));
+	FRammsCollisionShapeFilter Excluding;
+	Excluding.ExcludedActors.Add(Generator);
+	TArray<FRammsCollisionShape> None;
+	Generator->GatherCollisionShapes(None, Excluding);
+	TestEqual(TEXT("an excluded actor's meshes are not exported"), None.Num(), 0);
+	TestFalse(TEXT("HasCollisionShapes skips an excluded actor"), Generator->HasCollisionShapes(Excluding));
+	return true;
+}
+
+namespace RammsCollisionShapesTest
+{
+	/** Whether a world point lies strictly inside a convex shape: on the inner side of every face of its hull. */
+	bool InsideConvex(const FRammsCollisionShape& S, const FVector& P)
+	{
+		TArray<FVector> Corners;
+		RammsCollisionShapes::GetTriangles(S, Corners);
+		if (Corners.Num() < 12)
+		{
+			return false;
+		}
+		FVector Centre = FVector::ZeroVector;
+		for (const FVector& C : Corners)
+		{
+			Centre += C;
+		}
+		Centre /= Corners.Num();
+		for (int32 t = 0; t + 2 < Corners.Num(); t += 3)
+		{
+			const FVector N = FVector::CrossProduct(Corners[t + 1] - Corners[t], Corners[t + 2] - Corners[t]);
+			const double SideCentre = FVector::DotProduct(N, Centre - Corners[t]);
+			if (FMath::Abs(SideCentre) < 1.0e-9)
+			{
+				continue;
+			}
+			if (FVector::DotProduct(N, P - Corners[t]) * SideCentre <= 0.0)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Whether the segment From-To crosses any triangle of the shapes. */
+	bool SegmentHits(const TArray<FRammsCollisionShape>& Shapes, const FVector& From, const FVector& To)
+	{
+		for (const FRammsCollisionShape& S : Shapes)
+		{
+			TArray<FVector> Corners;
+			RammsCollisionShapes::GetTriangles(S, Corners);
+			for (int32 t = 0; t + 2 < Corners.Num(); t += 3)
+			{
+				FVector Point, Normal;
+				if (FMath::SegmentTriangleIntersection(From, To, Corners[t], Corners[t + 1], Corners[t + 2], Point, Normal))
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRammsComponentHullsTest, "Ramms.WorldGen.CollisionShapes.ComponentHulls",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRammsComponentHullsTest::RunTest(const FString& Parameters)
+{
+	using namespace RammsCollisionShapesTest;
+	FScratchWorld Scratch;
+	if (!TestTrue(TEXT("world opens"), Scratch.Open()))
+	{
+		return false;
+	}
+	// A table as a mesh that collides as its triangles (the way a complex-as-simple palette mesh does): a top and four
+	// legs, each its own connected part. Chaos is open under the top, between the legs.
+	ARammsProcPiece* Piece = Scratch.Spawn<ARammsProcPiece>(FTransform(FRotator(0.0, 20.0, 0.0), FVector(0.0, 0.0, 100.0)));
+	if (!TestNotNull(TEXT("table spawns"), Piece))
+	{
+		return false;
+	}
+	Piece->Kind = ERammsProcPieceKind::Slab;
+	Piece->KindId = -1;
+	Piece->Rebuild();
+	UDynamicMesh* Mesh = Piece->MeshComponent->GetDynamicMesh();
+	Mesh->Reset();
+	FGeometryScriptPrimitiveOptions Options;
+	UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(Mesh, Options, FTransform(FVector(0.0, 0.0, 74.0)), 120.0f, 80.0f, 4.0f, 0, 0, 0, EGeometryScriptPrimitiveOriginMode::Center);
+	for (const FVector2D Leg : { FVector2D(52.5, 32.5), FVector2D(-52.5, 32.5), FVector2D(52.5, -32.5), FVector2D(-52.5, -32.5) })
+	{
+		UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(Mesh, Options, FTransform(FVector(Leg.X, Leg.Y, 36.0)), 5.0f, 5.0f, 72.0f, 0, 0, 0, EGeometryScriptPrimitiveOriginMode::Center);
+	}
+	Piece->MeshComponent->NotifyMeshUpdated();
+	Piece->MeshComponent->UpdateCollision(false);
+
+	TArray<FVector3f> Vertices;
+	TArray<FIntVector> Triangles;
+	Mesh->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& M)
+	{
+		TMap<int32, int32> Index;
+		for (const int32 Vid : M.VertexIndicesItr())
+		{
+			Index.Add(Vid, Vertices.Add(FVector3f(M.GetVertex(Vid))));
+		}
+		for (const int32 Tid : M.TriangleIndicesItr())
+		{
+			const UE::Geometry::FIndex3i T = M.GetTriangle(Tid);
+			Triangles.Add(FIntVector(Index[T.A], Index[T.B], Index[T.C]));
+		}
+	});
+	TArray<TArray<FVector>> Hulls;
+	const int32 Parts = RammsCollisionShapes::AppendComponentHulls(Vertices, Triangles, Hulls);
+	TestEqual(TEXT("five connected parts"), Parts, 5);
+	TestEqual(TEXT("five hulls"), Hulls.Num(), 5);
+
+	const FTransform Xf = Piece->MeshComponent->GetComponentTransform();
+	TArray<FRammsCollisionShape> Shapes;
+	TArray<FVector3f> All;
+	for (const TArray<FVector>& H : Hulls)
+	{
+		TArray<FVector3f> Points;
+		for (const FVector& V : H)
+		{
+			Points.Add(FVector3f(V));
+			All.Add(FVector3f(V));
+		}
+		RammsCollisionShapes::AddConvex(Shapes, Xf, MoveTemp(Points), FName(TEXT("Wood")), Piece->GetFName());
+	}
+	TArray<FRammsCollisionShape> OneHull;
+	RammsCollisionShapes::AddConvex(OneHull, Xf, MoveTemp(All), FName(TEXT("Wood")), Piece->GetFName());
+
+	// Under the top, between the legs: open in Chaos and in the part hulls; one hull of everything fills it.
+	const FVector Under = Xf.TransformPosition(FVector(0.0, 0.0, 36.0));
+	bool bInsideParts = false;
+	for (const FRammsCollisionShape& S : Shapes)
+	{
+		bInsideParts |= InsideConvex(S, Under);
+	}
+	TestFalse(TEXT("the space under the top is open in the part hulls"), bInsideParts);
+	TestTrue(TEXT("(one hull of the whole mesh would fill it)"), InsideConvex(OneHull[0], Under));
+
+	auto ChaosHits = [Piece](const FVector& From, const FVector& To)
+	{
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(RammsHullProbe), /*bTraceComplex=*/true);
+		return Piece->MeshComponent->LineTraceComponent(Hit, From, To, Params);
+	};
+	// A level line at knee height through the middle passes between the legs; one along a pair of legs meets them.
+	const FVector Between0 = Xf.TransformPosition(FVector(-100.0, 0.0, 36.0)), Between1 = Xf.TransformPosition(FVector(100.0, 0.0, 36.0));
+	TestFalse(TEXT("Chaos: a line between the legs is clear"), ChaosHits(Between0, Between1));
+	TestFalse(TEXT("hulls: a line between the legs is clear"), SegmentHits(Shapes, Between0, Between1));
+	const FVector Legs0 = Xf.TransformPosition(FVector(-100.0, 32.5, 36.0)), Legs1 = Xf.TransformPosition(FVector(100.0, 32.5, 36.0));
+	TestTrue(TEXT("Chaos: a line through two legs meets them"), ChaosHits(Legs0, Legs1));
+	TestTrue(TEXT("hulls: a line through two legs meets them"), SegmentHits(Shapes, Legs0, Legs1));
+
+	// From above, the part hulls are the table's top.
+	FRandomStream Rs(31415);
+	const FBox Region = ShapeBounds(Shapes);
+	auto OverTable = [&Xf](FRandomStream& R)
+	{
+		const FVector W = Xf.TransformPosition(FVector(FMath::Lerp(-70.0, 70.0, R.FRand()), FMath::Lerp(-50.0, 50.0, R.FRand()), 76.0));
+		return FVector2D(W.X, W.Y);
+	};
+	Probe(*this, TEXT("Table from above"), Region, OverTable, Shapes, [Piece](const FVector& From, const FVector& To) -> TOptional<double>
+	{
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(RammsHullProbe), /*bTraceComplex=*/true);
+		if (Piece->MeshComponent->LineTraceComponent(Hit, From, To, Params))
+		{
+			return Hit.ImpactPoint.Z;
+		}
+		return TOptional<double>();
+	}, 0.2, 0.02, Rs);
 	return true;
 }
 
