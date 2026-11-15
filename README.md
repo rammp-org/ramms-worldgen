@@ -368,11 +368,14 @@ produce, for keeping that list complete when slots are added.
 ## Collision shapes
 
 A generated world's collision is also available as plain shapes
-(`RammsCollisionShapes.h`, no engine types beyond Core), so another physics engine can
-build the same world: RammsMujocoSupport turns them into MuJoCo world geoms.
-`ARammsWorldGenerator::GatherCollisionShapes(Shapes[, Filter])` returns them in
-world space; `DescribeCollisionShapes()` counts them by type and surface. A
-`FRammsCollisionShapeFilter` limits them to a box or to a radius in plan.
+(`RammsCollisionShapes.h`: Core types only, actors named by pointer in the filter), so
+another physics engine can build the same world: RammsMujocoSupport turns them into
+MuJoCo world geoms. `ARammsWorldGenerator::GatherCollisionShapes(Shapes[, Filter])`
+returns them in world space; `HasCollisionShapes(Filter)` says cheaply whether there is
+any (it stops at the first piece or mesh with one); `DescribeCollisionShapes()` counts
+them by type and surface. A `FRammsCollisionShapeFilter` limits them to a box or to a
+radius in plan, and skips its `ExcludedActors` (actors another engine already
+converts, such as MuJoCo quick-convert components).
 
 The shapes are exactly what Chaos collides with, so a curb face stays a vertical
 step and a 6 mm lip stays 6 mm:
@@ -382,21 +385,34 @@ step and a 6 mm lip stays 6 mm:
 | Slab, curb, column, steps, ramp (slab, landing, lips), wall (around its openings, frames, glass), door (leaf, handles, threshold), planter, roof soffit, warning strip | one box per part |
 | Bollard, tree trunk and branches, tree and shrub canopy blobs, gable roof, the ramp of a curb ramp | one convex hull per part, of the part's own vertices |
 | Curb ramp flares (their top is twisted), mounds and hollows | a height grid over the mesh's own vertices |
+| Ground prisms (graded roads, sidewalks, panels, potholes, covers, pavers) | a level rectangle along the piece's axes is a box; another planar convex top the hull of it and its footprint; a top that is not planar and convex the mesh's own fan, one prism per triangle |
+| Humps and tables | a height grid two samples wide (the profile is constant across) |
 | Patch | the slab under the disc (its top is the disc) |
 | Decal | none |
-| Instanced and static meshes the generator made | per instance, the mesh's simple collision as Chaos builds it (`FK*Elem::GetFinalScaled`): boxes, spheres, capsules, convex hulls; a complex-as-simple mesh as the hull of its triangles (coarser where it is concave; logged once per asset) |
+| Instanced and static meshes the generator made | per instance, the mesh's simple collision as Chaos builds it (`FK*Elem::GetFinalScaled`): boxes, spheres, capsules, convex hulls. A complex-as-simple mesh is the convex hulls of its connected parts (`RammsCollisionShapes::AppendComponentHulls`: a table's top and each leg, open between them; a part inside another's bounds joins it; at most 64 per mesh, the smallest joining their nearest). A part that is itself concave (an L-shaped wall, a doorway in one welded mesh) is still solid inside its hull; decomposing those (CoACD, cached per asset) is the follow-up. Logged once per asset |
 
-Foliage and anything without physics collision is skipped, as are articulated
-stand-ins (they simulate as articulations), pawns, and actors or components
-tagged `RammsDynamic`: tag whatever moves after generation (traffic), or it is
-exported as a fixed obstacle where it stood.
+A piece's scale is baked into its shapes, mirrored or not. A height grid the
+piece's scale mirrors or turns over (its cells would split the other way), or a
+grid whose mesh does not match it, is exported as one prism per upward-facing
+triangle of the mesh instead: still exact, and never a hole.
+
+Anything without physics collision is skipped (PCG foliage is `NoCollision`), as
+are articulated stand-ins (they simulate as articulations), pawns, the filter's
+excluded actors, and actors or components tagged `RammsDynamic`: tag whatever
+moves after generation (traffic), or it is exported as a fixed obstacle where it
+stood. Spline meshes (collision bent along the spline) and colliding components
+that are neither static meshes nor pieces are not exported; each such class is
+logged once.
 
 **One code path.** `ARammsProcPiece::AppendCollisionShapes` runs the kind's own
 builder into a scratch mesh with a capture open: every box the builder appends
-reports itself as a box, every other convex primitive as the hull of the vertices
-it appended, every lifted grid as a height grid. The mesh and the shapes cannot
-drift apart, and a new builder part is exported without extra code. A kind added
-later reports its shapes from its own case in `AppendCollisionShapes`. A
+through `Box()` reports itself as a box, every other convex primitive appended
+through `Hull()` as the hull of the vertices it appended, every lifted grid passed
+to `Grid()` as a height grid. The mesh and the shapes cannot drift apart, and a new
+builder part is exported without extra code as long as it goes through those
+helpers (a raw `Append*` call is not captured). The ground kinds (GroundPrisms,
+Hump) describe themselves from the same properties their builders read. A kind
+added later reports its shapes from its own case in `AppendCollisionShapes`. A
 sphere-box (a canopy blob) splits some quads inward, a dent of a few centimetres,
 so its edges are flipped to fold outward when it is built: its mesh is then its
 hull, and Chaos collides with exactly the hull that is exported.
@@ -406,17 +422,21 @@ hull, and Chaos collides with exactly the hull that is exported.
 mirrored. A mesh drawn from a grid must split its cells the same way, or the
 two agree only at the samples: `RammsCollisionShapes::MatchHeightGridDiagonals`
 flips a grid mesh's edges to match (flares and mounds use it, so their meshes
-changed by that flip).
+changed by that flip), and reports a mesh it cannot match.
 
 **Surfaces** come from the segmentation label (`Road` is `Asphalt`, `Sidewalk`
 `Concrete`, `Curb` `Curb`, `Lawn` `Grass`, `Hazard.Mud` `Mud` ...,
 `RammsCollisionShapes::SurfaceForClass`), else from a physical material's name,
 else from the piece kind; anything else is `Default`.
 
-`Ramms.WorldGen.CollisionShapes.ProcPieces` checks every kind (and pitched,
-rolled pieces) against its mesh: bounds within 1 mm, vertical probes within
-2 mm of Chaos's trace. `Ramms.WorldGen.CollisionShapes.InstancedMeshes` checks
-scaled, rotated instances against Chaos's simple collision.
+`Ramms.WorldGen.CollisionShapes.ProcPieces` checks every kind, ground prisms
+(a level rectangle, sloped and level hulls, a pothole, a twisted top) and humps
+(with and without a table top) included, pitched, rolled, scaled and mirrored
+pieces too, against its mesh: bounds within 1 mm, vertical probes within 2 mm of
+Chaos's trace (not for mirrored pieces). `Ramms.WorldGen.CollisionShapes.InstancedMeshes`
+checks scaled, rotated instances against Chaos's simple collision, and the
+exclusions. `Ramms.WorldGen.CollisionShapes.ComponentHulls` checks that a table
+exports as its five parts, open between the legs where Chaos is.
 
 ## Parameters
 
