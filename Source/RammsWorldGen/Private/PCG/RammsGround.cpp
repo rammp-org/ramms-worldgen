@@ -30,12 +30,13 @@ namespace
 		return F[k] + Slope * (V - L[k]);
 	}
 
-	// The line within Half of V, or INDEX_NONE.
+	// The line within Half of V (a hundredth of a millimetre of slack, so a point computed on a square's edge counts as
+	// on it), or INDEX_NONE.
 	int32 NearLine(const TArray<double>& L, double V, double Half)
 	{
 		for (int32 k = 0; k < L.Num(); ++k)
 		{
-			if (FMath::Abs(V - L[k]) <= Half) { return k; }
+			if (FMath::Abs(V - L[k]) <= Half + 1e-3) { return k; }
 		}
 		return INDEX_NONE;
 	}
