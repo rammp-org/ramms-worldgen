@@ -67,7 +67,7 @@ namespace
 		double Yaw = 0.0;
 		TArray<FVector2D> Keepouts; // [along start, along end] of curb ramps and flares: the curb is open there
 		TArray<FVector2D> Clear;    // [along start, along end] kept free of props and parked cars (every crossing)
-		TArray<FVector2D> CornerCrossings; // [along start, along end] of each intersection crossing (not mid-block), its ramp and flares included
+		TArray<FVector2D> CornerCrossings; // [along start, along end] of each crossing at a three- or four-way intersection (not mid-block, not at a bend), its ramp and flares included
 		double StripDepth = 0.0;    // planting strip width at the curb (0 = paved to the curb)
 	};
 
@@ -385,8 +385,9 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 	struct FRampEnd { bool bRamp = false; bool bCompliant = false; };
 
 	// Crossings: one near each end of every live segment, plus optional mid-block. A crossing is only built
-	// where it joins two sidewalks (the site-edge roads have a block on one side only). bCorner: an intersection
-	// crossing (near a segment's end), recorded on its sides for the hazard placer's corner signals.
+	// where it joins two sidewalks (the site-edge roads have a block on one side only). bCorner: a crossing near a
+	// segment's end at a three- or four-way intersection, recorded on its sides for the hazard placer's corner signals
+	// (a bend or a street running straight on has no cross traffic: no signal, and its traffic flows freely).
 	const double Landing = 90.0; // level space kept at the top of a ramp (ADA 406.4: 36 in)
 	auto EmitCrossing = [&](const FSeg& Sg, double Pos, bool bCorner)
 	{
@@ -698,11 +699,16 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 				Along(MidPos + CW * 0.5 + 55.0, -StopHand * RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
 			}
 		}
-		// Crossings near both ends, and mid-block.
+		// Crossings near both ends, and mid-block. Corner signals only where three or four roads meet.
 		if (bEnds)
 		{
-			EmitCrossing(Sg, A + RW * 0.5 + CrossOff, true);
-			EmitCrossing(Sg, B - RW * 0.5 - CrossOff, true);
+			auto LiveArms = [&](const int32 Ni, const int32 Nj)
+			{
+				return (Ni > 0 && Segs[SegIndexX(Ni - 1, Nj)].bLive ? 1 : 0) + (Ni + 1 < NX && Segs[SegIndexX(Ni, Nj)].bLive ? 1 : 0)
+					+ (Nj > 0 && Segs[SegIndexY(Ni, Nj - 1)].bLive ? 1 : 0) + (Nj + 1 < NY && Segs[SegIndexY(Ni, Nj)].bLive ? 1 : 0);
+			};
+			EmitCrossing(Sg, A + RW * 0.5 + CrossOff, LiveArms(Sg.I, Sg.J) >= 3);
+			EmitCrossing(Sg, B - RW * 0.5 - CrossOff, LiveArms(Sg.bAlongX ? Sg.I + 1 : Sg.I, Sg.bAlongX ? Sg.J : Sg.J + 1) >= 3);
 		}
 		if (bMid)
 		{
@@ -1493,7 +1499,7 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 		SidewalksOut.Set(s, FName(TEXT("RoadDrop")), Z0 - Zr);
 		if (HydrantAt > 0.0) { SidewalksOut.Set(s, FName(TEXT("HydrantAt")), HydrantAt); }
 		if (Bus0 >= 0.0) { SidewalksOut.Set(s, FName(TEXT("BusZone")), FString::Printf(TEXT("%.0f:%.0f"), Bus0, Bus1)); }
-		// The intersection crossings (not mid-block ones), for the hazard placer's corner signals.
+		// The crossings at three- and four-way intersections (not mid-block ones), for the hazard placer's corner signals.
 		if (Sd.CornerCrossings.Num() > 0)
 		{
 			FString Corners;

@@ -317,7 +317,6 @@ def finish_level(gen, traffic=None):
     along the routes, and on a traffic level (`traffic` None: the generator carries traffic.LEVEL_TAG) vehicle
     lanes, a signal clock and cars after the crowd (traffic.build_traffic; its summary under "traffic"). The caller
     saves the level. Returns the crowd summary (or the error text)."""
-    from . import traffic as TR
     gen.place_player_start()
     try:
         from . import crowd as C
@@ -325,11 +324,13 @@ def finish_level(gen, traffic=None):
     except Exception as exc:  # a level without a crowd is still a level
         H.warn("crowd lanes failed: %s" % exc)
         res = {"error": str(exc)}
-    if traffic is None:
-        traffic = gen.actor_has_tag(TR.LEVEL_TAG)
-    if traffic:
+    if traffic is not False:
         try:
-            res["traffic"] = TR.build_traffic(gen)
+            from . import traffic as TR
+            if traffic is None:
+                traffic = gen.actor_has_tag(TR.LEVEL_TAG)
+            if traffic:
+                res["traffic"] = TR.build_traffic(gen)
         except Exception as exc:  # nor is one without traffic
             H.warn("traffic failed: %s" % exc)
             res["traffic"] = {"error": str(exc)}
