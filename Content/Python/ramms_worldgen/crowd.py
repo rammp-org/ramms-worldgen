@@ -28,11 +28,11 @@ ARammsCrowdSpawner in ZoneGraphLanes mode is placed with /Game/NPCs/DA_CrowdAgen
 Every actor made here carries the tag RammsCrowd and sits in the WorldGen/Crowd outliner folder, so a
 rebuild replaces it.
 
-Street crossings are tagged CROSSING_TAG (an actor tag). On a level with traffic (traffic.py) the crossings at its
-signalized intersections also get the ZoneGraph tag Crossing (tag_crossings; MassCrowd's CrossingTag): MassCrowd
-closes those lanes, the traffic signal clock opens them for Walk, and walkers wait at the curb meanwhile. Other
-crossings (mid-block, all-way stops, every crossing of a level without traffic) never carry it: there the crowd
-walks when it likes and the cars yield.
+Street crossings are tagged CROSSING_TAG (an actor tag), each a lane shape of its own (its two ends are junctions).
+On a level with traffic (traffic.py) the crossings at its signalized intersections also get the ZoneGraph tag
+Crossing (tag_crossings; MassCrowd's CrossingTag): MassCrowd closes those lanes, the traffic signal clock opens them
+for Walk, and walkers wait at the curb meanwhile. Other crossings (mid-block, all-way stops, every crossing of a
+level without traffic) never carry it: there the crowd walks when it likes and the cars yield.
 """
 import math
 
@@ -1088,6 +1088,13 @@ def _emit(g, profile_kind, world, label_prefix):
     T = unreal.FZoneShapePointType
     # Junctions: nodes of degree >= 3, plus one node on any loop without one.
     junction = {n for n in range(len(g.nodes)) if g.degree(n) >= 3}
+    # Each street crossing is a shape of its own: its ends are junctions even where a sidewalk run beside one was
+    # dropped (degree 2), so the run there meets it at a two-entry junction instead of joining its shape. The
+    # ZoneGraph Crossing tag (tag_crossings) then closes only the crossing, and the signal clock reads the walk axis
+    # off the crossing's own two ends.
+    for k in g.crossing_edges:
+        if k in g.edges:
+            junction.update(n for n in g.edges[k][:2] if g.degree(n) == 2)
     # Walk chains between junctions / dead ends.
     used = set()
     chains = []
