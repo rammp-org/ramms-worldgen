@@ -53,7 +53,7 @@ LANE_PROFILES = {
     "sidewalk": ("PedestrianLanesSidewalk", "7B1D4C9E2A3F4B5C8D6E0F1A2B3C4D5E", 120.0),
     "narrow": ("PedestrianLanesNarrow", "5D2E8B7A1C4F4E3B9A6D0C1E2F3B4A57", 50.0),
 }
-AGENT_RADIUS = 30.0     # a little under the profile's 35 cm: agents brush past a door jamb rather than refuse it
+AGENT_RADIUS = 30.0     # clearance kept for a lane's walkers (the crowd agents' radius is 25 cm, RammsCrowdAgentTrait)
 CELL = 25.0             # clearance grid for rerouting a lane around furniture and props
 LEVEL_TOL = 8.0         # a detour of a run on one walking level drops at most this below it (cm): not down a curb
 LEVEL_CURB_SHARE = 0.6  # ... and at most this share of the curb height, so a low curb is still caught
