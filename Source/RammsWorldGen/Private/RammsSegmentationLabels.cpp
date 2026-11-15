@@ -277,7 +277,9 @@ FName URammsSegmentationLabels::ClassForPiece(const ARammsProcPiece* Piece, FNam
 		case ERammsProcPieceKind::Mound:
 			return FName(TEXT("Mound"));
 		case ERammsProcPieceKind::GroundPrisms:
-			// Graded ground and roughness: the surface it is made of (brick pavers read as paving stones).
+			// Graded ground and roughness: the surface it is made of (brick pavers read as paving stones); a curb ramp built
+			// on graded ground is one, whatever it is made of.
+			if (Piece->ManifestKind == FName(TEXT("CurbRamp"))) { return FName(TEXT("CurbRamp")); }
 			if (Piece->ManifestSubtype == FName(TEXT("Brick"))) { return FName(TEXT("Cobblestone")); }
 			return Surface.IsNone() ? FName(TEXT("Slab")) : Surface;
 		case ERammsProcPieceKind::Hump:

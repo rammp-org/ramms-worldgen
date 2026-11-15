@@ -48,7 +48,7 @@ enum class ERammsProcPieceKind : uint8
 	Mound     UMETA(ToolTip = "Grassy mound (or, with a negative Rise, a hollow): SizeX/SizeY plan diameters of an elliptical cosine bump Rise high, centred on the origin; its rim sits 2 cm under the ground."),
 	Patch     UMETA(ToolTip = "Flat elliptical ground patch (pond water, mud, gravel): SizeX/SizeY diameters, top SizeZ above the origin."),
 	GroundPrisms UMETA(ToolTip = "Ground as convex prisms (graded roads, sidewalk panels, curbs' surroundings, potholes, covers, pavers): Parts lists each prism's top polygon (actor-local vertices with their heights) and material; each is solid down to SizeZ below its lowest top vertex."),
-	Hump      UMETA(ToolTip = "Speed hump or table along +X: SizeX long, SizeY wide (centred on Y = 0), Rise high on a base at z = 0; LandingSize > 0 is a table's flat top, else a sinusoidal hump; solid down to SizeZ below the base."),
+	Hump      UMETA(ToolTip = "Speed hump or table along +X: SizeX long, SizeY wide (centred on Y = 0), Rise high on a base at z = 0; LandingSize over 1 cm is a table's flat top (the piece's default 152.4 makes a table), 0 a sinusoidal hump; solid down to SizeZ below the base."),
 };
 
 /** Why a generated feature is tagged non-compliant. Carried into the manifest. */
@@ -299,17 +299,20 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	/** Steepest running grade of a street (rise / run): every interval of the street grid draws its own grade in
 	 *  [-MaxStreetGrade, MaxStreetGrade] (streets along X per column, along Y per row), so intersections sit at
 	 *  different heights and each street climbs or falls between them. The lowest street sits at the generator's
-	 *  height. 0 = level streets. */
+	 *  height. A walk runs at its street's grade; the hill across the street does not tilt it (the lots take that up).
+	 *  0 = level streets. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 0.15)) double MaxStreetGrade = 0.0;
 	/** Road crown: the carriageway's cross slope from its centre line down to each gutter (rise / run, e.g. 0.02). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 0.08)) double RoadCrown = 0.0;
-	/** Sidewalk cross slope, falling toward the curb (rise / run); each block draws its own in [0.6, 1] of this. */
+	/** Sidewalk cross slope, falling toward the curb (rise / run); each block draws its own in [0.6, 1] of this. It is
+	 *  the walk's whole cross slope, whatever the street grades (only the corner zones turn from one walk to the next). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 0.08)) double SidewalkCrossSlope = 0.0;
 	/** Probability a block's sidewalks fall toward the curb more steeply than MaxCrossSlope (3-6 %), recorded CrossSlopeTooSteep. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0, ClampMax = 1)) double NonCompliantCrossSlopeChance = 0.0;
 	/** Curb heights above the gutter. With CurbHeightMax > 0 every block draws curb heights in [CurbHeightMin,
-	 *  CurbHeightMax] at its corners, varying linearly along each side (low 5-10 cm and high 18-20 cm curbs); 0 = every
-	 *  curb is CurbHeight. */
+	 *  CurbHeightMax] (never under 2 cm; CurbHeightMin's default 0 means 2) at its corners, varying linearly along each
+	 *  side (low 5-10 cm and high 18-20 cm curbs); 0 = every curb is CurbHeight. CurbHeight still sets how far the
+	 *  gutters lie under the reference height, and sizes the crossings' set-back from the corners. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0)) double CurbHeightMin = 0.0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain", meta = (ClampMin = 0)) double CurbHeightMax = 0.0;
 
@@ -332,7 +335,8 @@ struct RAMMSWORLDGEN_API FRammsWorldGenParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0)) double PotholeDensity = 0.0;
 	/** Probability a street segment gets a speed hump or a speed table. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0, ClampMax = 1)) double SpeedHumpChance = 0.0;
-	/** Probability a street tree in a pit has heaved the walk beside it (a tilted slab, its edge 0.5-4.5 cm proud). */
+	/** Probability a street tree in a pit has heaved the walk beside it (a tilted slab, its edge 0.5-4.5 cm proud). The
+	 *  Hazard Placer lays these; on its own it does not switch on the ground model (the heaves lie on the flat walk). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roughness", meta = (ClampMin = 0, ClampMax = 1)) double RootHeaveChance = 0.0;
 	/** Narrowest door the generator makes, even a deliberately non-compliant one: the RAMMP Gen1 is ~72 cm wide, so 80 cm still lets it through. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Accessibility") double MinPassableDoorWidth = 80.0;

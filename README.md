@@ -80,7 +80,7 @@ The five example levels (`Content/Maps/Gen/Map_Gen_*`, built by `Scripts/worldge
 | **Data assets** | `URammsWorldPreset` (scene kind, params, palette, profile, graph), `URammsWorldPalette` (semantic slots → Fab meshes / materials / actor classes), `URammsAccessibilityProfile` (ADA thresholds + the ranges used to break them on purpose) | `Source/.../Public/RammsWorld*.h`, instances under `/RammsWorldGen/` |
 | **Generator** | `ARammsWorldGenerator`: owns the `UPCGComponent`, a seed, a preset; flattens preset + profile + per-instance overrides into `FRammsWorldGenParams`; `Regenerate()` / `Randomize()` / `Cleanup()`; builds the manifest after generation; `PlacePlayerStart()`; `ExportManifest()` | `RammsWorldGenerator.h` |
 | **Procedural pieces** | `ARammsProcPiece`: a GeometryScript dynamic mesh whose dimensions decide usability — curb ramps with flares and detectable-warning strips, curbs, steps, ramps with landings and edge protection, walls with door openings, door leaves and thresholds, bollards, planters, low-poly trees and shrubs, and on graded ground `GroundPrisms` (convex prisms: roads, sidewalk panels, potholes, covers, pavers) and `Hump` (speed humps and tables). Spawned by PCG's Spawn Actor with every property mapped from a same-named point attribute. Complex-as-simple collision; `AppendCollisionShapes` describes it as exact boxes, convex hulls and height grids. | `RammsProcPiece.h`, `RammsCollisionShapes.h` |
-| **Ground model** | `FRammsGroundModel`: the street world's elevation (street grades, crown, curb heights, cross slopes) as one function every node evaluates, handed downstream as the `Ground` point attribute | `Public/PCG/RammsGround.h` |
+| **Ground model** | `FRammsGroundModel`: the street world's elevation (street grades, crown, curb heights, walks at their own cross slope, the lots and the corners taking up the hill) as one function every node evaluates (planar facets built from the same text), handed downstream as the `Ground` point attribute | `Public/PCG/RammsGround.h` |
 | **PCG nodes (C++)** | `Ramms: Street Network`, `Subdivide Lots`, `Building Massing`, `Park Layout`, `Hazard Placer`, `Indoor Layout`, `Manifest`. Deterministic by seed. They emit *oriented points with attributes*; stock spawners do the placing. | `Public/PCG/*.h` |
 | **Graphs** | `PCG_Streets` (downtown, suburban, park, main street) and `PCG_Indoor` (home, office, store), both ending in the shared subgraph `PCG_SpawnAndRecord`; **built from code** by `ramms_worldgen.graphs` so they are reviewable and reproducible (see `doc/world_generation.md`, "The PCG graphs"). | `/RammsWorldGen/Graphs/` |
 | **Python** | Graph builder DSL, palette/preset builders, example-level assembly, MCP toolset | `Content/Python/ramms_worldgen/` |
@@ -306,20 +306,20 @@ Kinds and the issues they can carry:
 
 | Kind | Subtypes | Issue |
 |---|---|---|
-| `CurbRamp` | Standard, TooSteep, NoDetectableWarning, CrossSlope (graded: its cross slope, the street's grade, above `MaxCrossSlope`) | SlopeTooSteep, CrossSlopeTooSteep |
-| `Grade` | Running, Cross (graded ground: per sidewalk side, its steepest running grade along the route's centre line and its cross slope at mid-side; `route` = the side) | SlopeTooSteep (above `RampMaxSlope`), CrossSlopeTooSteep (above `MaxCrossSlope`) |
+| `CurbRamp` | Standard, TooSteep, NoDetectableWarning, CrossSlope (graded: its cross slope, the street's grade, above `MaxCrossSlope`), SteepFlare (graded: a flare steeper than `CurbRampFlareSlope`, or none, beside it near a corner) | SlopeTooSteep, CrossSlopeTooSteep |
+| `Grade` | Running, Cross (graded ground: per sidewalk side, its steepest running grade along the route's centre line out of the corner zones and its cross slope at mid-side, the block's own; the box is the side's walk; `route` = the side) | SlopeTooSteep (above `RampMaxSlope`), CrossSlopeTooSteep (above `MaxCrossSlope`) |
 | `Curb` | Low (under 10 cm), Standard, High (over 17 cm) (graded ground: per side, measure = mean curb height, size.z the highest) | — |
-| `SpeedHump` | Hump, Table (measure = height) | — |
+| `SpeedHump` | Hump, Table (measure = height; the box is the whole hump, centred on it, across the road between its gaps at the gutters) | — |
 | `Cover` | Raised, Sunken (a utility cover set into the walk; measure = its lip) | VerticalChangeTooHigh |
 | `Crossing` | MissingCurbRamp | MissingCurbRamp |
 | `Crosswalk` | Ramped, SteepRamp, OneRamp, NoRamps (whether both ends have a curb ramp; size.x = curb to curb, yaw = the crossing direction) | — |
 | `Entrance` | Level, SteppedWithRamp, SteppedSteepRamp, SteppedNoRamp | StepAtEntrance, SlopeTooSteep, DoorTooNarrow, ThresholdTooHigh |
 | `Door`, `Threshold` | Standard, Narrow, RaisedThreshold, High/Low | DoorTooNarrow, ThresholdTooHigh |
-| `Ramp`, `Step` | Standard, TooSteep / WithRamp, NoRamp | SlopeTooSteep, StepAtEntrance |
+| `Ramp`, `Step` | Standard, TooSteep, FootLip (graded: the yard's slope across the ramp's foot leaves a lip over `VerticalChangeMax`) / WithRamp, NoRamp (a step's measure is its whole rise) | SlopeTooSteep, VerticalChangeTooHigh, StepAtEntrance |
 | `Hazard` | AFrame, Scooter, BinOut, Cafe, Barrier, Upheaval, Heave (a tilted sidewalk panel), RootHeave (the walk lifted beside a street tree), or a furniture slot indoors | ClearWidthBelowMinimum, VerticalChangeTooHigh, ObstacleInRoute |
 | `Building` / `House` | house footprint | — |
 | `Prop`, `Furniture`, `Decor`, `Tree`, `Shrub` | palette slot | ClearWidthBelowMinimum when a prop spills out of the furniture zone |
-| `Surface` | Cobbled, GravelTrail / Gravel, Dirt, Mud (park patches); on rough ground JointLip (two sidewalk panels' lip over `VerticalChangeMax`), Crack (a panel split, one part proud), Pothole (measure = depth), Brick, Setts (pavers) | SurfaceUneven, VerticalChangeTooHigh |
+| `Surface` | Cobbled, GravelTrail / Gravel, Dirt, Mud (park patches); on rough ground JointLip (two route panels' lip over `VerticalChangeMax`, on their joint: along a side, beside a ramp, across a corner), Crack (a panel split, one part proud), Pothole (measure = depth), Brick, Setts (pavers) | SurfaceUneven, VerticalChangeTooHigh |
 | `Terrain`, `Water` | Mound (measure = steepest grade) / Pond | — |
 | `Room` | Living, Bedroom, Office, Meeting, Kitchen, Dining, Bathroom, Restroom, Corridor, Shop, Storage | — |
 | `Stall` | Standard, Accessible (restroom toilet stalls; measure = stall width, threshold 152.4 for the accessible one) | — |
@@ -468,7 +468,7 @@ runs it at 0.2, the office at 0.1.
 | Buildings | `LotWidthMin/Max`, `SetbackMin/Max`, `FloorsMin/Max`, `FloorHeight`, `LotCoverage`, `WholeBuildingChance`, `EntranceStepChance`, `EntranceRampChance`, `WindowSpacing`, `FacadeStyles`, `RearParkingChance` |
 | Hazards | `PropDensity`, `HazardDensity` (per 100 m), `TreeSpacing`, `CanopyChance` (big old trees, closer together), `StreetLightSpacing`, `HazardIntrusionChance` |
 | Accessibility | `MinClearWidth`, `PreferredClearWidth`, `RampMaxSlope`, `MaxCrossSlope`, `CurbRampFlareSlope`, `DoorClearWidth`, `DoorThresholdMax`, `VerticalChangeMax`, `LandingSize`, `DetectableWarningDepth` |
-| Terrain (all 0: flat) | `MaxStreetGrade` (0..0.15, rise / run between intersections), `RoadCrown` (0..0.08), `SidewalkCrossSlope` (0..0.08, each block draws 0.6-1 of it), `NonCompliantCrossSlopeChance` (0..1, per block: 3-6 %), `CurbHeightMin` / `CurbHeightMax` (cm; Max 0 = every curb `CurbHeight`) — see [Graded streets and rough ground](#graded-streets-and-rough-ground) |
+| Terrain (all 0: flat) | `MaxStreetGrade` (0..0.15, rise / run between intersections), `RoadCrown` (0..0.08), `SidewalkCrossSlope` (0..0.08, each block draws 0.6-1 of it), `NonCompliantCrossSlopeChance` (0..1, per block: 3-6 %), `CurbHeightMin` / `CurbHeightMax` (cm, never under 2; Max 0 = every curb `CurbHeight`) — see [Graded streets and rough ground](#graded-streets-and-rough-ground) |
 | Roughness (all 0: smooth) | `SurfaceRoughness` (0..1, panel lips), `PanelLength` (cm, 150), `HeaveDensity`, `CrackDensity`, `CoverDensity`, `PavingPatchDensity` (per 100 m of side), `PotholeDensity` (per 100 m of road), `SpeedHumpChance` (per street segment), `RootHeaveChance` (per street tree in a pit) |
 | Suburban / park | `LawnLots`, `YardTreeChance`, `DrivewayChance`, `DrivewayWidth`, `FrontBoundaryChance`, `PathWidth`, `FoliageDensity`, `GrassDensity` (grass clumps per m^2 on lawns, strips and parks) |
 | Indoor | `RoomSizeMin/Max`, `CorridorWidth`, `CorridorChance`, `WallThickness`, `WallHeight`, `DoorWidthMean/Std`, `ThresholdChance`, `FurnitureDensity`, `OfficeFraction`, `RetailFraction` |
@@ -989,64 +989,94 @@ URLab cannot replace-import a Blueprint.
 
 ## Graded streets and rough ground
 
-With the terrain and roughness parameters at 0 (every preset but two) the streets are level and smooth and are
-placed exactly as before. Turning any of them on switches the Street Network to the **ground model**
-(`FRammsGroundModel`, `Public/PCG/RammsGround.h`) and lays the ground as `GroundPrisms` pieces on it. Its draws come
-from random streams of their own, so a seed keeps its blocks, lots, crossings and props: a graded world is the flat
-world of the same seed on a hill.
+With the terrain and roughness parameters at 0 (every preset but four) the streets are level and smooth and are
+placed exactly as before. Turning any of them on (`RootHeaveChance` aside: on its own it lays its heaves on the flat
+walk) switches the Street Network to the **ground model** (`FRammsGroundModel`, `Public/PCG/RammsGround.h`) and lays
+the ground as `GroundPrisms` pieces on it. Its draws come from random streams of their own -- one per concern: the
+grades; each block's curb heights and its cross slope; each segment's hump and its potholes; each side's panels and
+its features -- so a seed keeps its blocks, lots and crossings (a graded world is the flat world of the same seed on a
+hill; props near the curb ramps can move, since graded ramps are sized for the ground), and turning one parameter up
+leaves what the others drew where it was.
 
 - **Elevation.** Each interval of the street grid climbs at its own grade in `[-MaxStreetGrade, MaxStreetGrade]`
   (columns for the streets along X, rows for those along Y), so intersections sit at different heights and every
   street has a constant grade between them; the lowest street is at the generator's height. The reference height is
-  `Z0 + FX(x) + FY(y)`, one plane per grid cell.
+  `Z0 + FX(x) + FY(y)`, one plane per grid cell: it sets the gutters and the lots.
 - **Roads.** `CurbHeight` under the reference at the gutters, `RoadCrown` higher toward the centre line: each half
   of a segment is one plane. An intersection square is eight planar triangles: the triangle toward an edge carries the
   crown of the road through it, or of the other road where the edge is a curb (no lip anywhere). Markings, crosswalk
-  bars, decals and parked cars lie on the road's plane.
-- **Curbs.** Each block draws curb heights in `[CurbHeightMin, CurbHeightMax]` at its corners, varying linearly along
-  each side (a plane), so a block can have a 6 cm curb on one street and an 18 cm one on the next. Curbs are
-  procedural pieces tilted along the curb and across it with the walk.
-- **Sidewalks.** The walk rises from the curb top toward the lots at the block's cross slope (`SidewalkCrossSlope`,
-  now and then 3-6 % with `NonCompliantCrossSlopeChance`) on top of the hill's own slope, up to the sidewalk's back
-  edge; the lots' ground is level with that edge. Corner squares split on their diagonals; streets dropped inside a
-  merged block bend the ground along their line, and every piece is split there.
-- **Curb ramps** are tilted onto the walk: the run is sized for the ramp's real running slope (rise plus the walk's
-  inward slope over the run), recorded `TooSteep` above `RampMaxSlope`, and `CrossSlope` / `CrossSlopeTooSteep` when
-  the street's grade (the ramp's and its landing's cross slope) is above `MaxCrossSlope`.
-- **Buildings and lots** stand on a level pad at the ground in front of their entrance (so the door meets the walk),
-  with a concrete plinth down to the lowest ground under the footprint; yards, walks, driveways, aprons, fences,
-  planting, trees, the street furniture and hazards, litter and parks follow the ground (wide furniture stands on the
-  lowest ground under its footprint; flat things lie on its slope).
+  bars, decals and parked cars lie on the road's plane (a bar or line across the crown is two, one on each half).
+- **Curbs.** Each block draws its curb height as a plane: its four corners within `[CurbHeightMin, CurbHeightMax]`
+  (never under 2 cm), varying linearly along each side. The two streets on opposite sides of a block can differ by up
+  to the whole range (with 5-20 cm, a 5 cm curb on its south street and a 20 cm one on its north street), two streets
+  meeting at a corner by up to half of it. Curbs are procedural pieces tilted along the curb and across it with the
+  walk.
+- **Sidewalks.** The walk runs along the curb's top at its street's grade and rises toward the lots at exactly the
+  block's cross slope (`SidewalkCrossSlope`, 0.6-1 of it per block, now and then 3-6 % with
+  `NonCompliantCrossSlopeChance`), whatever the hill does across the street: the hill across is left to the lots and
+  the corners. Streets dropped inside a merged block bend the walk along their line, and every piece is split there.
+- **Corners.** Two walks of different grades meet at a block corner, so their back edges cannot meet there at one
+  height. Each corner zone -- the corner square and one sidewalk width beyond it along each side's back edge -- is a
+  fan of planar triangles from the curb corner: along each curb it is still that walk's own plane, and between the
+  two the ground turns from one walk's plane to the other's, continuous everywhere (no lip on any diagonal). The
+  cross slope is exact outside the corner zones (`FRammsGroundModel::StraightRange` says where, per side).
+- **Lots** (and parks, yards) follow the hill -- one plane per street-grid cell, `CrossSlope * SidewalkWidth` above
+  the curb's top at the back of the walk -- inside a ring of planar triangles (up to 8 m wide) that meets every walk's
+  back edge exactly, so what the level walks leave of the hill becomes a gentle bank in the lots.
+- **Curb ramps** follow the ground: each is the walk lowered by a dip (the curb's height at the curb line, nothing at
+  the ramp's top; on the flares falling to nothing at their outer edges), laid as prisms over the ground's facets, so
+  its foot is the gutter at the curb line and its top, flares and landing meet the walk wherever the walk bends. The run
+  is sized for the ramp's real running slope (rise plus the walk's slope inward over the run), the flares for
+  `CurbRampFlareSlope` at the curb's height there. Near a corner a ramp's cut stays on its side of the corner's
+  diagonal (clear of the other street's ramp): the flare toward the corner gives way first, then the run. Recorded
+  `TooSteep` above `RampMaxSlope`, `CrossSlope` / `CrossSlopeTooSteep` when the street's grade (the ramp's cross slope)
+  is above `MaxCrossSlope`, `SteepFlare` / `SlopeTooSteep` when a flare is steeper than `CurbRampFlareSlope` (or
+  missing). Their manifest records read as the flat world's: `size.x` the run, `size.y` with the flares, yaw outward.
+- **Buildings and lots** stand on a level pad at the walk's top in front of their entrance (the panel's top on a rough
+  walk, so the door meets the walk), with a concrete plinth down to the lowest ground under the footprint. Entrance
+  steps stand on the lowest ground under them (their bottom riser takes up the rest; the record's measure is the whole
+  rise); an entrance ramp's foot is where its slope meets the yard along the facade (on the other side when the first
+  does not reach the ground in the room there, none when neither does), with a plinth where the ground falls away
+  under it, and a `FootLip` / `VerticalChangeTooHigh` record when the yard's slope across its foot leaves a lip. Front
+  walks, driveways and aprons are prisms 5 mm above the ground (an apron above each panel of the walk it crosses);
+  fences, planting, trees, the street furniture and hazards, litter and parks follow the ground (wide furniture stands
+  on the lowest ground under its footprint; flat things lie on its slope).
 - **Banks.** A raised site gets grassy banks from its outer gutters down to 50 cm under the generator, at 1:3 at the
   steepest, so the street grid has no cliff edge (the example levels' ground slab is 45 cm under the generator).
 - **Roughness** is real geometry the chair and the rider feel. With `SurfaceRoughness` (or any density) above 0 the
   walk is cast in panels `PanelLength` long, the furniture zone its own band, each a few millimetres high or low
-  (about one in eight 4-16 mm off at 1; panels a curb ramp's pour touches are level with it): lips over
-  `VerticalChangeMax` along the route are `Surface/JointLip` records. `HeaveDensity` tilts whole panels (an edge 1-5 cm
+  (about one in eight 4-16 mm off at 1; panels a curb ramp's pour touches are level with it): every lip over
+  `VerticalChangeMax` between two panels of the route -- along a side, beside a ramp's level panels, around a cut,
+  across a corner -- is a `Surface/JointLip` record on its joint. `HeaveDensity` tilts whole panels (an edge 1-5 cm
   proud), `CrackDensity` splits panels with a 2-15 mm lip, `CoverDensity` sets metal covers into them (raised 4-25 mm
   or sunken 4-30 mm, the panel cut round them), `PavingPatchDensity` relays them in brick (running bond) or granite
-  setts with 1.5 cm joints, `RootHeaveChance` lifts the walk beside a street tree in a pit (0.5-4.5 cm). In the road,
-  `PotholeDensity` cuts real holes 2.5-9 cm deep (the road is open under them) and `SpeedHumpChance` puts a sinusoidal
-  hump (7-10 cm over 3.6-4.2 m) or a table (7.5-9 cm, flat top) across a segment, clear of its crossings. Every
+  setts with 1.5 cm joints, `RootHeaveChance` lifts the walk beside a street tree in a pit (0.5-4.5 cm, on the
+  highest panel under it; its measure counts the lower panels' step too). In the road, `PotholeDensity` cuts real
+  holes 2.5-9 cm deep (the road is open under them; 45 cm off the gutters, clear of the edge lines) and
+  `SpeedHumpChance` puts a sinusoidal hump (7-10 cm over 3.6-4.2 m) or a table (7.5-9 cm, flat top) across a segment,
+  clear of its crossings, stopping 40 cm short of each gutter (its two halves overlap at the crown). Every
   non-compliant feature carries its own manifest record. Surfaces: bricks `Mat.Brick`, else `Mat.Facade`; setts
   `Mat.Cobble`, else `Mat.Concrete`; covers `Mat.Metal`, else `Mat.Asphalt` (a recipe palette need not have them; the
   Downtown recipe gives `Mat.Metal` Downtown West's dark grey paint).
 - **Exact collision.** Every ground piece describes itself to `ARammsProcPiece::AppendCollisionShapes`: a
-  `GroundPrisms` part is a box when it is a level rectangle, else a convex hull (its top polygon and the same footprint
-  `SizeZ` below its lowest vertex); a hump is a height grid along its profile (2 cm spacing, constant across). Lips are
-  vertical faces between separate solids. Tilted curbs, ramps, slabs and mounds are the existing kinds through their
-  actor transform.
-- **Downstream.** The Street Network writes the model's text on its `Blocks` and `Sidewalks` points (`Ground`);
-  Subdivide Lots and Park Layout pass it on; every node parses the same text (`FRammsGroundCache`), so every height
-  agrees. On graded ground the Hazard Placer writes each route's ground-following centre line (`RoutePoints`, every
-  2 m), which the manifest's `routes[].points` carry, and the crowd lanes take their heights from it.
+  `GroundPrisms` part (the graded curb ramps' too) is a box when it is a level rectangle, else a convex hull (its top
+  polygon and the same footprint `SizeZ` below its lowest vertex); a hump is a height grid along its profile (2 cm
+  spacing, constant across). Lips are vertical faces between separate solids. Tilted curbs, ramps, slabs and mounds
+  are the existing kinds through their actor transform.
+- **Downstream.** The Street Network writes the model's text on its `Blocks` and `Sidewalks` points (`Ground`), and
+  on a rough walk the panels it set off the model (`PanelDz`: their boxes and offsets; Subdivide Lots passes both to
+  the lots, which stand doors and aprons on them, and the Hazard Placer stands heaves on them); Subdivide Lots and Park
+  Layout pass the text on; every node parses the same text and builds the same facets from it (`FRammsGroundCache`),
+  so every height agrees. On graded ground the Hazard Placer writes each route's ground-following centre line
+  (`RoutePoints`, every 2 m), which the manifest's `routes[].points` carry, and the crowd lanes take their heights
+  from it.
 
 To get a graded level: `levels.build_level("graded_downtown")` (PRE_GradedDowntown: PRE_Downtown with
 `presets.GRADED_DOWNTOWN`, seed 7), `levels.build_level("hilly_residential")` (PRE_HillyResidential: PRE_Suburban
 with `presets.HILLY_RESIDENTIAL`, seed 11), or, with traffic and the Downtown recipe (local packs, saved under
 `/Game/WorldGen/Maps`), `"graded_traffic"` (streets up to 5 %) and `"hilly_downtown"` (PRE_HillyDowntown: up to 12 %
 allowed, 2-7 % with seed 21; the centre intersection is a dip all four streets fall into). `build_all_levels()` leaves
-these out unless named. Or set the parameters on any street generator and regenerate (below).
+these four out unless named. Or set the parameters on any street generator and regenerate (below).
 `worldgen_manifest(kind="Grade")` lists every side's grades.
 
 ### Adjusting slope, cross slope and curb heights
@@ -1067,25 +1097,28 @@ these out unless named. Or set the parameters on any street generator and regene
 
 | To change | Parameter | Range | How it is used |
 |---|---|---|---|
-| How steep streets are | `MaxStreetGrade` | 0..0.15 | Each interval of the street grid (between two street lines) draws its grade uniformly in ±`MaxStreetGrade`, separately along X and along Y, so intersections end up at different heights and each street has one grade between intersections, changing at them. It is a bound, not a target: a small site has few intervals, so its steepest street is often well under it (0.05 gives 2.9 % in `graded_traffic`, 0.12 gives 7 % in `hilly_downtown`). Change `Seed` for other grades. |
+| How steep streets are | `MaxStreetGrade` | 0..0.15 | Each interval of the street grid (between two street lines) draws its grade uniformly in ±`MaxStreetGrade`, separately along X and along Y, so intersections end up at different heights and each street has one grade between intersections, changing at them. It is a bound, not a target: a small site has few intervals, so its steepest street is often well under it (0.05 gives 2.9 % in `graded_traffic`, 0.12 gives 7 % in `hilly_downtown`). Change `Seed` for other grades. A walk runs at its street's grade. |
 | How the road falls to its gutters | `RoadCrown` | 0..0.08 | Each half of a road falls from the centre line at this slope (0.02 is typical). |
-| How the walk falls toward the curb | `SidewalkCrossSlope` | 0..0.08 | Each block's walks rise from the curb top toward the lots at 0.6-1 times this (0.02 or less is compliant: `MaxCrossSlope`). |
+| How the walk falls toward the curb | `SidewalkCrossSlope` | 0..0.08 | Each block's walks rise from the curb top toward the lots at 0.6-1 times this: that is their whole cross slope, whatever the hill (0.02 or less is compliant: `MaxCrossSlope`). |
 | Some steeper walks | `NonCompliantCrossSlopeChance` | 0..1 | That share of blocks instead draws a cross slope from max(`MaxCrossSlope` + 0.01, 0.03) to max(3 × `MaxCrossSlope`, 0.06). |
-| Curb heights | `CurbHeight`, `CurbHeightMin`, `CurbHeightMax` | cm | With `CurbHeightMax` 0 every curb is `CurbHeight` (15 by default). Otherwise each block draws a curb height in [`CurbHeightMin`, `CurbHeightMax`] that also varies linearly along each of its sides, so one block can have a 6 cm curb on one street and 18 cm on the next. |
-| What counts as non-compliant | `MaxCrossSlope` (0.02), `RampMaxSlope` (0.0833), `VerticalChangeMax` | | Thresholds the manifest's compliance records use; they do not shape the ground. |
+| Curb heights | `CurbHeight`, `CurbHeightMin`, `CurbHeightMax` | cm | With `CurbHeightMax` 0 every curb is `CurbHeight` (15 by default). Otherwise each block draws a curb height in [`CurbHeightMin`, `CurbHeightMax`] (never under 2 cm, so `CurbHeightMin`'s default 0 means 2: set it too) that varies linearly along each of its sides; two opposite streets of a block can differ by the whole range, two meeting at a corner by half of it. `CurbHeight` still sets how far the gutters lie under the reference height and how far the crossings stand back from the corners (so keep it near the middle of the range). |
+| What counts as non-compliant | `MaxCrossSlope` (0.02), `RampMaxSlope` (0.0833), `CurbRampFlareSlope` (0.1), `VerticalChangeMax` | | Thresholds the manifest's compliance records use; they do not shape the ground (`CurbRampFlareSlope` sizes the flares). |
 
 **Worth knowing.**
 
-- A walk's total cross slope is its own (`SidewalkCrossSlope`) plus the hill's grade across its street: every grid cell
-  is one plane, so a walk along a north-south street on a block whose east-west grade is 5.6 % falls about 9-10 %
-  toward the curb with `SidewalkCrossSlope` 0.035. The manifest's `Grade/Cross` records give the total, `Grade/Running`
-  the grade along the side.
-- The ground model switches on as soon as any terrain or roughness parameter is above 0; with all of them at 0 the
-  world is the flat one, placed exactly as before. A graded world keeps its seed's blocks, lots, crossings and props.
+- A walk's cross slope is its block's own (`SidewalkCrossSlope`, or the steeper draw), not added to by the hill across
+  its street: the lots take the hill up (a gentle bank inside the walk's back edge), and the corner zones turn from one
+  walk's grade to the next. The manifest's `Grade/Cross` records give each side's cross slope (so `CrossSlopeTooSteep`
+  comes only from those settings), `Grade/Running` the grade along the side.
+- The ground model switches on as soon as any terrain or roughness parameter other than `RootHeaveChance` is above 0;
+  with all of them at 0 the world is the flat one, placed exactly as before. A graded world keeps its seed's blocks,
+  lots and crossings.
 - Curb ramps are sized for the real running slope on a grade and recorded `TooSteep` above `RampMaxSlope`, so steeper
-  streets and walks give more non-compliant ramps (as they do in real cities).
+  streets and walks give more non-compliant ramps (as they do in real cities); near the corners the flares can be
+  short or missing on hills (`SteepFlare`).
 - Grades change only at street lines (intersections, and where a dropped street bends the ground inside a merged
-  block), at curb ramps and at the site's banks: there are no vertical curves or grade breaks part way along a block.
+  block), in the corner zones, at curb ramps and at the site's banks: there are no vertical curves or grade breaks
+  part way along a block.
 
 Example, steeper hills and higher curbs on one level, from the editor's Python console:
 
@@ -1207,7 +1240,7 @@ lane keeps to its sidewalk.
 Every run is sampled about every 50 cm onto the surface below it, so lanes
 follow curb ramps, the drop to the road, path slopes and thresholds instead
 of floating in a straight line between their ends. On graded ground (any terrain
-or roughness parameter above 0) each node takes its height from its route's
+or roughness parameter but RootHeaveChance above 0) each node takes its height from its route's
 ground-following polyline, a run is cut where the route's grade bends (so a
 straight run keeps to one slope), and "one walking level" is the walk's plane
 rather than one height: a nudged run end keeps to the plane through it, a rerouted
@@ -1218,7 +1251,7 @@ them). Planes are fitted to the ground along each run, the manifest's curb ramps
 count as the walk (a graded ramp, sized for its real slope, can reach under the
 route's centre line, so a crossing's end stands on it), and a rerouted run's points
 take the plane's heights. A curb is still a drop off that plane; the tolerance uses
-the lowest curb (`CurbHeightMin`). On flat streets the tests are the original ones.
+the lowest curb (`CurbHeightMin`, at least 2 cm). On flat streets the tests are the original ones.
 
 Branch nodes become polygon `ZoneShape` junctions, the runs between them
 spline `ZoneShape`s on the `PedestrianLanesSidewalk` profile (2 x 60 cm)

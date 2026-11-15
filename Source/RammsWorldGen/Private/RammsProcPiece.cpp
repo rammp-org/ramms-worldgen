@@ -14,6 +14,7 @@
 #include "GeometryScript/GeometryScriptSelectionTypes.h"
 #include "Engine/EngineTypes.h"
 #include "Materials/MaterialInterface.h"
+#include "PCG/RammsGround.h"
 #include "RammsCollisionShapes.h"
 #include "RammsSegmentationLabels.h"
 #include "RammsWorldGenModule.h"
@@ -917,6 +918,20 @@ FRammsManifestFeature ARammsProcPiece::ToManifestFeature() const
 		const double FlareRun = FlareSlope < 50.0 ? H / FMath::Max(FlareSlope, 0.01) : 0.0;
 		F.Size = FVector(Run, FMath::Max(SizeY, 60.0) + 2.0 * FlareRun, H);
 		F.Location = GetActorTransform().TransformPosition(FVector(Run * 0.5, 0.0, -H * 0.5));
+	}
+	else if (GetEffectiveKind() == ERammsProcPieceKind::GroundPrisms)
+	{
+		// Graded ground's features (potholes, covers, cracks, pavers, curb ramps on a grade): the box of their prisms'
+		// plan in the piece's frame, centred on it; its height the feature's (Rise: a curb ramp's curb) when given.
+		TArray<RammsGround::FPart> Ps;
+		if (RammsGround::ParseParts(Parts, Ps))
+		{
+			FBox2D Plan(ForceInit);
+			for (const RammsGround::FPart& P : Ps) { for (const FVector& V : P.Top) { Plan += FVector2D(V.X, V.Y); } }
+			const FVector2D C = Plan.GetCenter(), Sz = Plan.GetSize();
+			F.Size = FVector(Sz.X, Sz.Y, Rise > 0.0 ? Rise : SizeZ);
+			F.Location = GetActorTransform().TransformPosition(FVector(C.X, C.Y, Rise > 0.0 ? -Rise * 0.5 : 0.0));
+		}
 	}
 	F.bCompliant = bCompliant;
 	F.Issue = static_cast<ERammsComplianceIssue>(FMath::Clamp(IssueId, 0, static_cast<int32>(ERammsComplianceIssue::ObstacleInRoute)));
