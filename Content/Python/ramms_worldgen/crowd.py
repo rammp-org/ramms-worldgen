@@ -431,6 +431,9 @@ class _Clearance:
         # (a run on a 4 % grade, or across a cross-sloped walk, is still one walking level). None: a level height.
         self.plane = None
         self.plane_id = 0
+        # ... and the curb ramps' footprints (_ramp_footprints), which count as the walk: on graded ground a ramp can
+        # reach under the route's centre line, so a crossing's end stands on it.
+        self.ramps = []
         self.cache = {}
         self.types = [unreal.ObjectTypeQuery.OBJECT_TYPE_QUERY1, unreal.ObjectTypeQuery.OBJECT_TYPE_QUERY2]
         self.calls = 0
@@ -441,8 +444,7 @@ class _Clearance:
             self.plane_id += 1
 
     def plane_z(self, x, y):
-        x0, y0, z0, gx, gy = self.plane
-        return z0 + gx * (x - x0) + gy * (y - y0)
+        return _plane_z(self.plane, x, y)
 
     def free(self, x, y, z, r):
         # Cached at 5 cm, not the 25 cm search grid: a doorway is only ~8 cm wider than a person, and
@@ -477,8 +479,8 @@ class _Clearance:
                 # street-side lane and its walkers over the road). On graded ground "the level" is the walk's
                 # plane, evaluated at each probe.
                 if on_plane:
-                    hit = not _level_at(self.world, cx, cy, zc, lvl) or not all(
-                        _level_at(self.world, cx + dx, cy + dy, self.plane_z(cx + dx, cy + dy), lvl, raised_ok=True)
+                    hit = not (_in_ramp(self.ramps, cx, cy) or _level_at(self.world, cx, cy, zc, lvl)) or not all(
+                        _in_ramp(self.ramps, cx + dx, cy + dy) or _level_at(self.world, cx + dx, cy + dy, self.plane_z(cx + dx, cy + dy), lvl, raised_ok=True)
                         for dx, dy in ((reach, 0.0), (-reach, 0.0), (0.0, reach), (0.0, -reach)))
                 else:
                     hit = not _level_at(self.world, cx, cy, z, lvl) or not all(
@@ -630,7 +632,7 @@ def _doorway(clr, a, b, z):
     return _add(mid, _mul(lat, c)), ax
 
 
-def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False):
+def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False, ramps=None):
     """Make every run of the graph clear for a pedestrian walking either of its lanes.
 
     Doorway crossings are straightened through the middle of the opening. Every other run end is nudged
@@ -638,10 +640,13 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False):
     rerouted around it on a grid (first with room for both lanes, then with room for one person); a run
     with no way through is dropped. Outdoors, a nudged run end and a rerouted run that keeps to one walking
     level stay at that level's height (see _level_tol; curb_height is the streets' curb, None for the
-    default). On graded ground (graded) "that level" is the walk's plane -- at a run end the plane through
-    it, on a run its grade between its ends and the walk's cross slope across it -- so a sloped or
-    cross-sloped walk is one level and a curb is still a drop off it."""
+    default). On graded ground (graded) "that level" is the walk's plane (_run_plane: fitted to the ground
+    along the run; at a run end the plane of its longest sidewalk run), so a sloped or cross-sloped walk is one
+    level and a curb is still a drop off it; the curb ramps (ramps: _ramp_footprints) count as the walk, since a
+    crossing's end can stand on one; and a rerouted run's points take the plane's heights."""
     clr = _Clearance(world)
+    if graded:
+        clr.ramps = list(ramps or ())
     r_lane = lane_half + AGENT_RADIUS          # both lanes clear
     r_min = AGENT_RADIUS + 6.0                 # one person squeezing through a pinch point
     tol = None if indoor else _level_tol(curb_height)
@@ -681,7 +686,21 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False):
         # Outdoors the end moves only on its own level: a sidewalk node blocked by a bench is not pushed off
         # the curb (at a crossing the runs' mean direction points at the street).
         clr.level_tol = tol
-        pl = _node_plane(world, g.nodes[n], z[n]) if graded and tol is not None else None
+        pl = None
+        if graded and tol is not None:
+            # The plane of the end's longest sidewalk run (fitted along it, so the end standing on a heaved panel or a
+            # ramp does not tilt it); the plane at the end itself when it has none.
+            best = None
+            for k in inc:
+                if k in links or k in g.crossing_edges:
+                    continue
+                if best is None or g.length(k) > g.length(best):
+                    best = k
+            if best is not None:
+                ea, eb, _ep = g.edges[best]
+                pl = _run_plane(world, g.nodes[ea], g.nodes[eb], z[ea], z[eb], clr.ramps)
+            else:
+                pl = _node_plane(world, g.nodes[n], z[n])
         clr.set_plane(pl)
         try:
             if dirs:
@@ -703,8 +722,9 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False):
             continue
         g.nodes[n] = q
         if pl is not None:
-            # On a slope the end's height moves with it.
-            z[n] = _ground_z(world, q[0], q[1], pl[2] + pl[3] * (q[0] - pl[0]) + pl[4] * (q[1] - pl[1]))
+            # On a slope the end's height moves with it (and the lanes are laid from it).
+            z[n] = _ground_z(world, q[0], q[1], _plane_z(pl, q[0], q[1]))
+            g.z[n] = z[n]
 
     # 3. Runs.
     margin = 300.0 if indoor else 450.0
@@ -722,10 +742,18 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False):
         ok_min = all(clr.segment_free(chain[i], chain[i + 1], za, zb, r_min) for i in segs)
         # A run on one level (a sidewalk) is rerouted on that level only: around a tree or a bench, not off the
         # curb and down the street. A crossing, which goes down to the road by design, is not constrained.
-        on_level = tol is not None and k not in g.crossing_edges and _on_level(world, chain, za, zb, tol + LEVEL_TOL_GRADED if graded else tol)
+        rp = None
+        if graded:
+            # Graded ground: the level is the run's own plane, fitted along it.
+            if tol is not None and k not in g.crossing_edges:
+                rp = _run_plane(world, chain[0], chain[-1], za, zb, clr.ramps)
+                if not _on_plane_level(world, chain, rp, tol + LEVEL_TOL_GRADED, clr.ramps):
+                    rp = None
+            on_level = rp is not None
+        else:
+            on_level = tol is not None and k not in g.crossing_edges and _on_level(world, chain, za, zb, tol)
         clr.level_tol = tol if on_level else None
-        # (Graded ground: the level is the run's own plane, its grade and the walk's cross slope.)
-        clr.set_plane(_run_plane(world, chain[0], chain[-1], za, zb) if graded and on_level else None)
+        clr.set_plane(rp)
         path = _astar(clr, chain[0], chain[-1], za, zb, r_lane, margin)
         r_used = r_lane
         if path is None and not ok_min:
@@ -746,7 +774,17 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False):
         path = _pull(clr, path, za, zb, r_used)
         clr.level_tol = None
         clr.set_plane(None)
-        g.edges[k][2] = [(p[0], p[1], za + (zb - za) * (i / max(len(path) - 1, 1))) for i, p in enumerate(path[1:-1], 1)]
+        if graded:
+            # On graded ground each point at its height: on the run's plane, else by the distance walked (a height by
+            # point count can put a point near one end a metre off a steep run's ground, and the lane would float).
+            cum = [0.0]
+            for i in range(1, len(path)):
+                cum.append(cum[-1] + _len(_sub(path[i], path[i - 1])))
+            total = cum[-1] or 1.0
+            g.edges[k][2] = [(p[0], p[1], _plane_z(rp, p[0], p[1]) if rp is not None else za + (zb - za) * (cum[i] / total))
+                             for i, p in enumerate(path[1:-1], 1)]
+        else:
+            g.edges[k][2] = [(p[0], p[1], za + (zb - za) * (i / max(len(path) - 1, 1))) for i, p in enumerate(path[1:-1], 1)]
         stats["rerouted"] += 1
     stats["queries"] = clr.calls
     return stats
@@ -878,27 +916,87 @@ def _node_plane(world, p, z):
     return (p[0], p[1], sum(hs) / len(hs) if hs else z, sx, sy)
 
 
-def _run_plane(world, a, b, za, zb):
-    """Graded ground: the plane of a straight run's walk: its grade from its ends' heights, the walk's cross slope
-    across it, and its height, each the median of three samples along the run (a prop, a lip or a panel set high or
-    low under one does not tilt or lift it)."""
+RAMP_MARGIN = 10.0      # graded ground: a curb ramp's footprint, grown by this (cm), counts as the walk
+
+
+def _ramp_footprints(features):
+    """The manifest's curb ramps as footprints (centre x, y, outward unit x, y, half run, half width with flares)."""
+    out = []
+    for f in features or ():
+        if f.get("kind") != "CurbRamp":
+            continue
+        loc, size = f.get("location") or {}, f.get("size") or {}
+        yaw = math.radians((f.get("rotation") or {}).get("yaw", 0.0))
+        out.append((loc.get("x", 0.0), loc.get("y", 0.0), math.cos(yaw), math.sin(yaw),
+                    size.get("x", 0.0) * 0.5 + RAMP_MARGIN, size.get("y", 0.0) * 0.5 + RAMP_MARGIN))
+    return out
+
+
+def _in_ramp(ramps, x, y):
+    for cx, cy, ux, uy, hx, hy in ramps or ():
+        dx, dy = x - cx, y - cy
+        if abs(dx * ux + dy * uy) <= hx and abs(dy * ux - dx * uy) <= hy:
+            return True
+    return False
+
+
+def _run_plane(world, a, b, za, zb, ramps=()):
+    """Graded ground: the plane of a straight run's walk, fitted to the ground along the run (every 50 cm, off the
+    curb ramps): its grade the median of the slopes between neighbouring samples, its height the median of the
+    samples brought back to its start, and the walk's cross slope across it the median of five samples. A run end on
+    a heaved panel or on a ramp, a lip or a prop under a sample does not tilt or lift it."""
     d = _sub(b, a)
     L = _len(d)
     if L < 1.0:
         return _node_plane(world, a, za)
     u = (d[0] / L, d[1] / L)
     v = (-u[1], u[0])
-    su = (zb - za) / L
-    svs, offs = [], []
-    for t in (0.25, 0.5, 0.75):
-        zt = za + (zb - za) * t
-        s, h = _local_slope_level(world, a[0] + d[0] * t, a[1] + d[1] * t, zt, v)
-        svs.append(s)
-        if h is not None:
-            offs.append(h - zt)
-    sv = _median(svs)
-    z0 = za + (_median(offs) if offs else 0.0)
+    n = max(2, int(L / 50.0))
+    samples = []
+    for i in range(n + 1):
+        t = i / n
+        x, y = a[0] + d[0] * t, a[1] + d[1] * t
+        if _in_ramp(ramps, x, y):
+            continue
+        gz = _ground_or_none(world, x, y, za + (zb - za) * t)
+        if gz is not None:
+            samples.append((L * t, gz))
+    su, z0 = (zb - za) / L, za
+    if len(samples) >= 3:
+        slopes = [(g1 - g0) / (s1 - s0) for (s0, g0), (s1, g1) in zip(samples, samples[1:])
+                  if s1 - s0 > 1.0 and abs(g1 - g0) <= LOCAL_SLOPE_MAX * (s1 - s0)]
+        if slopes:
+            su = _median(slopes)
+        z0 = _median([gz - su * s for s, gz in samples])
+    svs = []
+    for t in (1.0 / 6.0, 2.0 / 6.0, 0.5, 4.0 / 6.0, 5.0 / 6.0):
+        x, y = a[0] + d[0] * t, a[1] + d[1] * t
+        if not _in_ramp(ramps, x, y):
+            svs.append(_local_slope(world, x, y, z0 + su * L * t, v))
+    sv = _median(svs) if svs else 0.0
     return (a[0], a[1], z0, su * u[0] + sv * v[0], su * u[1] + sv * v[1])
+
+
+def _plane_z(plane, x, y):
+    x0, y0, z0, gx, gy = plane
+    return z0 + gx * (x - x0) + gy * (y - y0)
+
+
+def _on_plane_level(world, chain, plane, tol, ramps=(), step=50.0):
+    """Graded ground's _on_level: does the run's line keep to its plane (no drop of more than tol below it, off the curb
+    ramps)?"""
+    for i in range(len(chain) - 1):
+        a, b = chain[i], chain[i + 1]
+        n = max(1, int(_len(_sub(b, a)) / step))
+        for j in range(n + 1):
+            t = j / n
+            x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+            if _in_ramp(ramps, x, y):
+                continue
+            ze = _plane_z(plane, x, y)
+            if _ground_z(world, x, y, ze) < ze - tol:
+                return False
+    return True
 
 
 def _graded_ground(gen):
@@ -1157,7 +1255,7 @@ def _curb_height(gen):
     return None
 
 
-def check_lane_levels(world=None, curb_height=None, step=25.0, graded=None):
+def check_lane_levels(world=None, curb_height=None, step=25.0, graded=None, ramps=None):
     """Audit the level's sidewalk lanes against the ground: every `step` cm along each lane shape's centre line,
     is the ground under it, and at the outer edge of either lane's walkers (lane_half + AGENT_RADIUS either side),
     no more than the level tolerance (_level_tol) below the lane? A sample that fails has a lane over the road
@@ -1165,11 +1263,12 @@ def check_lane_levels(world=None, curb_height=None, step=25.0, graded=None):
     road by design), junction polygons and indoor (narrow-profile) lanes. curb_height None reads it from the
     level's generator. On graded ground (graded; None reads it from the generator, _graded_ground) the walkers' edges
     are measured against the walk's cross slope at the sample, not the lane's own height: a cross-sloped walk is one
-    level, a curb a drop off it. Returns the number of failing samples, 0 when every lane keeps to its sidewalk;
+    level, a curb a drop off it, and the curb ramps count as the walk (ramps: _ramp_footprints; None reads them from
+    the generator's manifest). Returns the number of failing samples, 0 when every lane keeps to its sidewalk;
     OFF_LEVEL keeps the first ones."""
     world = world or unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
     del OFF_LEVEL[:]
-    if curb_height is None or graded is None:
+    if curb_height is None or graded is None or (graded and ramps is None):
         try:
             gen = H.find_generator()
         except Exception:  # noqa: BLE001
@@ -1178,6 +1277,11 @@ def check_lane_levels(world=None, curb_height=None, step=25.0, graded=None):
             curb_height = _curb_height(gen)
         if graded is None:
             graded = _graded_ground(gen)
+        if graded and ramps is None and gen is not None:
+            try:
+                ramps = _ramp_footprints(H.manifest_to_dict(gen).get("features", []))
+            except Exception:  # noqa: BLE001
+                ramps = []
     tol = _level_tol(curb_height)
     if tol is None:
         return 0            # no real curb: no level to keep
@@ -1210,12 +1314,13 @@ def check_lane_levels(world=None, curb_height=None, step=25.0, graded=None):
         for x, y, z, u in samples:
             lat = (-u[1] * reach, u[0] * reach)
             if graded:
-                # The walk's cross slope here (along lat): the edges' ground is expected that much higher or lower.
+                # The walk's cross slope here (along lat): the edges' ground is expected that much higher or lower; a
+                # point on a curb ramp is on the walk.
                 s = _local_slope(world, x, y, z, (-u[1], u[0]))
                 probes = ((0.0, 0.0, z), (lat[0], lat[1], z + s * reach), (-lat[0], -lat[1], z - s * reach))
-            else:
-                probes = ((0.0, 0.0, z), (lat[0], lat[1], z), (-lat[0], -lat[1], z))
-            if all(_level_at(world, x + ox, y + oy, oz, tol, raised_ok=True) for ox, oy, oz in probes):
+                if all(_in_ramp(ramps, x + ox, y + oy) or _level_at(world, x + ox, y + oy, oz, tol, raised_ok=True) for ox, oy, oz in probes):
+                    continue
+            elif all(_level_at(world, x + ox, y + oy, z, tol, raised_ok=True) for ox, oy in ((0.0, 0.0), lat, (-lat[0], -lat[1]))):
                 continue
             bad += 1
             if len(OFF_LEVEL) < 50:
@@ -1238,7 +1343,8 @@ def build_crowd(gen, count=None):
     lane_half = LANE_PROFILES[kind][2] * 0.25        # each lane's centre sits a quarter of the profile off the run
     curb = None if indoor else _curb_height(gen)
     graded = (not indoor) and _graded_ground(gen)
-    cleared = _clear_lanes(g, world, lane_half, indoor, curb, graded)
+    ramps = _ramp_footprints(m.get("features", [])) if graded else []
+    cleared = _clear_lanes(g, world, lane_half, indoor, curb, graded, ramps)
     par = list(range(len(g.nodes)))
 
     def _root(x):
@@ -1280,7 +1386,7 @@ def build_crowd(gen, count=None):
         H.warn("crowd: %s not found; lanes laid, no spawner" % PROFILE_ASSET)
     bad_lane, bad_poly = check_lanes(world)
     # Informational for now (verify.py lives in the superproject): lane samples whose walkers stand off their level.
-    off_level = 0 if indoor else check_lane_levels(world, curb, graded=graded)
+    off_level = 0 if indoor else check_lane_levels(world, curb, graded=graded, ramps=ramps)
     res = {"cleared": cleared, "blocked_lane_segments": bad_lane, "blocked_junction_edges": bad_poly, "blocked": list(BLOCKED[:10]), "shapes": shapes, "nodes": len(g.nodes), "edges": len(g.edges), "lane_m": round(lane_cm / 100.0),
            "count": count if spawner else 0, "removed": removed, "indoor": indoor,
            "crosswalks": getattr(g, "crosswalks", 0), "crosswalks_unmatched": getattr(g, "crosswalks_unmatched", 0),
