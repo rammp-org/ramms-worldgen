@@ -31,13 +31,15 @@ EXAMPLES = {
     "hilly_residential": ("Map_Gen_HillyResidential", "PRE_HillyResidential", 11),
     # both: the traffic level's streets graded and worn, its cars on the grades (recipe-built like traffic)
     "graded_traffic": ("Map_Gen_GradedTraffic", "PRE_GradedTraffic", 21, "Downtown"),
+    # the same on a steep hill (streets 2-7 %, the centre intersection a dip all four streets fall into)
+    "hilly_downtown": ("Map_Gen_HillyDowntown", "PRE_HillyDowntown", 21, "Downtown"),
 }
 # Examples build_all_levels() leaves out unless they are named.
-OPT_IN = {"graded_downtown", "hilly_residential", "graded_traffic"}
+OPT_IN = {"graded_downtown", "hilly_residential", "graded_traffic", "hilly_downtown"}
 
 # Levels that get traffic after generation (vehicle lanes, signal clock, cars: traffic.build_traffic). Any other
 # level gets it with build_level(kind, traffic=True).
-TRAFFIC_KINDS = {"traffic", "graded_traffic"}
+TRAFFIC_KINDS = {"traffic", "graded_traffic", "hilly_downtown"}
 
 _pending = {}
 

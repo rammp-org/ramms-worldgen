@@ -1007,10 +1007,63 @@ world of the same seed on a hill.
   2 m), which the manifest's `routes[].points` carry, and the crowd lanes take their heights from it.
 
 To get a graded level: `levels.build_level("graded_downtown")` (PRE_GradedDowntown: PRE_Downtown with
-`presets.GRADED_DOWNTOWN`, seed 7) or `levels.build_level("hilly_residential")` (PRE_HillyResidential: PRE_Suburban
-with `presets.HILLY_RESIDENTIAL`, seed 11); `build_all_levels()` leaves these two out unless named. Or set the
-parameters on any street generator (`worldgen_set_param`, `SetParamsJson`, or Param Overrides) and regenerate.
+`presets.GRADED_DOWNTOWN`, seed 7), `levels.build_level("hilly_residential")` (PRE_HillyResidential: PRE_Suburban
+with `presets.HILLY_RESIDENTIAL`, seed 11), or, with traffic and the Downtown recipe (local packs, saved under
+`/Game/WorldGen/Maps`), `"graded_traffic"` (streets up to 5 %) and `"hilly_downtown"` (PRE_HillyDowntown: up to 12 %
+allowed, 2-7 % with seed 21; the centre intersection is a dip all four streets fall into). `build_all_levels()` leaves
+these out unless named. Or set the parameters on any street generator and regenerate (below).
 `worldgen_manifest(kind="Grade")` lists every side's grades.
+
+### Adjusting slope, cross slope and curb heights
+
+**Where to set them.**
+
+- **One level (one generator):** select the World Generator, set the value under **Param Overrides** and add the
+  parameter's name to **Override Keys** (only listed names apply), then **Regenerate**. From Python:
+  `gen.set_param("MaxStreetGrade", 0.08)` (adds the key for you), then `gen.regenerate()`; from an AI assistant,
+  `worldgen_set_param`; from Remote Control, `SetParamsJson`. Overrides are saved with the level and leave its
+  preset alone; on a level with crowd lanes or traffic, run `levels.finish_level(gen)` after regenerating (or
+  rebuild the level) so the lanes follow the new ground.
+- **A preset (every level using it):** edit its entry in `Content/Python/ramms_worldgen/presets.py` (the graded ones
+  are a base preset plus a dict such as `GRADED_DOWNTOWN`), run `build_all.build("presets")`, then rebuild the levels
+  (`levels.build_level(kind)`).
+
+**What each one does.** Slopes are fractions (rise / run: 0.05 = 5 %), heights cm.
+
+| To change | Parameter | Range | How it is used |
+|---|---|---|---|
+| How steep streets are | `MaxStreetGrade` | 0..0.15 | Each interval of the street grid (between two street lines) draws its grade uniformly in ±`MaxStreetGrade`, separately along X and along Y, so intersections end up at different heights and each street has one grade between intersections, changing at them. It is a bound, not a target: a small site has few intervals, so its steepest street is often well under it (0.05 gives 2.9 % in `graded_traffic`, 0.12 gives 7 % in `hilly_downtown`). Change `Seed` for other grades. |
+| How the road falls to its gutters | `RoadCrown` | 0..0.08 | Each half of a road falls from the centre line at this slope (0.02 is typical). |
+| How the walk falls toward the curb | `SidewalkCrossSlope` | 0..0.08 | Each block's walks rise from the curb top toward the lots at 0.6-1 times this (0.02 or less is compliant: `MaxCrossSlope`). |
+| Some steeper walks | `NonCompliantCrossSlopeChance` | 0..1 | That share of blocks instead draws a cross slope from max(`MaxCrossSlope` + 0.01, 0.03) to max(3 × `MaxCrossSlope`, 0.06). |
+| Curb heights | `CurbHeight`, `CurbHeightMin`, `CurbHeightMax` | cm | With `CurbHeightMax` 0 every curb is `CurbHeight` (15 by default). Otherwise each block draws a curb height in [`CurbHeightMin`, `CurbHeightMax`] that also varies linearly along each of its sides, so one block can have a 6 cm curb on one street and 18 cm on the next. |
+| What counts as non-compliant | `MaxCrossSlope` (0.02), `RampMaxSlope` (0.0833), `VerticalChangeMax` | | Thresholds the manifest's compliance records use; they do not shape the ground. |
+
+**Worth knowing.**
+
+- A walk's total cross slope is its own (`SidewalkCrossSlope`) plus the hill's grade across its street: every grid cell
+  is one plane, so a walk along a north-south street on a block whose east-west grade is 5.6 % falls about 9-10 %
+  toward the curb with `SidewalkCrossSlope` 0.035. The manifest's `Grade/Cross` records give the total, `Grade/Running`
+  the grade along the side.
+- The ground model switches on as soon as any terrain or roughness parameter is above 0; with all of them at 0 the
+  world is the flat one, placed exactly as before. A graded world keeps its seed's blocks, lots, crossings and props.
+- Curb ramps are sized for the real running slope on a grade and recorded `TooSteep` above `RampMaxSlope`, so steeper
+  streets and walks give more non-compliant ramps (as they do in real cities).
+- Grades change only at street lines (intersections, and where a dropped street bends the ground inside a merged
+  block), at curb ramps and at the site's banks: there are no vertical curves or grade breaks part way along a block.
+
+Example, steeper hills and higher curbs on one level, from the editor's Python console:
+
+```python
+import unreal
+gen = unreal.GameplayStatics.get_all_actors_of_class(unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world(), unreal.RammsWorldGenerator)[0]
+for name, value in (("MaxStreetGrade", 0.10), ("RoadCrown", 0.02), ("SidewalkCrossSlope", 0.02),
+                    ("NonCompliantCrossSlopeChance", 0.2), ("CurbHeightMin", 10.0), ("CurbHeightMax", 20.0)):
+    gen.set_param(name, value)
+gen.regenerate()
+# when generation is done (not gen.is_generating()):
+#   import ramms_worldgen.levels as L; L.finish_level(gen)   # crowd lanes (and traffic) on the new ground
+```
 
 ## Indoor furnishing and routes
 
