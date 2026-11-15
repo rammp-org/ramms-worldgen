@@ -661,6 +661,7 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 				RammsPCG::WriteCube(Primitives, P, Sg.bAlongX ? FVector(LenAlong, Wide, 0.6) : FVector(Wide, LenAlong, 0.6), 0.0, Mat, NextSeed());
 			};
 			const bool bMidGap = bMid && bEnds;
+			const double StopHand = Sg.bAlongX ? 1.0 : -1.0; // the side of the road a car heading +along keeps to
 			if (RW >= 500.0)
 			{
 				for (double p = a0 + Keep; p + 300.0 <= b0 - Keep; p += 600.0)
@@ -684,14 +685,17 @@ bool FPCGRammsStreetNetworkElement::ExecuteInternal(FPCGContext* Context) const
 			}
 			if (Len > 2.0 * (CrossOff + CW * 0.5) + 400.0)
 			{
-				// Stop lines sit before each crossing (away from the intersection), on the approach half of the road.
-				Along(a0 + CrossOff + CW * 0.5 + 55.0, -RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
-				Along(b0 - CrossOff - CW * 0.5 - 55.0, RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
+				// Stop lines sit before each crossing (away from the intersection), on the approach half of the road:
+				// right-hand traffic, so the half on the right of a car heading for the crossing. Unreal is left-handed:
+				// heading -X the right is -Y, but heading -Y it is +X, so the half's sign flips with the road's axis.
+				Along(a0 + CrossOff + CW * 0.5 + 55.0, -StopHand * RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
+				Along(b0 - CrossOff - CW * 0.5 - 55.0, StopHand * RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
 			}
 			if (bMidGap)
 			{
-				Along(MidPos - CW * 0.5 - 55.0, -RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
-				Along(MidPos + CW * 0.5 + 55.0, RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
+				// Mid-block: before the crossing for each direction (the A side is approached heading toward B).
+				Along(MidPos - CW * 0.5 - 55.0, StopHand * RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
+				Along(MidPos + CW * 0.5 + 55.0, -StopHand * RW * 0.25, 30.0, RW * 0.5 - 40.0, MatMarking);
 			}
 		}
 		// Crossings near both ends, and mid-block.
