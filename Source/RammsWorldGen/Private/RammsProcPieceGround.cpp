@@ -231,7 +231,12 @@ namespace
 	/** A GroundPrisms part on its way to being exported, or several flush parts merged into one solid. */
 	struct FGroundSolid
 	{
+		/** The top polygon in plan (the union's hull once merged). */
 		TArray<FVector> Top;
+		/** Every merged prism's own corners: its top polygon and its own footprint at its own bottom. Their hull is the
+		 *  solid, with the parts' bottoms where the mesh has them (a sloped part's bottom is not its neighbour's). */
+		TArray<FVector> Corners;
+		/** The lowest of the merged prisms' bottoms. */
 		double Bottom = 0.0;
 		double Area = 0.0;
 		FName Surface;
@@ -277,6 +282,7 @@ namespace
 			return false; // the union is not convex (an L, a gap between them): two solids
 		}
 		A.Top = MoveTemp(Hull);
+		A.Corners.Append(B.Corners);
 		A.Area = Sum;
 		A.Bottom = FMath::Min(A.Bottom, B.Bottom);
 		A.Plan += B.Plan;
@@ -353,6 +359,12 @@ void ARammsProcPiece::AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out)
 		FGroundSolid& S = Solids.AddDefaulted_GetRef();
 		S.Top = P.Top;
 		S.Bottom = MinTopZ(P.Top) - Depth;
+		S.Corners.Reserve(P.Top.Num() * 2);
+		for (const FVector& V : P.Top)
+		{
+			S.Corners.Add(V);
+			S.Corners.Add(FVector(V.X, V.Y, S.Bottom));
+		}
 		S.Area = PlanArea(P.Top);
 		S.Surface = P.Surface.IsNone() ? FName(TEXT("Default")) : P.Surface;
 		S.bPlanarConvex = IsPlanarConvex(P.Top, PrismPlanarTolerance) && PlaneOf(P.Top, S.Normal, S.Offset);
@@ -406,12 +418,13 @@ void ARammsProcPiece::AppendGroundPrismShapes(TArray<FRammsCollisionShape>& Out)
 		}
 		if (S.bPlanarConvex)
 		{
+			// The hull of the prisms' own corners: the top exact, the bottom where each part's is (a single part: its
+			// top and its footprint).
 			TArray<FVector3f> Points;
-			Points.Reserve(Top.Num() * 2);
-			for (const FVector& V : Top)
+			Points.Reserve(S.Corners.Num());
+			for (const FVector& V : S.Corners)
 			{
 				Points.Add(FVector3f(V * Sc));
-				Points.Add(FVector3f(FVector(V.X, V.Y, Bottom) * Sc));
 			}
 			RammsCollisionShapes::AddConvex(Out, Xf, MoveTemp(Points), S.Surface, Source);
 			continue;
