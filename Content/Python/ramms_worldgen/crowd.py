@@ -186,19 +186,39 @@ def _seg_z(s, p):
 
 
 def _grade_breaks(pts):
-    """Fractions along a route (its points evenly spaced) where its grade bends: a run between two nodes is then one
-    straight slope, so a lane interpolated between its ends keeps to the ground (graded streets bend where a street
-    was dropped inside a block). None on flat or evenly graded routes."""
+    """Fractions along a route where its grade bends: a run between two nodes is then one straight slope, so a lane
+    interpolated between its ends keeps to the ground (graded streets bend where a street was dropped inside a block,
+    and at a block's corner squares). A bend that falls between two of the route's points (two slope changes in a row)
+    is placed where the straight grades either side of it meet. None on flat or evenly graded routes."""
     out = []
     n = len(pts)
     if n < 3:
         return out
-    def slope(i):
-        d = math.hypot(pts[i + 1]["x"] - pts[i]["x"], pts[i + 1]["y"] - pts[i]["y"])
-        return 0.0 if d < 1e-6 else (pts[i + 1].get("z", 0.0) - pts[i].get("z", 0.0)) / d
-    for k in range(1, n - 1):
-        if abs(slope(k) - slope(k - 1)) > GRADE_BREAK:
-            out.append(k / (n - 1.0))
+    xs = [0.0]
+    for i in range(1, n):
+        xs.append(xs[-1] + math.hypot(pts[i]["x"] - pts[i - 1]["x"], pts[i]["y"] - pts[i - 1]["y"]))
+    total = xs[-1]
+    if total < 1.0:
+        return out
+    zs = [p.get("z", 0.0) for p in pts]
+    slopes = [0.0 if xs[i + 1] - xs[i] < 1e-6 else (zs[i + 1] - zs[i]) / (xs[i + 1] - xs[i]) for i in range(n - 1)]
+    bend = [False] + [abs(slopes[k] - slopes[k - 1]) > GRADE_BREAK for k in range(1, n - 1)] + [False]
+    k = 1
+    while k < n - 1:
+        if not bend[k]:
+            k += 1
+            continue
+        if bend[k + 1] and k + 1 < n - 1:
+            # The bend is inside segment (k, k+1): where the grade before it (k-1..k) meets the grade after (k+1..k+2).
+            sa, sb = slopes[k - 1], slopes[k + 1]
+            if abs(sa - sb) > 1e-9:
+                x = (zs[k + 1] - zs[k] + sa * xs[k] - sb * xs[k + 1]) / (sa - sb)
+                if xs[k] < x < xs[k + 1]:
+                    out.append(x / total)
+                    k += 2
+                    continue
+        out.append(xs[k] / total)
+        k += 1
     return out
 
 
@@ -407,25 +427,44 @@ class _Clearance:
         self.world = world
         self.level_tol = None   # set while rerouting a run that keeps to one level: the ground must stay at it
         self.level_reach = 0.0  # ... out to at least this either side (cm): the outer edge of either lane's walkers
+        # Graded ground: the walk's plane (x0, y0, z0, slope x, slope y) the level tests follow instead of one height
+        # (a run on a 4 % grade, or across a cross-sloped walk, is still one walking level). None: a level height.
+        self.plane = None
+        self.plane_id = 0
         self.cache = {}
         self.types = [unreal.ObjectTypeQuery.OBJECT_TYPE_QUERY1, unreal.ObjectTypeQuery.OBJECT_TYPE_QUERY2]
         self.calls = 0
+
+    def set_plane(self, plane):
+        self.plane = plane
+        if plane is not None:
+            self.plane_id += 1
+
+    def plane_z(self, x, y):
+        x0, y0, z0, gx, gy = self.plane
+        return z0 + gx * (x - x0) + gy * (y - y0)
 
     def free(self, x, y, z, r):
         # Cached at 5 cm, not the 25 cm search grid: a doorway is only ~8 cm wider than a person, and
         # snapping a test point to the grid would close it.
         lvl = self.level_tol
         reach = max(r, self.level_reach) if lvl is not None else 0.0
-        # A level answer depends on the floor height to within the tolerance, so it is cached on a finer z band.
-        key = (int(round(x / 5.0)), int(round(y / 5.0)), int(round(z / (2.0 if lvl is not None else 20.0))), int(r), lvl, int(reach))
+        on_plane = lvl is not None and self.plane is not None
+        if on_plane:
+            # The heights come from the plane, so the answer depends on the plane, not on z.
+            key = (int(round(x / 5.0)), int(round(y / 5.0)), "plane", self.plane_id, int(r), lvl, int(reach))
+        else:
+            # A level answer depends on the floor height to within the tolerance, so it is cached on a finer z band.
+            key = (int(round(x / 5.0)), int(round(y / 5.0)), int(round(z / (2.0 if lvl is not None else 20.0))), int(r), lvl, int(reach))
         hit = self.cache.get(key)
         if hit is None:
             self.calls += 1
             cx, cy = key[0] * 5.0, key[1] * 5.0
+            zc = self.plane_z(cx, cy) if on_plane else z
             half = 70.0
             # Returns the overlapping components, or None when there are none (the bool return is folded in).
             res = unreal.SystemLibrary.capsule_overlap_components(
-                self.world, unreal.Vector(cx, cy, z + 30.0 + half), r, max(half, r), self.types,
+                self.world, unreal.Vector(cx, cy, zc + 30.0 + half), r, max(half, r), self.types,
                 unreal.PrimitiveComponent.static_class(), [])
             if isinstance(res, tuple):
                 res = res[-1] if res and res[0] else None
@@ -435,10 +474,16 @@ class _Clearance:
                 # keeps to one level, ground off that level (or none) blocks too -- under the person's centre, and
                 # a drop out to the outer edge of either lane's walkers (lane_half + AGENT_RADIUS), whatever radius
                 # the search is squeezing through with (a centre line along the curb edge would put the
-                # street-side lane and its walkers over the road).
-                hit = not _level_at(self.world, cx, cy, z, lvl) or not all(
-                    _level_at(self.world, cx + dx, cy + dy, z, lvl, raised_ok=True)
-                    for dx, dy in ((reach, 0.0), (-reach, 0.0), (0.0, reach), (0.0, -reach)))
+                # street-side lane and its walkers over the road). On graded ground "the level" is the walk's
+                # plane, evaluated at each probe.
+                if on_plane:
+                    hit = not _level_at(self.world, cx, cy, zc, lvl) or not all(
+                        _level_at(self.world, cx + dx, cy + dy, self.plane_z(cx + dx, cy + dy), lvl, raised_ok=True)
+                        for dx, dy in ((reach, 0.0), (-reach, 0.0), (0.0, reach), (0.0, -reach)))
+                else:
+                    hit = not _level_at(self.world, cx, cy, z, lvl) or not all(
+                        _level_at(self.world, cx + dx, cy + dy, z, lvl, raised_ok=True)
+                        for dx, dy in ((reach, 0.0), (-reach, 0.0), (0.0, reach), (0.0, -reach)))
             self.cache[key] = hit
         return not hit
 
@@ -585,7 +630,7 @@ def _doorway(clr, a, b, z):
     return _add(mid, _mul(lat, c)), ax
 
 
-def _clear_lanes(g, world, lane_half, indoor, curb_height=None):
+def _clear_lanes(g, world, lane_half, indoor, curb_height=None, graded=False):
     """Make every run of the graph clear for a pedestrian walking either of its lanes.
 
     Doorway crossings are straightened through the middle of the opening. Every other run end is nudged
@@ -593,7 +638,9 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None):
     rerouted around it on a grid (first with room for both lanes, then with room for one person); a run
     with no way through is dropped. Outdoors, a nudged run end and a rerouted run that keeps to one walking
     level stay at that level's height (see _level_tol; curb_height is the streets' curb, None for the
-    default)."""
+    default). On graded ground (graded) "that level" is the walk's plane -- at a run end the plane through
+    it, on a run its grade between its ends and the walk's cross slope across it -- so a sloped or
+    cross-sloped walk is one level and a curb is still a drop off it."""
     clr = _Clearance(world)
     r_lane = lane_half + AGENT_RADIUS          # both lanes clear
     r_min = AGENT_RADIUS + 6.0                 # one person squeezing through a pinch point
@@ -634,6 +681,8 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None):
         # Outdoors the end moves only on its own level: a sidewalk node blocked by a bench is not pushed off
         # the curb (at a crossing the runs' mean direction points at the street).
         clr.level_tol = tol
+        pl = _node_plane(world, g.nodes[n], z[n]) if graded and tol is not None else None
+        clr.set_plane(pl)
         try:
             if dirs:
                 dv = _unit((sum(d[0] for d in dirs), sum(d[1] for d in dirs)))
@@ -646,12 +695,16 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None):
                 q = clr.nearest_free(g.nodes[n], z[n], r_min, 150.0)
         finally:
             clr.level_tol = None
+            clr.set_plane(None)
         if q is None:
             for k in inc:
                 del g.edges[k]
                 stats["dropped"] += 1
             continue
         g.nodes[n] = q
+        if pl is not None:
+            # On a slope the end's height moves with it.
+            z[n] = _ground_z(world, q[0], q[1], pl[2] + pl[3] * (q[0] - pl[0]) + pl[4] * (q[1] - pl[1]))
 
     # 3. Runs.
     margin = 300.0 if indoor else 450.0
@@ -669,8 +722,10 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None):
         ok_min = all(clr.segment_free(chain[i], chain[i + 1], za, zb, r_min) for i in segs)
         # A run on one level (a sidewalk) is rerouted on that level only: around a tree or a bench, not off the
         # curb and down the street. A crossing, which goes down to the road by design, is not constrained.
-        on_level = tol is not None and k not in g.crossing_edges and _on_level(world, chain, za, zb, tol)
+        on_level = tol is not None and k not in g.crossing_edges and _on_level(world, chain, za, zb, tol + LEVEL_TOL_GRADED if graded else tol)
         clr.level_tol = tol if on_level else None
+        # (Graded ground: the level is the run's own plane, its grade and the walk's cross slope.)
+        clr.set_plane(_run_plane(world, chain[0], chain[-1], za, zb) if graded and on_level else None)
         path = _astar(clr, chain[0], chain[-1], za, zb, r_lane, margin)
         r_used = r_lane
         if path is None and not ok_min:
@@ -681,6 +736,7 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None):
             r_used = 24.0
         if path is None:
             clr.level_tol = None
+            clr.set_plane(None)
             if ok_min:
                 continue            # tight but passable as laid out: keep it
             del g.edges[k]
@@ -689,6 +745,7 @@ def _clear_lanes(g, world, lane_half, indoor, curb_height=None):
             continue
         path = _pull(clr, path, za, zb, r_used)
         clr.level_tol = None
+        clr.set_plane(None)
         g.edges[k][2] = [(p[0], p[1], za + (zb - za) * (i / max(len(path) - 1, 1))) for i, p in enumerate(path[1:-1], 1)]
         stats["rerouted"] += 1
     stats["queries"] = clr.calls
@@ -763,6 +820,102 @@ def _ground_z(world, x, y, z):
         if alts:
             g = max(alts + ([g] if g is not None else []))
     return z if g is None else g
+
+
+LOCAL_SLOPE_MAX = 0.15  # graded ground: steeper than this between two samples 20 cm apart is a step, not the walk's slope
+SLOPE_PROBE = 20.0      # ... and that spacing (cm)
+LEVEL_TOL_GRADED = 1.5  # graded, rough ground: a run is still on its level over a sunken cover or a panel's lip (cm more)
+
+
+def _ground_or_none(world, x, y, z):
+    """Walking surface near z at (x, y), as _ground_z but None where there is none (seams retried 2 cm aside)."""
+    g = _trace_down(world, x, y, z)
+    if g is None:
+        alts = [h for h in (_trace_down(world, x + dx, y + dy, z) for dx, dy in SEAM_OFFSETS) if h is not None]
+        g = max(alts) if alts else None
+    return g
+
+
+def _local_slope(world, x, y, z, d):
+    """Graded ground: the walk's slope along the unit direction d at (x, y): the ground every 20 cm from 40 cm before
+    to 40 cm after the point, and the median of the four slopes between neighbouring samples that are slopes at all
+    (LOCAL_SLOPE_MAX). A curb edge, a panel's lip or a cover between two samples is a step, steeper than that or
+    outvoted, so it does not tilt the walk; 0 where nothing can be measured."""
+    return _local_slope_level(world, x, y, z, d)[0]
+
+
+def _median(vals):
+    v = sorted(vals)
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else 0.5 * (v[m - 1] + v[m])
+
+
+def _local_slope_level(world, x, y, z, d):
+    """_local_slope, and the walk's height at (x, y) on that slope: the median of the five samples brought back to the
+    point along it, so a panel set a little high or low under the point does not shift the level (None: no ground)."""
+    c = _ground_or_none(world, x, y, z)
+    if c is None:
+        return 0.0, None
+    hs = []
+    for k in (-2, -1, 0, 1, 2):
+        if k == 0:
+            hs.append(c)
+            continue
+        hs.append(_ground_or_none(world, x + d[0] * SLOPE_PROBE * k, y + d[1] * SLOPE_PROBE * k, c))
+    ss = [(hs[i + 1] - hs[i]) / SLOPE_PROBE for i in range(4)
+          if hs[i] is not None and hs[i + 1] is not None and abs(hs[i + 1] - hs[i]) <= LOCAL_SLOPE_MAX * SLOPE_PROBE]
+    s = _median(ss) if ss else 0.0
+    level = _median([hs[i] - s * SLOPE_PROBE * (i - 2) for i in range(5) if hs[i] is not None])
+    return s, level
+
+
+def _node_plane(world, p, z):
+    """Graded ground: the walk's plane at a run end (x0, y0, z0, slope x, slope y), its height the walk's own there (a
+    panel set high or low under the end does not lift the plane)."""
+    sx, hx = _local_slope_level(world, p[0], p[1], z, (1.0, 0.0))
+    sy, hy = _local_slope_level(world, p[0], p[1], z, (0.0, 1.0))
+    hs = [h for h in (hx, hy) if h is not None]
+    return (p[0], p[1], sum(hs) / len(hs) if hs else z, sx, sy)
+
+
+def _run_plane(world, a, b, za, zb):
+    """Graded ground: the plane of a straight run's walk: its grade from its ends' heights, the walk's cross slope
+    across it, and its height, each the median of three samples along the run (a prop, a lip or a panel set high or
+    low under one does not tilt or lift it)."""
+    d = _sub(b, a)
+    L = _len(d)
+    if L < 1.0:
+        return _node_plane(world, a, za)
+    u = (d[0] / L, d[1] / L)
+    v = (-u[1], u[0])
+    su = (zb - za) / L
+    svs, offs = [], []
+    for t in (0.25, 0.5, 0.75):
+        zt = za + (zb - za) * t
+        s, h = _local_slope_level(world, a[0] + d[0] * t, a[1] + d[1] * t, zt, v)
+        svs.append(s)
+        if h is not None:
+            offs.append(h - zt)
+    sv = _median(svs)
+    z0 = za + (_median(offs) if offs else 0.0)
+    return (a[0], a[1], z0, su * u[0] + sv * v[0], su * u[1] + sv * v[1])
+
+
+def _graded_ground(gen):
+    """Was the level generated on graded or rough ground (any terrain or roughness parameter above 0)? Its level tests
+    then follow the walk's plane; on flat streets they keep to one height, as they always have."""
+    if gen is None:
+        return False
+    names = ("max_street_grade", "road_crown", "sidewalk_cross_slope", "non_compliant_cross_slope_chance", "curb_height_max",
+             "surface_roughness", "heave_density", "crack_density", "cover_density", "paving_patch_density",
+             "pothole_density", "speed_hump_chance", "root_heave_chance")
+    for get in (lambda: gen.get_editor_property("params"), lambda: gen.get_editor_property("preset").get_editor_property("params")):
+        try:
+            p = get()
+            return any(float(p.get_editor_property(n)) > 0.0 for n in names)
+        except Exception:  # noqa: BLE001 - no params, or a build without the terrain parameters
+            continue
+    return False
 
 
 GROUND_STEP = 50.0      # lane sampling interval along a run, cm
@@ -1004,21 +1157,27 @@ def _curb_height(gen):
     return None
 
 
-def check_lane_levels(world=None, curb_height=None, step=25.0):
+def check_lane_levels(world=None, curb_height=None, step=25.0, graded=None):
     """Audit the level's sidewalk lanes against the ground: every `step` cm along each lane shape's centre line,
     is the ground under it, and at the outer edge of either lane's walkers (lane_half + AGENT_RADIUS either side),
     no more than the level tolerance (_level_tol) below the lane? A sample that fails has a lane over the road
     or down a curb. Not audited: shapes that carry a street crossing (tagged CROSSING_TAG; they go down to the
     road by design), junction polygons and indoor (narrow-profile) lanes. curb_height None reads it from the
-    level's generator. Returns the number of failing samples, 0 when every lane keeps to its sidewalk; OFF_LEVEL
-    keeps the first ones."""
+    level's generator. On graded ground (graded; None reads it from the generator, _graded_ground) the walkers' edges
+    are measured against the walk's cross slope at the sample, not the lane's own height: a cross-sloped walk is one
+    level, a curb a drop off it. Returns the number of failing samples, 0 when every lane keeps to its sidewalk;
+    OFF_LEVEL keeps the first ones."""
     world = world or unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
     del OFF_LEVEL[:]
-    if curb_height is None:
+    if curb_height is None or graded is None:
         try:
-            curb_height = _curb_height(H.find_generator())
+            gen = H.find_generator()
         except Exception:  # noqa: BLE001
-            curb_height = None
+            gen = None
+        if curb_height is None:
+            curb_height = _curb_height(gen)
+        if graded is None:
+            graded = _graded_ground(gen)
     tol = _level_tol(curb_height)
     if tol is None:
         return 0            # no real curb: no level to keep
@@ -1050,7 +1209,13 @@ def check_lane_levels(world=None, curb_height=None, step=25.0):
             samples.append(P[-1] + (_unit(_sub(P[-1][:2], P[-2][:2])),))
         for x, y, z, u in samples:
             lat = (-u[1] * reach, u[0] * reach)
-            if all(_level_at(world, x + ox, y + oy, z, tol, raised_ok=True) for ox, oy in ((0.0, 0.0), lat, (-lat[0], -lat[1]))):
+            if graded:
+                # The walk's cross slope here (along lat): the edges' ground is expected that much higher or lower.
+                s = _local_slope(world, x, y, z, (-u[1], u[0]))
+                probes = ((0.0, 0.0, z), (lat[0], lat[1], z + s * reach), (-lat[0], -lat[1], z - s * reach))
+            else:
+                probes = ((0.0, 0.0, z), (lat[0], lat[1], z), (-lat[0], -lat[1], z))
+            if all(_level_at(world, x + ox, y + oy, oz, tol, raised_ok=True) for ox, oy, oz in probes):
                 continue
             bad += 1
             if len(OFF_LEVEL) < 50:
@@ -1072,7 +1237,8 @@ def build_crowd(gen, count=None):
     kind = "narrow" if indoor else "sidewalk"
     lane_half = LANE_PROFILES[kind][2] * 0.25        # each lane's centre sits a quarter of the profile off the run
     curb = None if indoor else _curb_height(gen)
-    cleared = _clear_lanes(g, world, lane_half, indoor, curb)
+    graded = (not indoor) and _graded_ground(gen)
+    cleared = _clear_lanes(g, world, lane_half, indoor, curb, graded)
     par = list(range(len(g.nodes)))
 
     def _root(x):
@@ -1114,10 +1280,10 @@ def build_crowd(gen, count=None):
         H.warn("crowd: %s not found; lanes laid, no spawner" % PROFILE_ASSET)
     bad_lane, bad_poly = check_lanes(world)
     # Informational for now (verify.py lives in the superproject): lane samples whose walkers stand off their level.
-    off_level = 0 if indoor else check_lane_levels(world, curb)
+    off_level = 0 if indoor else check_lane_levels(world, curb, graded=graded)
     res = {"cleared": cleared, "blocked_lane_segments": bad_lane, "blocked_junction_edges": bad_poly, "blocked": list(BLOCKED[:10]), "shapes": shapes, "nodes": len(g.nodes), "edges": len(g.edges), "lane_m": round(lane_cm / 100.0),
            "count": count if spawner else 0, "removed": removed, "indoor": indoor,
            "crosswalks": getattr(g, "crosswalks", 0), "crosswalks_unmatched": getattr(g, "crosswalks_unmatched", 0),
-           "curb_height": curb, "off_level_lane_samples": off_level, "off_level": list(OFF_LEVEL[:10])}
+           "curb_height": curb, "graded": graded, "off_level_lane_samples": off_level, "off_level": list(OFF_LEVEL[:10])}
     H.log("crowd: %s" % res)
     return res
