@@ -531,7 +531,13 @@ bool FPCGRammsSubdivideLotsElement::ExecuteInternal(FPCGContext* Context) const
 					Lots.Set(l, RammsPCG::Setback, LotSetback);
 					Lots.SetInt(l, RammsPCG::Side, Row == 0 ? 0 : 2);
 					Lots.Set(l, FName(TEXT("RampCuts")), R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
-					if (!GroundText.IsEmpty()) { Lots.Set(l, RammsGround::Attr, GroundText); }
+					if (!GroundText.IsEmpty())
+					{
+						Lots.Set(l, RammsGround::Attr, GroundText);
+						// The walk's panels set off the model (rough walks): the lots' doors and aprons stand on them.
+						const FString PanelText = R.Get<FString>(i, RammsGround::PanelDzAttr, FString());
+						if (!PanelText.IsEmpty()) { Lots.Set(l, RammsGround::PanelDzAttr, PanelText); }
+					}
 					(void)FaceSign;
 					if (!bTwoRows) { Lots.SetBool(l, StreetBack, true); }
 					if (WholeIdx != INDEX_NONE)
@@ -645,29 +651,59 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				const FVector W = ToWorld(lx, ly, Z0);
 				return Gm ? Gm->Normal(W.X, W.Y) : FVector::UpVector;
 			};
-			// A slab laid on the ground: yawed with the lot, tilted onto the ground's plane under (lx, ly) on graded ground.
+			// A mound laid on the ground: yawed with the lot, tilted onto the ground's plane under (lx, ly) on graded ground.
 			auto SlabRotation = [&](double YawDeg, double lx, double ly) -> FQuat
 			{
 				return Gm ? RammsGround::OnPlane(YawDeg, GroundUp(lx, ly)) : FRotator(0.0, YawDeg, 0.0).Quaternion();
 			};
-			// Graded ground: a concrete plinth under a building's footprint (lot frame), down to the lowest ground under it,
-			// where the ground falls away from the lot's pad.
-			auto Plinth = [&](double Px0, double Px1, double Py0, double Py1)
+			// Rough walks: the panels set off the model (the walk's top there is the model plus the panel's offset).
+			FRammsPanelOffsets Panels;
+			if (Gm) { Panels.Parse(R.Get<FString>(i, RammsGround::PanelDzAttr, FString())); }
+			// A lot-frame rectangle as a world polygon, and the walking surface's lowest and highest points over it (exact
+			// over the ground's facets, the walk's panels included).
+			auto WorldRect = [&](double X0r, double X1r, double Y0r, double Y1r)
+			{
+				return TArray<FVector2D>{ FVector2D(ToWorld(X0r, Y0r, Z0)), FVector2D(ToWorld(X1r, Y0r, Z0)), FVector2D(ToWorld(X1r, Y1r, Z0)), FVector2D(ToWorld(X0r, Y1r, Z0)) };
+			};
+			auto RectBounds = [](const TArray<FVector2D>& Poly)
+			{
+				FBox2D B(ForceInit);
+				for (const FVector2D& V : Poly) { B += V; }
+				return B;
+			};
+			auto LowOver = [&](double X0r, double X1r, double Y0r, double Y1r)
+			{
+				const TArray<FVector2D> Poly = WorldRect(X0r, X1r, Y0r, Y1r);
+				double PMin = 0.0, PMax = 0.0;
+				Panels.Range(RectBounds(Poly), PMin, PMax);
+				return Gm->MinOver(BlockIdV, Poly) + PMin;
+			};
+			// Graded ground: a slab of the lot's (a front walk, a driveway, an apron across the walk) as prisms that follow
+			// the ground Up above it -- above each walk panel's top where it crosses the walk -- with its manifest box
+			// along the lot (the piece's frame is the lot's).
+			auto GroundSlab = [&](double X0r, double X1r, double Y0r, double Y1r, double Up, double Thick, FName Surface) -> FRammsPieceDesc
+			{
+				RammsGround::FPrisms Pr(OnGroundUp((X0r + X1r) * 0.5, (Y0r + Y1r) * 0.5, Up), Yaw);
+				TArray<TPair<FBox2D, double>> SlabParts;
+				Panels.Split(RectBounds(WorldRect(X0r, X1r, Y0r, Y1r)), SlabParts);
+				for (const TPair<FBox2D, double>& Pt : SlabParts)
+				{
+					const double Off = Up + Pt.Value;
+					Pr.AddOnGround(*Gm, BlockIdV, RammsGround::BoxPoly(Pt.Key), [Off](const FVector2D&) { return Off; }, 0, Surface);
+				}
+				return Pr.Desc(Thick);
+			};
+			// Graded ground: a concrete plinth under a footprint (lot frame) from Top down past the lowest ground under it,
+			// where the ground falls away from the lot's pad (a building, an entrance ramp).
+			auto PlinthTo = [&](double Px0, double Px1, double Py0, double Py1, double Top)
 			{
 				if (!Gm) { return; }
-				double Low = Z0;
-				for (int32 u = 0; u <= 4; ++u)
-				{
-					for (int32 v = 0; v <= 4; ++v)
-					{
-						const FVector Q = OnGround(Px0 + (Px1 - Px0) * u / 4.0, Py0 + (Py1 - Py0) * v / 4.0);
-						Low = FMath::Min(Low, Q.Z);
-					}
-				}
-				if (Z0 - Low < 1.0) { return; }
-				const double Hp = Z0 - Low + 10.0;
-				RammsPCG::WriteCube(Primitives, ToWorld((Px0 + Px1) * 0.5, (Py0 + Py1) * 0.5, Z0 - Hp * 0.5), FVector(Px1 - Px0, Py1 - Py0, Hp), Yaw, MatConcrete, NextGroundSeed());
+				const double Low = Gm->MinOver(BlockIdV, WorldRect(Px0, Px1, Py0, Py1));
+				if (Top - Low < 1.0) { return; }
+				const double Hp = Top - Low + 10.0;
+				RammsPCG::WriteCube(Primitives, ToWorld((Px0 + Px1) * 0.5, (Py0 + Py1) * 0.5, Top - Hp * 0.5), FVector(Px1 - Px0, Py1 - Py0, Hp), Yaw, MatConcrete, NextGroundSeed());
 			};
+			auto Plinth = [&](double Px0, double Px1, double Py0, double Py1) { PlinthTo(Px0, Px1, Py0, Py1, Z0); };
 			// Curb ramps in front of the lot (from the street network): nothing is planted or paved over them.
 			const TArray<FBox2D> RampCuts = RammsPCG::ParseBoxes(R.Get<FString>(i, FName(TEXT("RampCuts")), FString()));
 			auto OnRamp = [&](double lx, double ly, double Margin)
@@ -746,10 +782,11 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 			if (bHouseMesh) { const double HalfW = FMath::Max(HouseMesh.Footprint.Y * 0.5 - 60.0, 0.0); EntranceY = FMath::Clamp(HouseMesh.EntranceOffsetY, -HalfW, HalfW); }
 			if (Gm)
 			{
-				// Graded ground: the lot stands on a level pad at the ground's height in front of its entrance, so the door
-				// meets the walk (or the yard); a plinth fills what falls away under the building.
+				// Graded ground: the lot stands on a level pad at the ground's height in front of its entrance (the top of the
+				// walk's panel there, on a rough walk), so the door meets the walk (or the yard); a plinth fills what falls away
+				// under the building.
 				const FVector Door = ToWorld(FrontX, EntranceY, Z0);
-				const double Pad = Gm->GroundZ(Door.X, Door.Y);
+				const double Pad = Gm->GroundZ(Door.X, Door.Y) + Panels.At(Door.X, Door.Y);
 				Xf.SetLocation(FVector(Xf.GetLocation().X, Xf.GetLocation().Y, Pad));
 				Z0 = Pad;
 			}
@@ -1154,15 +1191,69 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				}
 				if (RampSide == 0.0) { bRamp = false; bRampSteep = false; }
 
+				// Graded ground: the steps stand on the lowest walk or yard under them (their bottom riser takes up the
+				// rest), and the ramp's foot is where its slope meets the ground along the facade -- on the side the layout
+				// chose, else the other, within the room there; none when neither reaches the ground in time. A plinth fills
+				// under the ramp where the ground falls away below its foot.
+				const double Top = Z0 + EntranceRise;
+				double StepBase = Z0, StepRiseG = StepRise;
+				double RampLenG = RampLen, RampRiseG = EntranceRise, FootLip = 0.0;
+				const double RampX = FrontX + RampW * 0.5 + 6.0;
+				if (Gm)
+				{
+					StepBase = FMath::Min(LowOver(FrontX, FrontX + Steps * Tread, EntranceY - StepsW * 0.5, EntranceY + StepsW * 0.5), Top - Steps * 1.0);
+					StepRiseG = (Top - StepBase) / Steps;
+					if (bRamp)
+					{
+						const double SlopeR = FMath::Max(RampSlopeV, 0.01);
+						// D is measured along the facade from the steps' edge: the landing (level, at the door's height) first,
+						// then the ramp falling at its slope. Its foot is where that line meets the ground.
+						auto Solve = [&](double Side, double Room, double& OutLen) -> bool
+						{
+							const double Ye = EntranceY + Side * StepsW * 0.5;
+							auto F = [&](double D) { return Top - SlopeR * FMath::Max(D - S->LandingSize, 0.0) - OnGround(RampX, Ye + Side * D).Z; };
+							const double D0 = S->LandingSize + 1.0, D1 = Room;
+							// No ramp on that side: the ground is already at the door's height there, or the ramp would not
+							// meet it within the room.
+							if (D1 <= D0 || F(D0) <= 2.0 || F(D1) > 0.0) { return false; }
+							double Lo = D0, Hi = D1;
+							for (int32 It = 0; It < 40; ++It)
+							{
+								const double Mid = (Lo + Hi) * 0.5;
+								if (F(Mid) > 0.0) { Lo = Mid; } else { Hi = Mid; }
+							}
+							OutLen = (Lo + Hi) * 0.5;
+							return true;
+						};
+						double Len = 0.0;
+						if (!Solve(RampSide, RampSide > 0.0 ? RoomPos : RoomNeg, Len))
+						{
+							if (Solve(-RampSide, RampSide > 0.0 ? RoomNeg : RoomPos, Len)) { RampSide = -RampSide; }
+							else { bRamp = false; bRampSteep = false; }
+						}
+						if (bRamp)
+						{
+							RampLenG = Len;
+							RampRiseG = SlopeR * (Len - S->LandingSize);
+							// The foot's corners against the ground across the ramp's width: what is left as a lip there.
+							const double LowYg = EntranceY + RampSide * (StepsW * 0.5 + Len);
+							const double FootZ = Top - RampRiseG;
+							for (const double Xc : { RampX - RampW * 0.5, RampX + RampW * 0.5 }) { FootLip = FMath::Max(FootLip, FMath::Abs(OnGround(Xc, LowYg).Z - FootZ)); }
+							const double Ya = EntranceY + RampSide * StepsW * 0.5;
+							PlinthTo(RampX - RampW * 0.5, RampX + RampW * 0.5, FMath::Min(Ya, LowYg), FMath::Max(Ya, LowYg), FootZ);
+						}
+					}
+				}
+
 				FRammsPieceDesc St;
 				St.Kind = ERammsProcPieceKind::Step;
-				St.StepCount = Steps; St.Rise = StepRise; St.SizeX = Tread; St.SizeY = StepsW;
+				St.StepCount = Steps; St.Rise = StepRiseG; St.SizeX = Tread; St.SizeY = StepsW;
 				St.MaterialPath = MatConcrete;
 				St.ManifestKind = FName(TEXT("Step"));
-				St.Measure = EntranceRise; St.Threshold = 0.64;
+				St.Measure = Gm ? Top - StepBase : EntranceRise; St.Threshold = 0.64;
 				// Steps rise toward their local -X: the origin (bottom step) on the street side, the top step
 				// against the facade.
-				St.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(FrontX + Steps * Tread, EntranceY, Z0));
+				St.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(FrontX + Steps * Tread, EntranceY, StepBase));
 				St.bCompliant = bRamp && !bRampSteep; // steps are fine when a usable ramp exists beside them
 				St.Issue = St.bCompliant ? ERammsComplianceIssue::None : ERammsComplianceIssue::StepAtEntrance;
 				St.ManifestSubtype = bRamp ? FName(TEXT("WithRamp")) : FName(TEXT("NoRamp"));
@@ -1172,7 +1263,7 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				{
 					FRammsPieceDesc Rp;
 					Rp.Kind = ERammsProcPieceKind::Ramp;
-					Rp.Rise = EntranceRise;
+					Rp.Rise = RampRiseG;
 					Rp.Slope = RampSlopeV;
 					RampSlope = Rp.Slope;
 					Rp.SizeY = RampW;
@@ -1183,9 +1274,15 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 					Rp.bCompliant = !bRampSteep;
 					Rp.Issue = bRampSteep ? ERammsComplianceIssue::SlopeTooSteep : ERammsComplianceIssue::None;
 					Rp.ManifestSubtype = bRampSteep ? FName(TEXT("TooSteep")) : FName(TEXT("Standard"));
+					if (Rp.bCompliant && FootLip > S->VerticalChangeMax)
+					{
+						// Graded ground: the yard slopes across the ramp's foot, leaving a step at one of its corners.
+						Rp.bCompliant = false; Rp.Issue = ERammsComplianceIssue::VerticalChangeTooHigh; Rp.ManifestSubtype = FName(TEXT("FootLip"));
+						Rp.Measure = FootLip; Rp.Threshold = S->VerticalChangeMax;
+					}
 					// The ramp rises toward its local -X; local +X points away from the steps along the facade.
-					const double LowY = EntranceY + RampSide * (StepsW * 0.5 + RampLen);
-					Rp.Transform = FTransform(FRotator(0.0, Yaw + RampSide * 90.0, 0.0), ToWorld(FrontX + RampW * 0.5 + 6.0, LowY, Z0));
+					const double LowY = EntranceY + RampSide * (StepsW * 0.5 + RampLenG);
+					Rp.Transform = FTransform(FRotator(0.0, Yaw + RampSide * 90.0, 0.0), ToWorld(RampX, LowY, Gm ? Top - RampRiseG : Z0));
 					Rp.Seed = NextSeed();
 					RammsPCG::WritePiece(Pieces, Rp);
 				}
@@ -1262,14 +1359,20 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				const FString MatPath = RammsPCG::Mat(Palette, RammsPaletteSlots::MatPath);
 				if (LotFront - WalkStart > 60.0)
 				{
+					// Top 5 mm above the sidewalk: under the 6.4 mm a wheelchair route allows without a bevel. (Graded: 5 mm above
+					// the yard all the way, as prisms over its facets.)
 					FRammsPieceDesc Wk;
-					Wk.Kind = ERammsProcPieceKind::Slab;
-					Wk.SizeX = LotFront - WalkStart; Wk.SizeY = WalkW; Wk.SizeZ = 6.0;
+					if (Gm)
+					{
+						Wk = GroundSlab(WalkStart, LotFront, EntranceY - WalkW * 0.5, EntranceY + WalkW * 0.5, 0.5, 6.0, FName(TEXT("Concrete")));
+					}
+					else
+					{
+						Wk.Kind = ERammsProcPieceKind::Slab;
+						Wk.SizeX = LotFront - WalkStart; Wk.SizeY = WalkW; Wk.SizeZ = 6.0;
+						Wk.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(WalkStart, EntranceY, Z0 + 0.5));
+					}
 					Wk.MaterialPath = MatPath;
-					// Top 5 mm above the sidewalk: under the 6.4 mm a wheelchair route allows without a bevel. (Graded: on the
-					// yard's plane.)
-					Wk.Transform = Gm ? FTransform(SlabRotation(Yaw, (WalkStart + LotFront) * 0.5, EntranceY), OnGroundUp(WalkStart, EntranceY, 0.5))
-						: FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(WalkStart, EntranceY, Z0 + 0.5));
 					Wk.ManifestKind = FName(TEXT("Path")); Wk.ManifestSubtype = FName(TEXT("FrontWalk")); Wk.Measure = WalkW; Wk.Threshold = S->MinClearWidth;
 					Wk.Seed = NextSeed();
 					RammsPCG::WritePiece(Pieces, Wk);
@@ -1293,11 +1396,17 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				if ((bGarage || Rng.FRand() < FMath::Clamp(S->DrivewayChance, 0.0, 1.0)) && FMath::Abs(DCentre) + DW * 0.5 < Width * 0.5 - 30.0 && LotFront - DStart > 200.0)
 				{
 					FRammsPieceDesc Dv;
-					Dv.Kind = ERammsProcPieceKind::Slab;
-					Dv.SizeX = LotFront - DStart; Dv.SizeY = DW; Dv.SizeZ = 8.0;
+					if (Gm)
+					{
+						Dv = GroundSlab(DStart, LotFront, DCentre - DW * 0.5, DCentre + DW * 0.5, 0.5, 8.0, FName(TEXT("Concrete")));
+					}
+					else
+					{
+						Dv.Kind = ERammsProcPieceKind::Slab;
+						Dv.SizeX = LotFront - DStart; Dv.SizeY = DW; Dv.SizeZ = 8.0;
+						Dv.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(DStart, DCentre, Z0 + 0.5)); // level with the apron
+					}
 					Dv.MaterialPath = MatConcrete;
-					Dv.Transform = Gm ? FTransform(SlabRotation(Yaw, (DStart + LotFront) * 0.5, DCentre), OnGroundUp(DStart, DCentre, 0.5))
-						: FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(DStart, DCentre, Z0 + 0.5)); // level with the apron
 					Dv.ManifestKind = FName(TEXT("Driveway")); Dv.ManifestSubtype = FName(TEXT("Concrete")); Dv.Measure = DW;
 					Dv.Seed = NextSeed();
 					RammsPCG::WritePiece(Pieces, Dv);
@@ -1406,16 +1515,20 @@ bool FPCGRammsBuildingMassingElement::ExecuteInternal(FPCGContext* Context) cons
 				if (DrivewayHi > DrivewayLo && S->SidewalkWidth > 1.0 && !ApronOnRamp())
 				{
 					FRammsPieceDesc Ap;
-					Ap.Kind = ERammsProcPieceKind::Slab;
-					Ap.SizeX = S->SidewalkWidth; Ap.SizeY = DrivewayHi - DrivewayLo; Ap.SizeZ = 3.0;
-					Ap.MaterialPath = MatConcrete;
-					Ap.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(LotFront, (DrivewayLo + DrivewayHi) * 0.5, Z0 + 0.5));
 					if (Gm)
 					{
-						// On the sidewalk's plane across the walk (a manifest-free ground slab: not a roof on high ground).
-						Ap.Transform = FTransform(SlabRotation(Yaw, LotFront + S->SidewalkWidth * 0.5, (DrivewayLo + DrivewayHi) * 0.5), OnGroundUp(LotFront + 0.5, (DrivewayLo + DrivewayHi) * 0.5, 0.5));
+						// 5 mm above the walk across it, over each of its panels' tops (a manifest-free ground slab: not a
+						// roof on high ground).
+						Ap = GroundSlab(LotFront, LotFront + S->SidewalkWidth, DrivewayLo, DrivewayHi, 0.5, 3.0, FName(TEXT("Concrete")));
 						Ap.ManifestSubtype = RammsGround::GroundSubtype;
 					}
+					else
+					{
+						Ap.Kind = ERammsProcPieceKind::Slab;
+						Ap.SizeX = S->SidewalkWidth; Ap.SizeY = DrivewayHi - DrivewayLo; Ap.SizeZ = 3.0;
+						Ap.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(LotFront, (DrivewayLo + DrivewayHi) * 0.5, Z0 + 0.5));
+					}
+					Ap.MaterialPath = MatConcrete;
 					Ap.Seed = NextSeed();
 					RammsPCG::WritePiece(Pieces, Ap);
 				}

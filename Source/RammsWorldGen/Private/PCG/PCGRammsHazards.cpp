@@ -192,6 +192,9 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 				return W;
 			};
 			auto GroundNormal = [&](const FVector& W) { return Gm ? Gm->Normal(W.X, W.Y) : FVector::UpVector; };
+			// A rough walk's panels set off the model: a heave or an upheaval slab stands on the panel's top, not the model's.
+			FRammsPanelOffsets Panels;
+			if (Gm) { Panels.Parse(R.GetS(i, RammsGround::PanelDzAttr)); }
 
 			FOccupancy Occ;
 			ParseKeepouts(R.GetS(i, FName(TEXT("Keepouts"))), Occ);
@@ -408,21 +411,42 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 					const double Dp = FMath::Min(RammsPCG::RandRange(HeaveRng, 60.0, 110.0), RouteW * 0.7);
 					const double Lip = RammsPCG::RandRange(HeaveRng, 0.5, 4.5);
 					const double Ha0 = Ta - Wh * 0.5, Ha1 = Ta + Wh * 0.5, Hc0 = FZ, Hc1 = FZ + Dp;
-					auto HeaveCorner = [&](double Ca, double Cc)
-					{
-						const FVector Wc = Xf.TransformPosition(FVector(Ca, Cc, 0.0));
-						const double Gz = Gm ? Gm->GroundZ(Wc.X, Wc.Y) : Wc.Z;
-						return FVector(Wc.X, Wc.Y, Gz + Lip * (1.0 - (Cc - Hc0) / Dp));
-					};
 					RammsGround::FPrisms Hv(ToWorld(Ta, (Hc0 + Hc1) * 0.5, 0.0));
-					Hv.Add({ HeaveCorner(Ha0, Hc0), HeaveCorner(Ha1, Hc0), HeaveCorner(Ha1, Hc1), HeaveCorner(Ha0, Hc1) }, 0, FName(TEXT("Concrete")));
+					double Measure = Lip;
+					if (Gm)
+					{
+						// Graded ground: over the ground's facets (it bends where the walk does), on the highest panel under it,
+						// so its flush edge is flush there; what the lower panels under it are left with counts toward its lip.
+						const FVector W0 = Xf.TransformPosition(FVector(Ha0, Hc0, 0.0)), W1 = Xf.TransformPosition(FVector(Ha1, Hc0, 0.0));
+						const FVector W2 = Xf.TransformPosition(FVector(Ha1, Hc1, 0.0)), W3 = Xf.TransformPosition(FVector(Ha0, Hc1, 0.0));
+						const TArray<FVector2D> Poly = { FVector2D(W0), FVector2D(W1), FVector2D(W2), FVector2D(W3) };
+						FBox2D Bb(ForceInit);
+						for (const FVector2D& V : Poly) { Bb += V; }
+						double PMin = 0.0, PMax = 0.0;
+						Panels.Range(Bb, PMin, PMax);
+						Measure = Lip + (PMax - PMin);
+						// The lip falls linearly from the pit's edge (Hc0) to nothing at Hc1: a plane over the slab.
+						const FVector2D A0(W0), A1(W1), A3(W3);
+						const int32 Bk = Gm->FindBlock(Bb.GetCenter().X, Bb.GetCenter().Y);
+						Hv.AddOnGround(*Gm, Bk, Poly, [&](const FVector2D& Q) { return PMax + RammsGround::LerpTriangle(A0, A1, A3, Lip, Lip, 0.0, Q); }, 0, FName(TEXT("Concrete")));
+					}
+					else
+					{
+						auto HeaveCorner = [&](double Ca, double Cc)
+						{
+							const FVector Wc = Xf.TransformPosition(FVector(Ca, Cc, 0.0));
+							return FVector(Wc.X, Wc.Y, Wc.Z + Lip * (1.0 - (Cc - Hc0) / Dp));
+						};
+						Hv.Add({ HeaveCorner(Ha0, Hc0), HeaveCorner(Ha1, Hc0), HeaveCorner(Ha1, Hc1), HeaveCorner(Ha0, Hc1) }, 0, FName(TEXT("Concrete")));
+					}
+					if (Hv.IsEmpty()) { continue; }
 					FRammsPieceDesc D = Hv.Desc(8.0);
 					D.MaterialPath = MatSidewalk;
 					D.ManifestKind = FName(TEXT("Hazard"));
 					D.ManifestSubtype = FName(TEXT("RootHeave"));
-					D.Measure = Lip;
+					D.Measure = Measure;
 					D.Threshold = S->VerticalChangeMax;
-					D.bCompliant = Lip <= S->VerticalChangeMax;
+					D.bCompliant = Measure <= S->VerticalChangeMax;
 					D.Issue = D.bCompliant ? ERammsComplianceIssue::None : ERammsComplianceIssue::VerticalChangeTooHigh;
 					D.Seed = NextHeaveSeed();
 					RammsPCG::WritePiece(Pieces, D);
@@ -551,7 +575,17 @@ bool FPCGRammsHazardPlacerElement::ExecuteInternal(FPCGContext* Context) const
 						Sl.ManifestKind = FName(TEXT("Hazard")); Sl.ManifestSubtype = Type; Sl.Measure = Lip; Sl.Threshold = S->VerticalChangeMax;
 						Sl.bCompliant = Lip <= S->VerticalChangeMax; Sl.Issue = Sl.bCompliant ? ERammsComplianceIssue::None : ERammsComplianceIssue::VerticalChangeTooHigh;
 						Sl.Transform = FTransform(FRotator(0.0, Yaw, 0.0), ToWorld(A, y0 + fy * 0.5, Lip)); Sl.Seed = NextSeed();
-						if (Gm) { Sl.Transform.SetRotation(RammsGround::OnPlane(Yaw, GroundNormal(ToWorld(A + fx * 0.5, y0 + fy * 0.5, 0.0)))); }
+						if (Gm)
+						{
+							Sl.Transform.SetRotation(RammsGround::OnPlane(Yaw, GroundNormal(ToWorld(A + fx * 0.5, y0 + fy * 0.5, 0.0))));
+							// On the highest walk panel under it (a rough walk's), so its lip is above the walk it stands on.
+							FBox2D Bb(ForceInit);
+							Bb += FVector2D(Xf.TransformPosition(FVector(A, y0, 0.0)));
+							Bb += FVector2D(Xf.TransformPosition(FVector(A + fx, y0 + fy, 0.0)));
+							double PMin = 0.0, PMax = 0.0;
+							Panels.Range(Bb, PMin, PMax);
+							Sl.Transform.AddToTranslation(FVector(0.0, 0.0, PMax));
+						}
 						RammsPCG::WritePiece(Pieces, Sl);
 					}
 					if (Lip > S->VerticalChangeMax) { bRouteCompliant = false; }
@@ -815,18 +849,14 @@ bool FPCGRammsParkLayoutElement::ExecuteInternal(FPCGContext* Context) const
 				const bool bUneven = Rng.FRand() < S->NonCompliance * 0.5;
 				if (Gm)
 				{
-					// On the graded ground, 4 mm proud of the lawn: one plane per street-grid cell of the block.
+					// On the graded ground, 4 mm proud of the lawn: over the ground's facets (the park's lot ring and hill).
 					// The path's plan: the segment (axis-aligned) grown by half its width all round, as the flat world lays it.
 					const FBox2D Rect2(FVector2D(FMath::Min(Sg.A.X, Sg.B.X) - PW * 0.5, FMath::Min(Sg.A.Y, Sg.B.Y) - PW * 0.5),
 						FVector2D(FMath::Max(Sg.A.X, Sg.B.X) + PW * 0.5, FMath::Max(Sg.A.Y, Sg.B.Y) + PW * 0.5));
-					TArray<TArray<FVector2D>> Polys = { RammsGround::BoxPoly(Rect2) };
-					TArray<double> Ix, Iy;
-					Gm->InnerLines(ParkBlock, Ix, Iy);
-					for (const double V : Ix) { RammsGround::SplitAllByLine(Polys, FVector2D(1.0, 0.0), V); }
-					for (const double V : Iy) { RammsGround::SplitAllByLine(Polys, FVector2D(0.0, 1.0), V); }
 					const FVector2D Mid2 = Rect2.GetCenter();
 					RammsGround::FPrisms Pp(FVector(Mid2.X, Mid2.Y, BaseZ(Mid2)));
-					for (const TArray<FVector2D>& Pg : Polys) { Pp.AddPoly(Pg, [&](const FVector2D& Q) { return BaseZ(Q) + 0.4; }, 0, bUneven ? FName(TEXT("Cobble")) : FName(TEXT("Path"))); }
+					const int32 Bk = ParkBlock >= 0 ? ParkBlock : Gm->FindBlock(Mid2.X, Mid2.Y);
+					Pp.AddOnGround(*Gm, Bk, RammsGround::BoxPoly(Rect2), [](const FVector2D&) { return 0.4; }, 0, bUneven ? FName(TEXT("Cobble")) : FName(TEXT("Path")));
 					FRammsPieceDesc D = Pp.Desc(20.0);
 					// (A recipe palette without cobbles: the path's own surface.)
 					D.MaterialPath = bUneven ? MatOr(RammsPaletteSlots::MatCobble, MatPath) : MatPath;
