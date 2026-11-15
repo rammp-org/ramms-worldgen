@@ -385,7 +385,10 @@ builder into a scratch mesh with a capture open: every box the builder appends
 reports itself as a box, every other convex primitive as the hull of the vertices
 it appended, every lifted grid as a height grid. The mesh and the shapes cannot
 drift apart, and a new builder part is exported without extra code. A kind added
-later reports its shapes from its own case in `AppendCollisionShapes`.
+later reports its shapes from its own case in `AppendCollisionShapes`. A
+sphere-box (a canopy blob) splits some quads inward, a dent of a few centimetres,
+so its edges are flipped to fold outward when it is built: its mesh is then its
+hull, and Chaos collides with exactly the hull that is exported.
 
 **Height grids** split each cell along the diagonal from sample (i+1, j) to
 (i, j+1), which is how MuJoCo's height fields split theirs once Unreal's Y is
